@@ -115,7 +115,7 @@ function extractConnectionId(path: string): string | null {
   // 元数据路径格式: /api/metadata/{connectionId}/...
   // SQL 路径格式: /api/sql/execute (body 中有 connectionId)
   const match = path.match(/\/api\/metadata\/([^\/]+)/)
-  return match ? match[1] : null
+  return match ? decodeURIComponent(match[1]) : null
 }
 
 /** 自定义 API 错误类型，携带错误码 */
@@ -127,6 +127,8 @@ class ApiError extends Error {
     this.code = code
   }
 }
+
+const pathSegment = (value: string) => encodeURIComponent(value)
 
 // ─── 连接管理 ───────────────────────────────────────────
 export const connectionApi = {
@@ -159,55 +161,55 @@ export const groupApi = {
 // ─── 元数据 ─────────────────────────────────────────────
 export const metadataApi = {
   databases: (connectionId: string) =>
-    request(`/api/metadata/${connectionId}/databases`),
+    request(`/api/metadata/${pathSegment(connectionId)}/databases`),
   objects: (connectionId: string, database: string) =>
-    request(`/api/metadata/${connectionId}/${database}/objects`),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/objects`),
   tableDefinition: (connectionId: string, database: string, table: string) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/definition`),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/definition`),
   indexes: (connectionId: string, database: string, table: string) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/indexes`),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/indexes`),
   previewRows: (connectionId: string, database: string, table: string, params?: { where?: string; orderBy?: string; limit?: number; offset?: number }) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/preview`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/preview`, {
       method: 'POST',
       body: JSON.stringify(params || {}),
     }),
   ddl: (connectionId: string, database: string, table: string) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/ddl`),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/ddl`),
   editData: (connectionId: string, database: string, table: string, changes: unknown[], dryRun = false) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/edit`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/edit`, {
       method: 'POST',
       body: JSON.stringify({ connectionId, database, table, changes, dryRun }),
     }),
   charsets: (connectionId: string) =>
-    request(`/api/metadata/${connectionId}/charsets`),
+    request(`/api/metadata/${pathSegment(connectionId)}/charsets`),
   createDatabase: (connectionId: string, name: string, charset: string, collation: string) =>
-    request(`/api/metadata/${connectionId}/create-database`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/create-database`, {
       method: 'POST',
       body: JSON.stringify({ name, charset, collation }),
     }),
   dropDatabase: (connectionId: string, database: string) =>
-    request(`/api/metadata/${connectionId}/drop-database/${database}`, { method: 'DELETE' }),
+    request(`/api/metadata/${pathSegment(connectionId)}/drop-database/${pathSegment(database)}`, { method: 'DELETE' }),
   previewCreateTable: (connectionId: string, database: string, tableDef: unknown) =>
-    request(`/api/metadata/${connectionId}/${database}/preview-create-table`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/preview-create-table`, {
       method: 'POST',
       body: JSON.stringify(tableDef),
     }),
   createTable: (connectionId: string, database: string, tableDef: unknown) =>
-    request(`/api/metadata/${connectionId}/${database}/create-table`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/create-table`, {
       method: 'POST',
       body: JSON.stringify(tableDef),
     }),
   dropTable: (connectionId: string, database: string, table: string) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}`, { method: 'DELETE' }),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}`, { method: 'DELETE' }),
   truncateTable: (connectionId: string, database: string, table: string) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/truncate`, { method: 'POST' }),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/truncate`, { method: 'POST' }),
   alterDatabase: (connectionId: string, name: string, charset: string, collation: string) =>
-    request(`/api/metadata/${connectionId}/alter-database`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/alter-database`, {
       method: 'POST',
       body: JSON.stringify({ name, charset, collation }),
     }),
   renameTable: (connectionId: string, database: string, oldName: string, newName: string) =>
-    request(`/api/metadata/${connectionId}/${database}/rename-table`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/rename-table`, {
       method: 'POST',
       body: JSON.stringify({ oldName, newName }),
     }),
@@ -424,4 +426,3 @@ export interface ProcedureExecuteResult {
   warningCount: number
   error: string | null
 }
-

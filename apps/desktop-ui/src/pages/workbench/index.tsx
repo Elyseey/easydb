@@ -50,6 +50,7 @@ import { QueryEditorPane } from '@/components/QueryEditorPane'
 import { ShortcutsModal } from '@/components/ShortcutsModal'
 import { CallProcedurePanel, type CallProcedureTarget } from '@/components/CallProcedurePanel'
 import { formatHotkey } from '@/utils/osUtils'
+import { getDbCapabilities } from '@/utils/dbCapabilities'
 
 const { Sider, Content } = Layout
 const { Text } = Typography
@@ -544,7 +545,7 @@ export const WorkbenchPage: React.FC = () => {
         indexes: [],
         ddl: '',
         previewRows: [],
-        hasMoreRows: true,
+        hasMoreRows: false,
         loadingMoreRows: false,
         detailTab: defaultTab,
         loadedTabs: [],
@@ -664,7 +665,7 @@ export const WorkbenchPage: React.FC = () => {
         setConnectingId(null)
       }
     }
-    addOpenConnection(conn.id, conn.name)
+    addOpenConnection(conn.id, conn.name, conn.dbType)
   }, [connections, updateConnection, addOpenConnection])
 
   // --- 从工作台移除连接 ---
@@ -772,7 +773,7 @@ export const WorkbenchPage: React.FC = () => {
     try {
       const res = await scriptApi.list()
       setSavedScripts(res as SavedScript[])
-    } catch(e) { /* ignore */ }
+    } catch { /* ignore */ }
   }, [])
   useEffect(() => { loadSavedScripts() }, [loadSavedScripts])
   // 暴露给外部调用（如保存弹窗结束后想刷新）可以利用发布订阅，或简单定时、或重新挂载
@@ -1077,13 +1078,9 @@ export const WorkbenchPage: React.FC = () => {
       const parts = nodeKey.slice(3).split(':')
       const connId = parts[0]
       const dbName = parts.slice(1).join(':')
-      return [
-        {
-          key: 'edit-db',
-          icon: <EditOutlined />,
-          label: '编辑数据库',
-          onClick: () => setEditDbModal({ connectionId: connId, databaseName: dbName }),
-        },
+      const conn = openConnections.find((c) => c.id === connId)
+      const cap = getDbCapabilities(conn?.dbType ?? null)
+      const items: MenuProps['items'] = [
         {
           key: 'refresh-db',
           icon: <ReloadOutlined />,
@@ -1091,71 +1088,80 @@ export const WorkbenchPage: React.FC = () => {
           onClick: () => loadTables(connId, dbName),
         },
         { type: 'divider' },
-        {
+      ]
+      if (cap.metadata.schemas) {
+        items.unshift({
+          key: 'edit-db',
+          icon: <EditOutlined />,
+          label: '编辑数据库',
+          onClick: () => setEditDbModal({ connectionId: connId, databaseName: dbName }),
+        })
+      }
+      if (cap.workbench.backup) {
+        items.push({
           key: 'backup-db',
           icon: <DatabaseOutlined />,
           label: '备份数据库...',
-          onClick: () => {
-            const conn = openConnections.find((c) => c.id === connId)
-            setBackupModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName })
-          }
-        },
-        {
+          onClick: () => setBackupModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName }),
+        })
+      }
+      if (cap.workbench.restore) {
+        items.push({
           key: 'restore-db',
           icon: <ReloadOutlined />,
           label: '恢复数据库...',
-          onClick: () => {
-            const conn = openConnections.find((c) => c.id === connId)
-            setRestoreModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName })
-          }
-        },
-        {
+          onClick: () => setRestoreModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName }),
+        })
+      }
+      if (cap.workbench.exportData) {
+        items.push({
           key: 'export-db',
           icon: <ExportOutlined />,
           label: '导出数据库...',
-          onClick: () => {
-             const conn = openConnections.find((c) => c.id === connId)
-             setExportModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName })
-          }
-        },
-        {
+          onClick: () => setExportModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName }),
+        })
+      }
+      if (cap.workbench.importSql) {
+        items.push({
           key: 'import-sql',
           icon: <UploadOutlined />,
           label: '执行 SQL 文件',
-          onClick: () => {
-            const conn = openConnections.find((c) => c.id === connId)
-            setImportSqlModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName })
-          },
-        },
-        { type: 'divider' },
-        {
-          key: 'drop-db',
-          icon: <DeleteOutlined />,
-          label: '删除数据库',
-          danger: true,
-          onClick: () => {
-            Modal.confirm({
-              title: `确认删除数据库「${dbName}」？`,
-              content: '此操作不可恢复，数据库中的所有数据将被永久删除。',
-              okText: '删除',
-              okType: 'danger',
-              cancelText: '取消',
-              onOk: async () => {
-                try {
-                  await metadataApi.dropDatabase(connId, dbName)
-                  toast.success(`数据库「${dbName}」已删除`)
-                  loadDatabases(connId)
-                  if (selectedCtx?.connectionId === connId && selectedCtx?.database === dbName) {
-                    setSelectedCtx({ connectionId: connId })
+          onClick: () => setImportSqlModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName }),
+        })
+      }
+      if (cap.metadata.schemas) {
+        items.push(
+          { type: 'divider' },
+          {
+            key: 'drop-db',
+            icon: <DeleteOutlined />,
+            label: '删除数据库',
+            danger: true,
+            onClick: () => {
+              Modal.confirm({
+                title: `确认删除数据库「${dbName}」？`,
+                content: '此操作不可恢复，数据库中的所有数据将被永久删除。',
+                okText: '删除',
+                okType: 'danger',
+                cancelText: '取消',
+                onOk: async () => {
+                  try {
+                    await metadataApi.dropDatabase(connId, dbName)
+                    toast.success(`数据库「${dbName}」已删除`)
+                    loadDatabases(connId)
+                    if (selectedCtx?.connectionId === connId && selectedCtx?.database === dbName) {
+                      setSelectedCtx({ connectionId: connId })
+                    }
+                  } catch (e) {
+                    handleApiError(e, '删除数据库失败')
                   }
-                } catch (e) {
-                  handleApiError(e, '删除数据库失败')
-                }
-              },
-            })
+                },
+              })
+            },
           },
-        },
-      ]
+        )
+      }
+      return items
     }
     // 分类节点（表/视图/触发器）
     if (nodeKey.startsWith('cat:')) {
@@ -1163,8 +1169,10 @@ export const WorkbenchPage: React.FC = () => {
       const connId = parts[0]
       const dbName = parts[1]
       const catKey = parts.slice(2).join(':')
+      const conn = openConnections.find((c) => c.id === connId)
+      const cap = getDbCapabilities(conn?.dbType ?? null)
       const items: MenuProps['items'] = []
-      if (catKey === 'tables') {
+      if (catKey === 'tables' && cap.workbench.tableDesigner) {
         items.push({
           key: 'create-table',
           icon: <PlusOutlined />,
@@ -2356,7 +2364,13 @@ export const WorkbenchPage: React.FC = () => {
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--glass-panel-hover)' }}
                 onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
                 onClick={() => {
-                  if (item.onClick) item.onClick({ key: String(item.key), keyPath: [String(item.key)], domEvent: new MouseEvent('click') } as any)
+                  if (item.onClick) {
+                    item.onClick({
+                      key: String(item.key),
+                      keyPath: [String(item.key)],
+                      domEvent: new MouseEvent('click'),
+                    } as unknown as Parameters<NonNullable<typeof item.onClick>>[0])
+                  }
                   setTreeCtxMenu(null)
                 }}
               >

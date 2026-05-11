@@ -37,19 +37,22 @@ import { useCommandStore } from '@/stores/commandStore'
 import { useThemeStore } from '@/stores/themeStore'
 import { ConnectionStatusTag } from '@/components/StatusTag'
 import { CommandPalette } from '@/components/CommandPalette'
+import { getDbCapabilities } from '@/utils/dbCapabilities'
 
 const { Sider, Content, Header } = Layout
 const { Text } = Typography
 
-const menuItems = [
+type CapabilityCheck = (cap: ReturnType<typeof getDbCapabilities>) => boolean
+
+const allMenuItems: Array<{ key: string; icon: React.ReactNode; label: string; check?: CapabilityCheck }> = [
   { key: '/connection', icon: <ApiOutlined />, label: '连接管理' },
   { key: '/workbench', icon: <DatabaseOutlined />, label: '工作台' },
-  { key: '/migration', icon: <SwapOutlined />, label: '数据迁移' },
-  { key: '/sync', icon: <SyncOutlined />, label: '数据同步' },
-  { key: '/structure-compare', icon: <DiffOutlined />, label: '结构对比' },
+  { key: '/migration', icon: <SwapOutlined />, label: '数据迁移', check: (c) => c.tasks.migration },
+  { key: '/sync', icon: <SyncOutlined />, label: '数据同步', check: (c) => c.tasks.sync },
+  { key: '/structure-compare', icon: <DiffOutlined />, label: '结构对比', check: (c) => c.tasks.structureCompare },
   { key: '/task-center', icon: <UnorderedListOutlined />, label: '任务中心' },
-  { key: '/data-tracker', icon: <ThunderboltOutlined />, label: '数据追踪' },
-  { key: '/slow-query',   icon: <SearchOutlined />,      label: '慢查询分析' },
+  { key: '/data-tracker', icon: <ThunderboltOutlined />, label: '数据追踪', check: (c) => c.diagnostics.dataTracker },
+  { key: '/slow-query',   icon: <SearchOutlined />,      label: '慢查询分析', check: (c) => c.diagnostics.slowQuery },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' },
 ]
 
@@ -79,11 +82,15 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const unregisterCommand = useCommandStore((s) => s.unregisterCommand)
 
   const activeConnectionName = useWorkbenchStore((s) => s.activeConnectionName)
+  const activeDbType = useWorkbenchStore((s) => s.activeDbType)
   const activeDatabase = useWorkbenchStore((s) => s.activeDatabase)
   const siderCollapsed = useWorkbenchStore((s) => s.siderCollapsed)
   const setSiderCollapsed = useWorkbenchStore((s) => s.setSiderCollapsed)
 
   const currentTitle = pageTitle[location.pathname] ?? ''
+
+  const capabilities = getDbCapabilities(activeDbType)
+  const menuItems = allMenuItems.filter(item => !item.check || item.check(capabilities))
 
   useEffect(() => {
     const defaultCommands = [

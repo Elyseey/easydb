@@ -223,7 +223,7 @@ export const ConnectionPage: React.FC = () => {
   }
 
   const handleEnterWorkbench = (conn: ConnectionConfig) => {
-    addOpenConnection(conn.id, conn.name)
+    addOpenConnection(conn.id, conn.name, conn.dbType)
     navigate('/workbench')
   }
 

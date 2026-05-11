@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import {
   Modal, Form, Input, InputNumber, Select, Tabs, Switch, Typography,
 } from 'antd'
-import type { ConnectionConfig, ConnectionGroup } from '@/types'
+import type { ConnectionConfig, ConnectionGroup, DbType } from '@/types'
 
 const { Text } = Typography
 
@@ -30,6 +30,17 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
   const [sslEnabled, setSslEnabled] = useState(false)
   const [sshAuthType, setSshAuthType] = useState<'password' | 'privateKey'>('password')
 
+  const dbType = Form.useWatch('dbType', form)
+
+  const DB_DEFAULTS: Record<DbType, { port: number; username: string; databasePlaceholder: string }> = {
+    mysql: { port: 3306, username: 'root', databasePlaceholder: '可选，连接后自动切换' },
+    dameng: { port: 5236, username: 'SYSDBA', databasePlaceholder: '可选，默认 schema' },
+    postgresql: { port: 5432, username: 'postgres', databasePlaceholder: '可选' },
+    oracle: { port: 1521, username: 'system', databasePlaceholder: '可选' },
+    sqlserver: { port: 1433, username: 'sa', databasePlaceholder: '可选' },
+    sqlite: { port: 0, username: '', databasePlaceholder: '文件路径' },
+  }
+
   // 弹窗打开时重置表单
   React.useEffect(() => {
     if (open) {
@@ -49,6 +60,19 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
       }
     }
   }, [open, editingConnection, form])
+
+  // 切换数据库类型时更新默认值（仅新建模式）
+  React.useEffect(() => {
+    if (open && !editingConnection && dbType) {
+      const defaults = DB_DEFAULTS[dbType as DbType]
+      if (defaults) {
+        form.setFieldsValue({
+          port: defaults.port,
+          username: defaults.username,
+        })
+      }
+    }
+  }, [dbType, open, editingConnection, form])
 
   const handleSave = () => {
     form.validateFields().then((values) => {
@@ -128,6 +152,7 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                     <Select
                       options={[
                         { value: 'mysql', label: 'MySQL' },
+                        { value: 'dameng', label: '达梦' },
                         { value: 'postgresql', label: 'PostgreSQL', disabled: true },
                       ]}
                     />
@@ -149,7 +174,7 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                     </Form.Item>
                   </div>
                   <Form.Item name="database" label="默认数据库">
-                    <Input placeholder="可选，连接后自动切换" />
+                    <Input placeholder={DB_DEFAULTS[dbType as DbType]?.databasePlaceholder ?? '可选'} />
                   </Form.Item>
                 </>
               ),

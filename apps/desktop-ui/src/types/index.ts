@@ -1,7 +1,7 @@
 // 全局类型定义
 
 // 数据库类型
-export type DbType = 'mysql' | 'postgresql' | 'oracle' | 'sqlserver' | 'sqlite'
+export type DbType = 'mysql' | 'dameng' | 'postgresql' | 'oracle' | 'sqlserver' | 'sqlite'
 
 // 连接状态
 export type ConnectionStatus = 'connected' | 'disconnected' | 'connecting' | 'error'
@@ -118,6 +118,7 @@ export interface SqlResult {
   sql: string
   executedAt: string
   error?: string
+  warning?: string
 }
 
 // SQL 历史记录
