@@ -91,6 +91,37 @@ interface MetadataAdapter {
 }
 
 // ─── 方言适配器 ───────────────────────────────────────────
+
+/**
+ * 分页策略：跨方言公共语法模式（不是某个驱动的私有 SQL）。
+ * 标准拼法在此内置，新驱动只需声明即可工作；遇到方言怪癖再 override buildPaginationSql。
+ */
+enum class PaginationStrategy {
+    /** MySQL / PostgreSQL / SQLite / TiDB / OceanBase MySQL / ClickHouse / 人大金仓(PG模式) */
+    LIMIT_OFFSET,
+
+    /** SQL Server 2012+ / Oracle 12c+ / 达梦 DM8 / SQL:2008 标准 */
+    OFFSET_FETCH,
+
+    /** Oracle 11g / 达梦旧版 / 人大金仓 Oracle 模式 */
+    ROWNUM_SUBQUERY,
+
+    /** SQL Server 旧版 / Sybase（前缀型，仅支持取前 N 条，不支持 offset 时退化） */
+    TOP_N;
+
+    fun apply(innerSql: String, limit: Int, offset: Int): String = when (this) {
+        LIMIT_OFFSET ->
+            "SELECT * FROM ($innerSql) _easydb_page LIMIT $limit OFFSET $offset"
+        OFFSET_FETCH ->
+            "SELECT * FROM ($innerSql) _easydb_page OFFSET $offset ROWS FETCH NEXT $limit ROWS ONLY"
+        ROWNUM_SUBQUERY ->
+            "SELECT * FROM (SELECT _easydb_inner.*, ROWNUM _easydb_rn FROM ($innerSql) _easydb_inner WHERE ROWNUM <= ${limit + offset}) WHERE _easydb_rn > $offset"
+        TOP_N ->
+            if (offset == 0) "SELECT TOP $limit * FROM ($innerSql) _easydb_page"
+            else throw UnsupportedOperationException("TOP_N 策略不支持 offset > 0；该方言应改用 ROWNUM_SUBQUERY 或 OFFSET_FETCH")
+    }
+}
+
 interface DialectAdapter {
     fun quoteIdentifier(name: String): String
     fun buildCreateTable(table: TableDefinition): String
@@ -121,6 +152,28 @@ interface DialectAdapter {
         if (value == null) return "NULL"
         return "'${value.replace("'", "''")}'"
     }
+
+    /**
+     * 生成切换目标数据库/schema 的 SQL。
+     *   MySQL → USE `db`
+     *   PG    → SET search_path TO "schema"
+     *   DM    → 返回 null（连接串中指定 schema，无需切换）
+     * 返回 null 表示该数据库不需要切换语句。
+     */
+    fun buildSwitchDatabaseSql(database: String): String?
+
+    /**
+     * 方言分页能力声明：每个方言实现必须显式选择策略。
+     * 不提供默认值 → 编译期阻止"新驱动忘选策略导致复制 MySQL 拼法静默失效"。
+     */
+    val paginationStrategy: PaginationStrategy
+
+    /**
+     * 生成分页 SQL：默认走 paginationStrategy.apply()。
+     * 仅当方言有怪癖（特殊 alias 引号、子查询包装规则等）时才 override。
+     */
+    fun buildPaginationSql(sql: String, limit: Int, offset: Int): String =
+        paginationStrategy.apply(sql, limit, offset)
 }
 
 // ─── 同步适配器 ───────────────────────────────────────────

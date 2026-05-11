@@ -65,4 +65,10 @@ class MysqlDialectAdapter : DialectAdapter {
         val placeholders = columns.joinToString(", ") { "?" }
         return "INSERT INTO ${quoteIdentifier(tableName)} ($cols) VALUES ($placeholders)"
     }
+
+    override fun buildSwitchDatabaseSql(database: String): String {
+        return "USE `${database.replace("`", "``")}`"
+    }
+
+    override val paginationStrategy: PaginationStrategy = PaginationStrategy.LIMIT_OFFSET
 }

@@ -21,6 +21,7 @@ import kotlinx.serialization.Serializable
 // ─── 数据库类型枚举 ────────────────────────────────────────
 enum class DbType(val displayName: String) {
     MYSQL("MySQL"),
+    DAMENG("达梦"),
     POSTGRESQL("PostgreSQL"),
     ORACLE("Oracle"),
     SQLSERVER("SQL Server"),

@@ -134,7 +134,13 @@ class MysqlMetadataAdapter : MetadataAdapter {
         val indexes = try { getIndexes(session, database, table) } catch (_: Exception) { emptyList() }
         val ddl = getDdl(session, database, table)
         val tableInfo = TableInfo(name = table, schema = database)
-        return TableDefinition(table = tableInfo, columns = columns, indexes = indexes, ddl = ddl)
+        return TableDefinition(
+            table = tableInfo,
+            columns = columns,
+            indexes = indexes,
+            ddl = ddl,
+            ddlSource = if (ddl.isNotBlank()) "native" else null
+        )
     }
 
     private fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> {
