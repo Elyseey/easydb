@@ -20,14 +20,16 @@ private val backupTaskScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
 fun Route.backupRoutes() {
     val backupService = LogicalBackupService()
+    val adapterRegistry = ServiceRegistry.adapterRegistry
 
     post("/estimate") {
         val config = call.receive<BackupConfig>()
         val session = ServiceRegistry.connectionManager.getPrimarySession(config.connectionId)
             ?: return@post call.fail("NOT_CONNECTED", "连接未激活，请先打开连接")
-            
-        val metadataAdapter = com.easydb.drivers.mysql.MysqlMetadataAdapter()
-        
+
+        val dbAdapter = adapterRegistry.get(session.config.dbType)
+        val metadataAdapter = dbAdapter.metadataAdapter()
+
         // 在 IO 线程执行阻塞 JDBC 查询，并设置 15s 超时防止无限阻塞
         val tables = withContext(Dispatchers.IO) {
             withTimeoutOrNull(15_000L) {
@@ -57,17 +59,19 @@ fun Route.backupRoutes() {
         val config = call.receive<BackupConfig>()
         val connConfig = ServiceRegistry.connectionStore.getById(config.connectionId)
             ?: return@post call.fail("NOT_FOUND", "连接配置不存在")
-            
+
+        val dbAdapter = adapterRegistry.get(connConfig.dbType)
+
         val taskName = "Backup ${config.database}"
         val taskInfo = ServiceRegistry.taskManager.createTask(taskName, "backup")
-        
+
         backupTaskScope.launch {
             val reporter = ServiceRegistry.taskManager.createReporter(taskInfo.id)
             val startTime = System.currentTimeMillis()
             reporter.onStep("Init", TaskStatus.RUNNING, "Starting logical backup...")
-            
+
             try {
-                val res = backupService.execute(config, connConfig, reporter)
+                val res = backupService.execute(config, connConfig, reporter, dbAdapter)
                 ServiceRegistry.taskManager.markCompleted(taskInfo.id, System.currentTimeMillis() - startTime, res)
             } catch (e: Exception) {
                 if (reporter.isCancelled()) {

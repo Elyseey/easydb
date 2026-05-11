@@ -1,8 +1,6 @@
 package com.easydb.backup
 
 import com.easydb.common.*
-import com.easydb.drivers.mysql.MysqlConnectionAdapter
-import com.easydb.drivers.mysql.MysqlMetadataAdapter
 import java.io.File
 import java.sql.Connection
 import java.sql.ResultSet
@@ -10,24 +8,38 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.UUID
 
+data class ConsistentSnapshotInfo(
+    val level: String,
+    val binlogFile: String?,
+    val binlogPos: Long?
+)
+
 class LogicalBackupService(
     private val storageDir: File = File(System.getProperty("user.home"), ".easydb")
 ) {
-    private val metadataAdapter = MysqlMetadataAdapter()
+    fun execute(config: BackupConfig, connectionConfig: ConnectionConfig, reporter: TaskReporter, adapter: DatabaseAdapter): TaskResult {
+        val dbType = adapter.dbType()
+        val metadataAdapter = adapter.metadataAdapter()
+        val dialectAdapter = adapter.dialectAdapter()
+        val connectionAdapter = adapter.connectionAdapter()
 
-    // 简洁专业的文件名格式：database_YYYYMMDD_HHMM.edbkp
-    private val timestampFormat = SimpleDateFormat("yyyyMMdd_HHmm")
-    
-    fun execute(config: BackupConfig, connectionConfig: ConnectionConfig, reporter: TaskReporter): TaskResult {
         // Create dedicated connection for backup
-        val adapter = MysqlConnectionAdapter()
-        val backupSession = adapter.open(connectionConfig.copy(database = config.database))
+        val backupSession = connectionAdapter.open(connectionConfig.copy(database = config.database))
         val backupConn = backupSession.getJdbcConnection()
         backupConn.isReadOnly = true
 
-        // Consistent snapshot locking
-        val snapshot = MysqlConsistentSnapshot.begin(backupConn)
+        // Consistent snapshot (MySQL-only, other DBs use best_effort)
+        var mysqlSnapshot: MysqlConsistentSnapshot.SnapshotInfo? = null
+        val snapshotInfo = if (dbType == DbType.MYSQL) {
+            val s = MysqlConsistentSnapshot.begin(backupConn)
+            mysqlSnapshot = s
+            ConsistentSnapshotInfo(s.level, s.binlogFile, s.binlogPos)
+        } else {
+            ConsistentSnapshotInfo("best_effort", null, null)
+        }
         
+        val timestampFormat = SimpleDateFormat("yyyyMMdd_HHmm")
+
         val backupsDir = if (config.outputPath?.isNotBlank() == true) {
             File(config.outputPath!!).apply { mkdirs() }
         } else {
@@ -39,11 +51,17 @@ class LogicalBackupService(
         val writer = BackupPackageWriter(workDir)
         
         try {
-            val dbCharset = queryScalar(backupConn, "SELECT @@character_set_database") ?: "utf8mb4"
-            val dbCollation = queryScalar(backupConn, "SELECT @@collation_database") ?: "utf8mb4_general_ci"
-            val serverVersion = queryScalar(backupConn, "SELECT VERSION()") ?: "unknown"
-            
-            val dbDdl = "CREATE DATABASE IF NOT EXISTS `${config.database}` CHARACTER SET $dbCharset COLLATE $dbCollation;"
+            val dbCharset = try { queryScalar(backupConn, "SELECT @@character_set_database") ?: "utf8mb4" } catch (_: Exception) { "utf8mb4" }
+            val dbCollation = if (dbType == DbType.MYSQL) {
+                try { queryScalar(backupConn, "SELECT @@collation_database") ?: "utf8mb4_general_ci" } catch (_: Exception) { "utf8mb4_general_ci" }
+            } else null
+            val serverVersion = try { queryScalar(backupConn, "SELECT VERSION()") ?: "unknown" } catch (_: Exception) { "unknown" }
+
+            val dbDdl = if (dbType == DbType.MYSQL) {
+                "CREATE DATABASE IF NOT EXISTS ${dialectAdapter.quoteIdentifier(config.database)} CHARACTER SET $dbCharset COLLATE ${dbCollation ?: "utf8mb4_general_ci"};"
+            } else {
+                "CREATE DATABASE IF NOT EXISTS ${dialectAdapter.quoteIdentifier(config.database)};"
+            }
             writer.writeString("schema/000_database.sql", dbDdl)
             
             // Generate list of tables to backup
@@ -72,7 +90,8 @@ class LogicalBackupService(
                     dataPaths.addAll(
                         exportTableData(
                             backupConn, config.database, table.name, writer, reporter,
-                            baseProgress, tableProgressRange, idx, tablesToBackup.size, table.rowCount ?: 0L
+                            baseProgress, tableProgressRange, idx, tablesToBackup.size, table.rowCount ?: 0L,
+                            dialectAdapter
                         )
                     )
                 }
@@ -131,7 +150,7 @@ class LogicalBackupService(
             val manifest = BackupManifest(
                 formatVersion = 1,
                 appVersion = "1.0",
-                dbType = "mysql",
+                dbType = dbType.name.lowercase(),
                 serverVersion = serverVersion,
                 database = config.database,
                 mode = config.mode,
@@ -139,9 +158,9 @@ class LogicalBackupService(
                 collation = dbCollation,
                 startedAt = timestamp,
                 completedAt = timestampFormat.format(Date()),
-                consistency = snapshot.level,
-                binlogFile = snapshot.binlogFile,
-                binlogPosition = snapshot.binlogPos,
+                consistency = snapshotInfo.level,
+                binlogFile = snapshotInfo.binlogFile,
+                binlogPosition = snapshotInfo.binlogPos,
                 tables = tableEntries,
                 objects = objectEntries
             )
@@ -169,7 +188,9 @@ class LogicalBackupService(
             )
             
         } finally {
-            MysqlConsistentSnapshot.release(snapshot)
+            if (mysqlSnapshot != null) {
+                try { MysqlConsistentSnapshot.release(mysqlSnapshot) } catch (_: Exception) {}
+            }
             try { backupSession.close() } catch (_: Exception) {}
             writer.cleanup()
         }
@@ -197,7 +218,8 @@ class LogicalBackupService(
         progressRange: Int,
         tableIdx: Int,
         totalTables: Int,
-        rowEstimate: Long
+        rowEstimate: Long,
+        dialect: DialectAdapter
     ): List<String> {
         val dataPaths = mutableListOf<String>()
         var partIndex = 1
@@ -206,17 +228,19 @@ class LogicalBackupService(
         
         val maxRowsPerChunk = 100_000L
         
-        // STREAMING Mode for MySQL: we use Integer.MIN_VALUE for fetchSize
-        // but since it's a generic JDBC approach we can use 1000 and ensure TYPE_FORWARD_ONLY
+        // STREAMING Mode: use Integer.MIN_VALUE for MySQL streaming, 1000 for other DBs
         conn.createStatement(ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY).use { stmt ->
-            // Use Integer.MIN_VALUE to trigger MySQL's streaming result set and completely bypass JVM memory
-            stmt.fetchSize = Integer.MIN_VALUE 
-            stmt.queryTimeout = 14400 
-            
-            stmt.executeQuery("SELECT * FROM `$database`.`$tableName`").use { rs ->
+            if (conn.metaData.databaseProductName.lowercase().contains("mysql")) {
+                stmt.fetchSize = Integer.MIN_VALUE
+            } else {
+                stmt.fetchSize = 1000
+            }
+            stmt.queryTimeout = 14400
+
+            stmt.executeQuery("SELECT * FROM ${dialect.quoteIdentifier(tableName)}").use { rs ->
                 val meta = rs.metaData
                 val colCount = meta.columnCount
-                val cols = (1..colCount).joinToString(", ") { "`${meta.getColumnName(it)}`" }
+                val cols = (1..colCount).joinToString(", ") { dialect.quoteIdentifier(meta.getColumnName(it)) }
                 
                 var dataWriter: BackupPackageWriter.DataWriter? = null
                 var currentPath = ""
@@ -243,7 +267,7 @@ class LogicalBackupService(
                     }
 
                     if (batchCount == 0) {
-                        dataWriter!!.write("INSERT INTO `$tableName` ($cols) VALUES\n(")
+                        dataWriter!!.write("INSERT INTO ${dialect.quoteIdentifier(tableName)} ($cols) VALUES\n(")
                     } else {
                         dataWriter!!.write(",\n(")
                     }

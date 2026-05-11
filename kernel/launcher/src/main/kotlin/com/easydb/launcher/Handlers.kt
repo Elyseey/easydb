@@ -19,8 +19,6 @@ package com.easydb.launcher
 import com.easydb.api.ok
 import com.easydb.api.fail
 import com.easydb.common.*
-import com.easydb.drivers.mysql.MysqlConnectionAdapter
-import com.easydb.drivers.mysql.MysqlDatabaseSession
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.request.*
@@ -40,7 +38,6 @@ private val taskScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 // ─── 连接管理路由 ──────────────────────────────────────────
 fun Route.connectionRoutes() {
     val store = ServiceRegistry.connectionStore
-    val adapter = ServiceRegistry.mysqlAdapter
     val connMgr = ServiceRegistry.connectionManager
     val querySessionMgr = ServiceRegistry.sqlQuerySessionManager
 
@@ -81,6 +78,7 @@ fun Route.connectionRoutes() {
     // 测试连接
     post("/test") {
         val config = call.receive<ConnectionConfig>()
+        val adapter = ServiceRegistry.adapterRegistry.get(config.dbType)
         val result = adapter.connectionAdapter().testConnection(config)
         call.ok(result)
     }
@@ -111,7 +109,7 @@ fun Route.connectionRoutes() {
                 config
             }
 
-            connMgr.openSession(adapter.connectionAdapter(), effectiveConfig)
+            connMgr.openSession(ServiceRegistry.adapterRegistry.get(effectiveConfig.dbType).connectionAdapter(), effectiveConfig)
             store.updateStatus(id, "connected")
             call.ok(store.getById(id)!!.masked())
         } catch (e: Exception) {
@@ -216,18 +214,20 @@ private fun parseTableDefinition(body: kotlinx.serialization.json.JsonObject): T
 
 // ─── 元数据路由 ────────────────────────────────────────────
 fun Route.metadataRoutes() {
-    val adapter = ServiceRegistry.mysqlAdapter
     val connMgr = ServiceRegistry.connectionManager
+
+    fun adapterFor(session: DatabaseSession): DatabaseAdapter =
+        ServiceRegistry.adapterRegistry.get(session.config.dbType)
 
     get("/{connectionId}/databases") {
         val session = getSessionOrFail(call, connMgr) ?: return@get
-        call.ok(adapter.metadataAdapter().listDatabases(session))
+        call.ok(adapterFor(session).metadataAdapter().listDatabases(session))
     }
 
     // 获取字符集列表（必须在 /{connectionId}/{database} 参数路由之前注册）
     get("/{connectionId}/charsets") {
         val session = getSessionOrFail(call, connMgr) ?: return@get
-        call.ok(adapter.metadataAdapter().listCharsets(session))
+        call.ok(adapterFor(session).metadataAdapter().listCharsets(session))
     }
 
     // 新建数据库
@@ -239,7 +239,7 @@ fun Route.metadataRoutes() {
                 ?: return@post call.fail("INVALID_REQUEST", "缺少 name 参数")
             val charset = body["charset"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content } ?: "utf8mb4"
             val collation = body["collation"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content } ?: "utf8mb4_general_ci"
-            adapter.metadataAdapter().createDatabase(session, name, charset, collation)
+            adapterFor(session).metadataAdapter().createDatabase(session, name, charset, collation)
             call.ok(true)
         } catch (e: Exception) {
             call.fail("CREATE_DB_FAILED", e.message ?: "创建数据库失败")
@@ -251,7 +251,7 @@ fun Route.metadataRoutes() {
         val session = getSessionOrFail(call, connMgr) ?: return@delete
         val database = call.parameters["database"]!!
         try {
-            adapter.metadataAdapter().dropDatabase(session, database)
+            adapterFor(session).metadataAdapter().dropDatabase(session, database)
             call.ok(true)
         } catch (e: Exception) {
             call.fail("DROP_DB_FAILED", e.message ?: "删除数据库失败")
@@ -267,7 +267,7 @@ fun Route.metadataRoutes() {
                 ?: return@post call.fail("INVALID_REQUEST", "缺少 name 参数")
             val charset = (body["charset"] as? kotlinx.serialization.json.JsonPrimitive)?.content
             val collation = (body["collation"] as? kotlinx.serialization.json.JsonPrimitive)?.content
-            val dialect = adapter.dialectAdapter()
+            val dialect = adapterFor(session).dialectAdapter()
             val sql = buildString {
                 append("ALTER DATABASE ${dialect.quoteIdentifier(name)}")
                 if (!charset.isNullOrBlank()) append(" CHARACTER SET $charset")
@@ -291,7 +291,7 @@ fun Route.metadataRoutes() {
                 ?: return@post call.fail("INVALID_REQUEST", "缺少 oldName 参数")
             val newName = (body["newName"] as? kotlinx.serialization.json.JsonPrimitive)?.content
                 ?: return@post call.fail("INVALID_REQUEST", "缺少 newName 参数")
-            val dialect = adapter.dialectAdapter()
+            val dialect = adapterFor(session).dialectAdapter()
             val sql = "RENAME TABLE ${dialect.quoteIdentifier(database)}.${dialect.quoteIdentifier(oldName)} TO ${dialect.quoteIdentifier(database)}.${dialect.quoteIdentifier(newName)}"
             val jdbcConn = session.getJdbcConnection()
             jdbcConn.createStatement().use { it.execute(sql) }
@@ -304,7 +304,7 @@ fun Route.metadataRoutes() {
     get("/{connectionId}/{database}/objects") {
         val session = getSessionOrFail(call, connMgr) ?: return@get
         val database = call.parameters["database"]!!
-        val metaAdapter = adapter.metadataAdapter()
+        val metaAdapter = adapterFor(session).metadataAdapter()
         val tables = metaAdapter.listTables(session, database)
         val triggers = metaAdapter.listTriggers(session, database).map { trigger ->
             TableInfo(
@@ -330,7 +330,7 @@ fun Route.metadataRoutes() {
         val database = call.parameters["database"]!!
         val table = call.parameters["table"]!!
         try {
-            call.ok(adapter.metadataAdapter().getTableDefinition(session, database, table))
+            call.ok(adapterFor(session).metadataAdapter().getTableDefinition(session, database, table))
         } catch (e: Exception) {
             System.err.println("[EasyDB] getTableDefinition failed for $database.$table: ${e.message}")
             call.ok(com.easydb.common.TableDefinition(
@@ -344,7 +344,7 @@ fun Route.metadataRoutes() {
         val session = getSessionOrFail(call, connMgr) ?: return@get
         val database = call.parameters["database"]!!
         val table = call.parameters["table"]!!
-        call.ok(adapter.metadataAdapter().getIndexes(session, database, table))
+        call.ok(adapterFor(session).metadataAdapter().getIndexes(session, database, table))
     }
 
     post("/{connectionId}/{database}/tables/{table}/preview") {
@@ -357,7 +357,7 @@ fun Route.metadataRoutes() {
         val orderBy = (body["orderBy"] as? kotlinx.serialization.json.JsonPrimitive)?.content
         val offset = (body["offset"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull() ?: 0
         try {
-            call.ok(adapter.metadataAdapter().previewRows(session, database, table, limit, where, orderBy, offset))
+            call.ok(adapterFor(session).metadataAdapter().previewRows(session, database, table, limit, where, orderBy, offset))
         } catch (e: Exception) {
             System.err.println("[EasyDB] previewRows failed for $database.$table: ${e.message}")
             call.respond(io.ktor.http.HttpStatusCode.InternalServerError, mapOf("error" to (e.message ?: "unknown"), "type" to e.javaClass.simpleName))
@@ -369,7 +369,7 @@ fun Route.metadataRoutes() {
         val database = call.parameters["database"]!!
         val table = call.parameters["table"]!!
         try {
-            call.ok(adapter.metadataAdapter().getDdl(session, database, table))
+            call.ok(adapterFor(session).metadataAdapter().getDdl(session, database, table))
         } catch (e: Exception) {
             call.ok("")
         }
@@ -381,7 +381,7 @@ fun Route.metadataRoutes() {
         try {
             val body = call.receive<kotlinx.serialization.json.JsonObject>()
             val tableDef = parseTableDefinition(body)
-            val ddl = adapter.dialectAdapter().buildCreateTable(tableDef)
+            val ddl = adapterFor(session).dialectAdapter().buildCreateTable(tableDef)
             val escaped = ddl.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
             call.respondText("""{"success":true,"data":{"ddl":"$escaped"}}""", io.ktor.http.ContentType.Application.Json)
         } catch (e: Exception) {
@@ -396,11 +396,12 @@ fun Route.metadataRoutes() {
         try {
             val body = call.receive<kotlinx.serialization.json.JsonObject>()
             val tableDef = parseTableDefinition(body)
+            val adapter = adapterFor(session)
             val ddl = adapter.dialectAdapter().buildCreateTable(tableDef)
 
             val jdbcConn = session.getJdbcConnection()
             jdbcConn.createStatement().use { stmt ->
-                stmt.execute("USE ${adapter.dialectAdapter().quoteIdentifier(database)}")
+                adapter.dialectAdapter().buildSwitchDatabaseSql(database)?.let { stmt.execute(it) }
                 stmt.execute(ddl)
             }
             val escaped = ddl.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
@@ -417,9 +418,9 @@ fun Route.metadataRoutes() {
         val table = call.parameters["table"]!!
         try {
             val jdbcConn = session.getJdbcConnection()
-            val dialect = adapter.dialectAdapter()
+            val dialect = adapterFor(session).dialectAdapter()
             jdbcConn.createStatement().use { stmt ->
-                stmt.execute("USE ${dialect.quoteIdentifier(database)}")
+                dialect.buildSwitchDatabaseSql(database)?.let { stmt.execute(it) }
                 stmt.execute("DROP TABLE ${dialect.quoteIdentifier(table)}")
             }
             call.ok(true)
@@ -435,9 +436,9 @@ fun Route.metadataRoutes() {
         val table = call.parameters["table"]!!
         try {
             val jdbcConn = session.getJdbcConnection()
-            val dialect = adapter.dialectAdapter()
+            val dialect = adapterFor(session).dialectAdapter()
             jdbcConn.createStatement().use { stmt ->
-                stmt.execute("USE ${dialect.quoteIdentifier(database)}")
+                dialect.buildSwitchDatabaseSql(database)?.let { stmt.execute(it) }
                 stmt.execute("TRUNCATE TABLE ${dialect.quoteIdentifier(table)}")
             }
             call.ok(true)
@@ -453,7 +454,7 @@ fun Route.metadataRoutes() {
         val table = call.parameters["table"]!!
         val req = call.receive<DataEditRequest>()
         val editService = DataEditService()
-        val dialect = adapter.dialectAdapter()
+        val dialect = adapterFor(session).dialectAdapter()
         val sqlStatements = editService.generateSql(dialect, table, req.changes)
 
         if (req.dryRun) {
@@ -465,7 +466,7 @@ fun Route.metadataRoutes() {
 
                 var totalAffected = 0
                 jdbcConn.createStatement().use { stmt ->
-                    stmt.execute("USE ${dialect.quoteIdentifier(database)}")
+                    dialect.buildSwitchDatabaseSql(database)?.let { stmt.execute(it) }
                     for (sql in sqlStatements) {
                         totalAffected += stmt.executeUpdate(sql)
                     }
@@ -489,11 +490,18 @@ fun Route.metadataRoutes() {
 // ─── SQL 执行路由 ──────────────────────────────────────────
 fun Route.sqlRoutes() {
     val connMgr = ServiceRegistry.connectionManager
-    val adapter = ServiceRegistry.mysqlAdapter
+    val adapterRegistry = ServiceRegistry.adapterRegistry
     val store = ServiceRegistry.connectionStore
     val sqlService = ServiceRegistry.sqlService
     val querySessionMgr = ServiceRegistry.sqlQuerySessionManager
     val historyStore = ServiceRegistry.sqlHistoryStore
+
+    /**
+     * 根据 session 的 dbType 获取对应的 DialectAdapter。
+     */
+    fun dialectFor(session: DatabaseSession): DialectAdapter {
+        return adapterRegistry.get(session.config.dbType).dialectAdapter()
+    }
 
     /**
      * 确保 SQL 会话可用：如果连接未打开，自动从 connectionStore 取 config 重连。
@@ -506,6 +514,7 @@ fun Route.sqlRoutes() {
         // 2. 尝试自动重连
         val config = store.getById(connectionId) ?: return null
         return try {
+            val adapter = adapterRegistry.get(config.dbType)
             connMgr.openSession(adapter.connectionAdapter(), config)
             store.updateStatus(connectionId, "connected")
             connMgr.getSqlSession(connectionId)
@@ -527,7 +536,7 @@ fun Route.sqlRoutes() {
             call.ok(listOf(errorResult))
             return@post
         }
-        val results = sqlService.execute(session, req.database, req.sql)
+        val results = sqlService.execute(session, req.database, req.sql, dialectFor(session))
         historyStore.add(req.connectionId, req.database, req.sql, results.first())
         call.ok(results)
     }
@@ -553,7 +562,8 @@ fun Route.sqlRoutes() {
             sql = req.sql,
             offset = req.offset,
             pageSize = req.pageSize,
-            maxCellChars = req.maxCellChars
+            maxCellChars = req.maxCellChars,
+            dialect = dialectFor(session)
         )
         if (req.offset == 0) {
             historyStore.add(req.connectionId, req.database, req.sql, result)
@@ -581,7 +591,9 @@ fun Route.sqlRoutes() {
             database = req.database,
             sql = req.sql,
             pageSize = req.pageSize,
-            maxCellChars = req.maxCellChars
+            maxCellChars = req.maxCellChars,
+            connectionAdapter = adapterRegistry.get(session.config.dbType).connectionAdapter(),
+            dialect = dialectFor(session)
         )
         historyStore.add(req.connectionId, req.database, req.sql, result)
         call.ok(result)
@@ -615,6 +627,7 @@ fun Route.sqlRoutes() {
         }
 
         val config = session.config
+        val dbAdapter = adapterRegistry.get(config.dbType)
         val task = taskMgr.createTask(
             name = "导入 ${req.database} ← ${(req.fileName ?: file.name)}",
             type = "import"
@@ -624,19 +637,18 @@ fun Route.sqlRoutes() {
         taskScope.launch {
             reporter.onProgress(1, "初始化导入环境...")
             val startTime = System.currentTimeMillis()
-            var dedicatedConn: java.sql.Connection? = null
+            var taskSession: DatabaseSession? = null
 
             try {
                 val importConfig = config.copy(database = req.database)
                 reporter.onLog("INFO", "正在验证并建立专用导入连接 [${req.database}]...")
-                dedicatedConn = withTimeout(15000L) {
-                    MysqlConnectionAdapter.createJdbcConnection(importConfig)
+                taskSession = withTimeout(15000L) {
+                    dbAdapter.connectionAdapter().open(importConfig)
                 }
                 reporter.onLog("INFO", "专用导入连接已就绪")
                 reporter.onLog("INFO", "准备导入文件: ${file.absolutePath}")
 
-                val taskSession = MysqlDatabaseSession(config.id, config, dedicatedConn)
-                val result = sqlService.importSqlFile(taskSession, req.database, file, reporter)
+                val result = sqlService.importSqlFile(taskSession, req.database, file, reporter, dbAdapter.dialectAdapter())
                 val duration = System.currentTimeMillis() - startTime
 
                 when {
@@ -652,7 +664,7 @@ fun Route.sqlRoutes() {
                     taskMgr.markFailed(task.id, e.message ?: "SQL 文件导入异常")
                 }
             } finally {
-                try { dedicatedConn?.close() } catch (_: Exception) {}
+                try { taskSession?.close() } catch (_: Exception) {}
             }
         }
 
@@ -681,6 +693,7 @@ fun Route.sqlRoutes() {
 // ─── 数据迁移路由 ──────────────────────────────────────────
 fun Route.migrationRoutes() {
     val adapter = ServiceRegistry.mysqlAdapter
+    val adapterRegistry = ServiceRegistry.adapterRegistry
     val connMgr = ServiceRegistry.connectionManager
     val taskMgr = ServiceRegistry.taskManager
 
@@ -690,6 +703,10 @@ fun Route.migrationRoutes() {
         val targetSession = connMgr.getSession(config.targetConnectionId)
         if (sourceSession == null || targetSession == null) {
             call.fail("NOT_CONNECTED", "源或目标连接未打开")
+            return@post
+        }
+        if (sourceSession.config.dbType != "mysql" || targetSession.config.dbType != "mysql") {
+            call.fail("UNSUPPORTED_MIGRATION_PAIR", "当前仅支持 MySQL → MySQL 迁移，源=${sourceSession.config.dbType}，目标=${targetSession.config.dbType}")
             return@post
         }
         val preview = adapter.migrationAdapter().preview(
@@ -706,6 +723,10 @@ fun Route.migrationRoutes() {
             call.fail("NOT_CONNECTED", "源或目标连接未打开")
             return@post
         }
+        if (sourceSession.config.dbType != "mysql" || targetSession.config.dbType != "mysql") {
+            call.fail("UNSUPPORTED_MIGRATION_PAIR", "当前仅支持 MySQL → MySQL 迁移，源=${sourceSession.config.dbType}，目标=${targetSession.config.dbType}")
+            return@post
+        }
 
         val task = taskMgr.createTask(
             name = "迁移 ${config.sourceDatabase} → ${config.targetDatabase}",
@@ -717,16 +738,15 @@ fun Route.migrationRoutes() {
         taskScope.launch {
             reporter.onProgress(0, "准备中...")
             val startTime = System.currentTimeMillis()
-            // 创建任务专用的独立 JDBC 连接
-            var dedicatedSourceConn: java.sql.Connection? = null
-            var dedicatedTargetConn: java.sql.Connection? = null
+            var taskSourceSession: com.easydb.common.DatabaseSession? = null
+            var taskTargetSession: com.easydb.common.DatabaseSession? = null
             try {
                 val sourceConfig = sourceSession.config
                 val targetConfig = targetSession.config
-                dedicatedSourceConn = MysqlConnectionAdapter.createJdbcConnection(sourceConfig)
-                dedicatedTargetConn = MysqlConnectionAdapter.createJdbcConnection(targetConfig)
-                val taskSourceSession = MysqlDatabaseSession(sourceConfig.id, sourceConfig, dedicatedSourceConn)
-                val taskTargetSession = MysqlDatabaseSession(targetConfig.id, targetConfig, dedicatedTargetConn)
+                val sourceAdapter = adapterRegistry.get(sourceConfig.dbType).connectionAdapter()
+                val targetAdapter = adapterRegistry.get(targetConfig.dbType).connectionAdapter()
+                taskSourceSession = sourceAdapter.open(sourceConfig)
+                taskTargetSession = targetAdapter.open(targetConfig)
                 reporter.onLog("INFO", "已创建任务专用连接")
 
                 val result = adapter.migrationAdapter().execute(
@@ -746,9 +766,8 @@ fun Route.migrationRoutes() {
                     taskMgr.markFailed(task.id, e.message ?: "迁移异常")
                 }
             } finally {
-                // 关闭任务专用连接
-                try { dedicatedSourceConn?.close() } catch (_: Exception) {}
-                try { dedicatedTargetConn?.close() } catch (_: Exception) {}
+                try { taskSourceSession?.close() } catch (_: Exception) {}
+                try { taskTargetSession?.close() } catch (_: Exception) {}
             }
         }
 
@@ -759,6 +778,7 @@ fun Route.migrationRoutes() {
 // ─── 数据同步路由 ──────────────────────────────────────────
 fun Route.syncRoutes() {
     val adapter = ServiceRegistry.mysqlAdapter
+    val adapterRegistry = ServiceRegistry.adapterRegistry
     val connMgr = ServiceRegistry.connectionManager
     val taskMgr = ServiceRegistry.taskManager
 
@@ -768,6 +788,10 @@ fun Route.syncRoutes() {
         val targetSession = connMgr.getSession(config.targetConnectionId)
         if (sourceSession == null || targetSession == null) {
             call.fail("NOT_CONNECTED", "源或目标连接未打开")
+            return@post
+        }
+        if (sourceSession.config.dbType != "mysql" || targetSession.config.dbType != "mysql") {
+            call.fail("UNSUPPORTED_SYNC_PAIR", "当前仅支持 MySQL → MySQL 同步，源=${sourceSession.config.dbType}，目标=${targetSession.config.dbType}")
             return@post
         }
         val preview = adapter.syncAdapter().preview(
@@ -784,6 +808,10 @@ fun Route.syncRoutes() {
             call.fail("NOT_CONNECTED", "源或目标连接未打开")
             return@post
         }
+        if (sourceSession.config.dbType != "mysql" || targetSession.config.dbType != "mysql") {
+            call.fail("UNSUPPORTED_SYNC_PAIR", "当前仅支持 MySQL → MySQL 同步，源=${sourceSession.config.dbType}，目标=${targetSession.config.dbType}")
+            return@post
+        }
 
         val task = taskMgr.createTask(
             name = "同步 ${config.sourceDatabase} → ${config.targetDatabase}",
@@ -795,16 +823,15 @@ fun Route.syncRoutes() {
         taskScope.launch {
             reporter.onProgress(0, "准备中...")
             val startTime = System.currentTimeMillis()
-            // 创建任务专用的独立 JDBC 连接
-            var dedicatedSourceConn: java.sql.Connection? = null
-            var dedicatedTargetConn: java.sql.Connection? = null
+            var taskSourceSession: com.easydb.common.DatabaseSession? = null
+            var taskTargetSession: com.easydb.common.DatabaseSession? = null
             try {
                 val sourceConfig = sourceSession.config
                 val targetConfig = targetSession.config
-                dedicatedSourceConn = MysqlConnectionAdapter.createJdbcConnection(sourceConfig)
-                dedicatedTargetConn = MysqlConnectionAdapter.createJdbcConnection(targetConfig)
-                val taskSourceSession = MysqlDatabaseSession(sourceConfig.id, sourceConfig, dedicatedSourceConn)
-                val taskTargetSession = MysqlDatabaseSession(targetConfig.id, targetConfig, dedicatedTargetConn)
+                val sourceAdapter = adapterRegistry.get(sourceConfig.dbType).connectionAdapter()
+                val targetAdapter = adapterRegistry.get(targetConfig.dbType).connectionAdapter()
+                taskSourceSession = sourceAdapter.open(sourceConfig)
+                taskTargetSession = targetAdapter.open(targetConfig)
                 reporter.onLog("INFO", "已创建任务专用连接")
 
                 val result = adapter.syncAdapter().execute(
@@ -824,9 +851,8 @@ fun Route.syncRoutes() {
                     taskMgr.markFailed(task.id, e.message ?: "同步异常")
                 }
             } finally {
-                // 关闭任务专用连接
-                try { dedicatedSourceConn?.close() } catch (_: Exception) {}
-                try { dedicatedTargetConn?.close() } catch (_: Exception) {}
+                try { taskSourceSession?.close() } catch (_: Exception) {}
+                try { taskTargetSession?.close() } catch (_: Exception) {}
             }
         }
 
@@ -901,6 +927,11 @@ fun Route.compareRoutes() {
             val targetSession = connMgr.getSession(config.targetConnectionId)
             if (targetSession == null) {
                 call.fail("NOT_CONNECTED", "目标连接未打开，请先打开连接")
+                return@post
+            }
+
+            if (sourceSession.config.dbType != "mysql" || targetSession.config.dbType != "mysql") {
+                call.fail("UNSUPPORTED_COMPARE_PAIR", "当前仅支持 MySQL → MySQL 结构对比，源=${sourceSession.config.dbType}，目标=${targetSession.config.dbType}")
                 return@post
             }
 

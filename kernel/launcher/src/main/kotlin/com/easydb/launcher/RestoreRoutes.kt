@@ -18,15 +18,16 @@ private val restoreTaskScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
 fun Route.restoreRoutes() {
     val restoreService = RestoreService()
+    val adapterRegistry = ServiceRegistry.adapterRegistry
 
     post("/inspect") {
         val data = call.receive<Map<String, String>>()
         val path = data["filePath"]
             ?: return@post call.fail("MISSING_PARAM", "缺少 filePath 参数")
-        
+
         val validator = RestoreValidator(File(path))
         val result = validator.inspect()
-        
+
         call.ok(result)
     }
 
@@ -39,6 +40,8 @@ fun Route.restoreRoutes() {
         val session = ServiceRegistry.connectionManager.getPrimarySession(config.targetConnectionId)
             ?: return@post call.fail("NOT_CONNECTED", "目标连接未激活，请先打开连接")
 
+        val dbAdapter = adapterRegistry.get(connConfig.dbType)
+
         val taskName = "Restore ${config.targetDatabase}"
         val taskInfo = ServiceRegistry.taskManager.createTask(taskName, "restore")
 
@@ -48,7 +51,7 @@ fun Route.restoreRoutes() {
             reporter.onStep("Init", TaskStatus.RUNNING, "Starting logical restore...")
 
             try {
-                val res = restoreService.execute(config, connConfig, reporter)
+                val res = restoreService.execute(config, connConfig, reporter, dbAdapter)
                 ServiceRegistry.taskManager.markCompleted(taskInfo.id, System.currentTimeMillis() - startTime, res)
             } catch (e: Exception) {
                 if (reporter.isCancelled()) {

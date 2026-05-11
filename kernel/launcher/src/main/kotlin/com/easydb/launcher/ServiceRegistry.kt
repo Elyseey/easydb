@@ -1,6 +1,7 @@
 package com.easydb.launcher
 
 import com.easydb.common.*
+import com.easydb.drivers.dameng.DamengDatabaseAdapter
 import com.easydb.drivers.mysql.MysqlDatabaseAdapter
 import com.easydb.tunnel.SshTunnelManager
 
@@ -10,6 +11,8 @@ import com.easydb.tunnel.SshTunnelManager
  */
 object ServiceRegistry {
     val mysqlAdapter = MysqlDatabaseAdapter()
+    val damengAdapter = DamengDatabaseAdapter()
+    val adapterRegistry = DatabaseAdapterRegistry(listOf(mysqlAdapter, damengAdapter))
     val connectionManager = ConnectionManager()
     val sqlService = SqlExecutionService()
     val sqlQuerySessionManager = SqlQuerySessionManager()

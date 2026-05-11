@@ -3,8 +3,6 @@ package com.easydb.launcher
 import com.easydb.api.ok
 import com.easydb.api.fail
 import com.easydb.common.*
-import com.easydb.drivers.mysql.MysqlConnectionAdapter
-import com.easydb.drivers.mysql.MysqlDatabaseSession
 import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
@@ -80,7 +78,7 @@ private const val EXPORT_MIN_DISK_SPACE_BYTES = 5L * 1024 * 1024 * 1024  // 5 GB
 private val exportTaskScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
 /**
- * 安全转义 SQL 字符串字面量，覆盖所有 MySQL 关键特殊字符。
+ * 安全转义 SQL 字符串字面量，覆盖关键特殊字符。
  * 防止导出后再次导入时因字符逃逸导致 SQL 语法断裂或数据丢失。
  */
 private fun escapeSqlLiteral(value: String): String {
@@ -113,7 +111,8 @@ private fun isBinaryColumn(columnType: Int): Boolean {
 }
 
 /**
- * 将字节数组转换为 MySQL 十六进制字面量：X'ABCD...'
+ * 将字节数组转换为十六进制字面量：X'ABCD...'
+ * 注：X'...' 格式为 SQL 标准语法，MySQL/DM/PG 均支持。
  */
 private fun bytesToHexLiteral(bytes: ByteArray): String {
     val sb = StringBuilder(bytes.size * 2 + 3)
@@ -156,11 +155,16 @@ private fun calculateExportProgress(
         .coerceIn(EXPORT_PROGRESS_MIN, EXPORT_PROGRESS_MAX_BEFORE_COMPLETE)
 }
 
+/**
+ * 加载表导出估算信息。
+ * 注意：当前使用 information_schema.tables（MySQL 特有），非 MySQL 数据库将返回默认估算值。
+ */
 private fun loadTableExportEstimates(
     connection: Connection,
     database: String,
     tables: List<String>,
-    includeData: Boolean
+    includeData: Boolean,
+    dbType: String
 ): Map<String, TableExportEstimate> {
     if (tables.isEmpty()) return emptyMap()
 
@@ -176,6 +180,11 @@ private fun loadTableExportEstimates(
         )
     }.toMutableMap()
 
+    // information_schema 是 MySQL 特有，其他数据库暂用 fallback 估算
+    if (dbType.lowercase() != "mysql") {
+        return fallback
+    }
+
     val placeholders = tables.joinToString(",") { "?" }
     val sql = """
         SELECT table_name,
@@ -185,41 +194,47 @@ private fun loadTableExportEstimates(
         WHERE table_schema = ? AND table_name IN ($placeholders)
     """.trimIndent()
 
-    connection.prepareStatement(sql).use { stmt ->
-        stmt.setString(1, database)
-        tables.forEachIndexed { index, table ->
-            stmt.setString(index + 2, table)
-        }
+    try {
+        connection.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, database)
+            tables.forEachIndexed { index, table ->
+                stmt.setString(index + 2, table)
+            }
 
-        stmt.executeQuery().use { rs ->
-            while (rs.next()) {
-                val tableName = rs.getString("table_name") ?: continue
-                val estimatedRows = rs.getLong("table_rows").coerceAtLeast(0L)
-                val estimatedBytes = rs.getLong("total_bytes").coerceAtLeast(0L)
-                fallback[tableName] = TableExportEstimate(
-                    estimatedRows = when {
-                        !includeData -> 1L
-                        estimatedRows > 0L -> estimatedRows
-                        estimatedBytes > 0L -> (estimatedBytes / 64_000L).coerceAtLeast(EXPORT_PROGRESS_UPDATE_EVERY_ROWS)
-                        else -> EXPORT_PROGRESS_UPDATE_EVERY_ROWS
-                    },
-                    estimatedBytes = estimatedBytes,
-                    progressUnits = if (!includeData) {
-                        EXPORT_PROGRESS_BASE_UNITS_PER_TABLE
-                    } else {
-                        EXPORT_PROGRESS_BASE_UNITS_PER_TABLE +
-                            estimatedRows.coerceAtLeast(EXPORT_PROGRESS_UPDATE_EVERY_ROWS)
-                                .coerceAtMost(EXPORT_PROGRESS_DATA_UNITS_CAP_PER_TABLE)
-                    }
-                )
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val tableName = rs.getString("table_name") ?: continue
+                    val estimatedRows = rs.getLong("table_rows").coerceAtLeast(0L)
+                    val estimatedBytes = rs.getLong("total_bytes").coerceAtLeast(0L)
+                    fallback[tableName] = TableExportEstimate(
+                        estimatedRows = when {
+                            !includeData -> 1L
+                            estimatedRows > 0L -> estimatedRows
+                            estimatedBytes > 0L -> (estimatedBytes / 64_000L).coerceAtLeast(EXPORT_PROGRESS_UPDATE_EVERY_ROWS)
+                            else -> EXPORT_PROGRESS_UPDATE_EVERY_ROWS
+                        },
+                        estimatedBytes = estimatedBytes,
+                        progressUnits = if (!includeData) {
+                            EXPORT_PROGRESS_BASE_UNITS_PER_TABLE
+                        } else {
+                            EXPORT_PROGRESS_BASE_UNITS_PER_TABLE +
+                                estimatedRows.coerceAtLeast(EXPORT_PROGRESS_UPDATE_EVERY_ROWS)
+                                    .coerceAtMost(EXPORT_PROGRESS_DATA_UNITS_CAP_PER_TABLE)
+                        }
+                    )
+                }
             }
         }
+    } catch (_: Exception) {
+        // information_schema 查询失败时回退到默认估算
     }
 
     return fallback
 }
 
 fun Route.exportRoutes() {
+    val adapterRegistry = ServiceRegistry.adapterRegistry
+
     get("/debug/threads") {
         val dump = StringBuilder()
         Thread.getAllStackTraces().forEach { (thread, stack) ->
@@ -244,6 +259,7 @@ fun Route.exportRoutes() {
         }
 
         val config = session.config
+        val dbAdapter = adapterRegistry.get(config.dbType)
         val task = taskMgr.createTask(
             name = "导出 ${req.database}",
             type = "export"
@@ -263,15 +279,15 @@ fun Route.exportRoutes() {
                 val exportConfig = config.copy(database = req.database)
                 reporter.onLog("INFO", "正在验证并建立专用导出连接 [${req.database}]...")
                 val exportConn = kotlinx.coroutines.withTimeout(15000L) {
-                    MysqlConnectionAdapter.createJdbcConnection(exportConfig)
+                    dbAdapter.connectionAdapter().open(exportConfig).getJdbcConnection()
                 }
                 dedicatedConn = exportConn
                 exportConn.isReadOnly = true
                 reporter.onLog("INFO", "专用连接已就绪，脱离主会话以防止心跳拥堵...")
 
-                val taskSession = MysqlDatabaseSession(config.id, config, exportConn)
-                val adapter = ServiceRegistry.mysqlAdapter.metadataAdapter()
-                val dialect = ServiceRegistry.mysqlAdapter.dialectAdapter()
+                val taskSession = dbAdapter.connectionAdapter().open(exportConfig)
+                val adapter = dbAdapter.metadataAdapter()
+                val dialect = dbAdapter.dialectAdapter()
 
                 val exportDir = File(System.getProperty("user.home"), ".easydb/exports")
                 if (!exportDir.exists()) exportDir.mkdirs()
@@ -288,7 +304,7 @@ fun Route.exportRoutes() {
                 val totalTables = req.tables.size
                 var currentTableIdx = 0
                 val includeData = shouldExportData(req.exportContent)
-                val tableEstimates = loadTableExportEstimates(exportConn, req.database, req.tables, includeData)
+                val tableEstimates = loadTableExportEstimates(exportConn, req.database, req.tables, includeData, config.dbType)
                 val totalProgressUnits = req.tables.sumOf { table ->
                     tableEstimates[table]?.progressUnits ?: if (includeData) {
                         EXPORT_PROGRESS_BASE_UNITS_PER_TABLE + EXPORT_PROGRESS_UPDATE_EVERY_ROWS
@@ -363,7 +379,7 @@ fun Route.exportRoutes() {
                                     stmt.queryTimeout = EXPORT_QUERY_TIMEOUT_SECONDS
                                     reporter.onLog("INFO", "  [DEBUG] 开始执行查询: SELECT * FROM $table...")
                                     stmt.executeQuery(
-                                        "SELECT * FROM ${dialect.quoteIdentifier(req.database)}.${dialect.quoteIdentifier(table)}"
+                                        "SELECT * FROM ${dialect.quoteIdentifier(table)}"
                                     ).use { rs ->
                                         reporter.onLog("INFO", "  [DEBUG] 查询执行完毕，获取到 ResultSet")
                                         val meta = rs.metaData
@@ -489,7 +505,7 @@ fun Route.exportRoutes() {
                                     stmt.fetchSize = 1000
                                     stmt.queryTimeout = EXPORT_QUERY_TIMEOUT_SECONDS
                                     stmt.executeQuery(
-                                        "SELECT * FROM ${dialect.quoteIdentifier(req.database)}.${dialect.quoteIdentifier(table)}"
+                                        "SELECT * FROM ${dialect.quoteIdentifier(table)}"
                                     ).use { rs ->
                                         val meta = rs.metaData
                                         val colCount = meta.columnCount
@@ -635,14 +651,15 @@ fun Route.exportRoutes() {
         var dedicatedConn: Connection? = null
         try {
             val exportConfig = session.config.copy(database = req.database)
+            val connectionAdapter = adapterRegistry.get(session.config.dbType).connectionAdapter()
             val estimateConn = kotlinx.coroutines.withTimeout(15000L) {
-                MysqlConnectionAdapter.createJdbcConnection(exportConfig)
+                connectionAdapter.open(exportConfig).getJdbcConnection()
             }
             dedicatedConn = estimateConn
             estimateConn.isReadOnly = true
 
             val includeData = shouldExportData(req.exportContent)
-            val tableEstimates = loadTableExportEstimates(estimateConn, req.database, req.tables, includeData)
+            val tableEstimates = loadTableExportEstimates(estimateConn, req.database, req.tables, includeData, session.config.dbType)
             val estimateTables = req.tables.map { tableName ->
                 val estimate = tableEstimates[tableName]
                     ?: TableExportEstimate(

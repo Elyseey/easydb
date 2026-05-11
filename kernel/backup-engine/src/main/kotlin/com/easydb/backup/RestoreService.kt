@@ -1,7 +1,6 @@
 package com.easydb.backup
 
 import com.easydb.common.*
-import com.easydb.drivers.mysql.MysqlConnectionAdapter
 import java.io.File
 import java.util.zip.GZIPInputStream
 import java.util.zip.ZipFile
@@ -10,9 +9,12 @@ class RestoreService(
     private val storageDir: File = File(System.getProperty("user.home"), ".easydb")
 ) {
 
-    fun execute(config: RestoreConfig, connectionConfig: ConnectionConfig, reporter: TaskReporter): TaskResult {
-        val adapter = MysqlConnectionAdapter()
-        val restoreSession = adapter.open(connectionConfig)
+    fun execute(config: RestoreConfig, connectionConfig: ConnectionConfig, reporter: TaskReporter, adapter: DatabaseAdapter): TaskResult {
+        val dbType = adapter.dbType()
+        val dialectAdapter = adapter.dialectAdapter()
+        val connectionAdapter = adapter.connectionAdapter()
+
+        val restoreSession = connectionAdapter.open(connectionConfig)
         val restoreConn = restoreSession.getJdbcConnection()
         restoreConn.autoCommit = true
 
@@ -29,7 +31,7 @@ class RestoreService(
         try {
             // Setup target database
             if (config.strategy == "overwrite_existing") {
-                restoreConn.createStatement().use { it.execute("DROP DATABASE IF EXISTS `${config.targetDatabase}`") }
+                restoreConn.createStatement().use { it.execute("DROP DATABASE IF EXISTS ${dialectAdapter.quoteIdentifier(config.targetDatabase)}") }
             }
             
             ZipFile(backupFile).use { zip ->
@@ -41,19 +43,23 @@ class RestoreService(
                 reporter.onProgress(5, "Preparing target database")
                 val dbDdl = extractString("schema/000_database.sql")
                 if (dbDdl != null) {
-                    val replacedDdl = dbDdl.replace("`${manifest.database}`", "`${config.targetDatabase}`")
+                    val replacedDdl = dbDdl.replace("${dialectAdapter.quoteIdentifier(manifest.database)}", dialectAdapter.quoteIdentifier(config.targetDatabase))
                     restoreConn.createStatement().use { it.execute(replacedDdl) }
                 } else {
-                    restoreConn.createStatement().use { 
-                        it.execute("CREATE DATABASE IF NOT EXISTS `${config.targetDatabase}`")
+                    restoreConn.createStatement().use {
+                        it.execute("CREATE DATABASE IF NOT EXISTS ${dialectAdapter.quoteIdentifier(config.targetDatabase)}")
                     }
                 }
-                
-                restoreConn.createStatement().use { it.execute("USE `${config.targetDatabase}`") }
-                
-                // Disable constraints
-                restoreConn.createStatement().use { it.execute("SET FOREIGN_KEY_CHECKS=0") }
-                restoreConn.createStatement().use { it.execute("SET UNIQUE_CHECKS=0") }
+
+                dialectAdapter.buildSwitchDatabaseSql(config.targetDatabase)?.let { sql ->
+                    restoreConn.createStatement().use { it.execute(sql) }
+                }
+
+                // Disable constraints (MySQL-specific, other DBs may differ)
+                if (dbType == DbType.MYSQL) {
+                    restoreConn.createStatement().use { it.execute("SET FOREIGN_KEY_CHECKS=0") }
+                    restoreConn.createStatement().use { it.execute("SET UNIQUE_CHECKS=0") }
+                }
 
                 // Determine tables to restore (apply selectedTables filter for both structure and data)
                 val tablesToRestore = if (config.selectedTables.isEmpty()) manifest.tables
@@ -75,7 +81,7 @@ class RestoreService(
                         reporter.onLog("INFO", "Creating table ${table.tableName}...")
 
                         // Drop existing table first to handle partial restore leftovers
-                        restoreConn.createStatement().use { it.execute("DROP TABLE IF EXISTS `${table.tableName}`") }
+                        restoreConn.createStatement().use { it.execute("DROP TABLE IF EXISTS ${dialectAdapter.quoteIdentifier(table.tableName)}") }
 
                         val tableDdl = extractString(table.ddlFile)
                         if (tableDdl != null) {
@@ -170,15 +176,15 @@ class RestoreService(
 
                         // Drop existing routine first
                         val dropSql = if (obj.type == "procedure") {
-                            "DROP PROCEDURE IF EXISTS `${obj.name}`"
+                            "DROP PROCEDURE IF EXISTS ${dialectAdapter.quoteIdentifier(obj.name)}"
                         } else {
-                            "DROP FUNCTION IF EXISTS `${obj.name}`"
+                            "DROP FUNCTION IF EXISTS ${dialectAdapter.quoteIdentifier(obj.name)}"
                         }
                         restoreConn.createStatement().use { it.execute(dropSql) }
 
                         val ddl = extractString(obj.ddlFile)
                         if (ddl != null) {
-                            val replaced = ddl.replace("`${manifest.database}`", "`${config.targetDatabase}`")
+                            val replaced = ddl.replace(dialectAdapter.quoteIdentifier(manifest.database), dialectAdapter.quoteIdentifier(config.targetDatabase))
                             restoreConn.createStatement().use { it.execute(replaced) }
                         }
                     }
@@ -197,11 +203,11 @@ class RestoreService(
                         reporter.onProgress(p, "Restoring view: ${obj.name}")
 
                         // Drop existing view first
-                        restoreConn.createStatement().use { it.execute("DROP VIEW IF EXISTS `${obj.name}`") }
+                        restoreConn.createStatement().use { it.execute("DROP VIEW IF EXISTS ${dialectAdapter.quoteIdentifier(obj.name)}") }
 
                         val ddl = extractString(obj.ddlFile)
                         if (ddl != null) {
-                            val replaced = ddl.replace("`${manifest.database}`", "`${config.targetDatabase}`")
+                            val replaced = ddl.replace(dialectAdapter.quoteIdentifier(manifest.database), dialectAdapter.quoteIdentifier(config.targetDatabase))
                             restoreConn.createStatement().use { it.execute(replaced) }
                         }
                     }
@@ -219,19 +225,21 @@ class RestoreService(
                         reporter.onProgress(p, "Restoring trigger: ${obj.name}")
 
                         // Drop existing trigger first
-                        restoreConn.createStatement().use { it.execute("DROP TRIGGER IF EXISTS `${obj.name}`") }
+                        restoreConn.createStatement().use { it.execute("DROP TRIGGER IF EXISTS ${dialectAdapter.quoteIdentifier(obj.name)}") }
 
                         val ddl = extractString(obj.ddlFile)
                         if (ddl != null) {
-                            val replaced = ddl.replace("`${manifest.database}`", "`${config.targetDatabase}`")
+                            val replaced = ddl.replace(dialectAdapter.quoteIdentifier(manifest.database), dialectAdapter.quoteIdentifier(config.targetDatabase))
                             restoreConn.createStatement().use { it.execute(replaced) }
                         }
                     }
                 }
 
-                // Restore constraints
-                restoreConn.createStatement().use { it.execute("SET FOREIGN_KEY_CHECKS=1") }
-                restoreConn.createStatement().use { it.execute("SET UNIQUE_CHECKS=1") }
+                // Restore constraints (MySQL-specific)
+                if (dbType == DbType.MYSQL) {
+                    restoreConn.createStatement().use { it.execute("SET FOREIGN_KEY_CHECKS=1") }
+                    restoreConn.createStatement().use { it.execute("SET UNIQUE_CHECKS=1") }
+                }
 
                 reporter.onProgress(100, "Restore completed")
 
