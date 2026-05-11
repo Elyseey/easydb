@@ -546,6 +546,7 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
                         database={r.database!}
                         tableName={editability.tableName}
                         columns={editability.columns}
+                        visibleColumns={r.columns}
                         dataSource={r.rows ?? []}
                         onRefresh={() => handleExecute()}
                         hasMore={r.preview && r.hasMore}

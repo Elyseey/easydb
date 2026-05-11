@@ -71,7 +71,7 @@ class SqlExecutionService {
     /**
      * 执行 SQL（支持多语句），返回每条语句的结果列表
      */
-    fun execute(session: DatabaseSession, database: String, sql: String): List<SqlResult> {
+    fun execute(session: DatabaseSession, database: String, sql: String, dialect: DialectAdapter): List<SqlResult> {
         val jdbcSession = session as? com.easydb.common.DatabaseSession
             ?: return listOf(SqlResult(
                 type = "error", duration = 0, sql = sql,
@@ -84,8 +84,10 @@ class SqlExecutionService {
             val conn = getConnection(jdbcSession)
 
             // 切换到目标数据库
-            conn.createStatement().use { stmt ->
-                stmt.execute("USE `$database`")
+            dialect.buildSwitchDatabaseSql(database)?.let { switchSql ->
+                conn.createStatement().use { stmt ->
+                    stmt.execute(switchSql)
+                }
             }
 
             conn.createStatement(
@@ -105,7 +107,12 @@ class SqlExecutionService {
                         val rs = stmt.resultSet
                         val meta = rs.metaData
                         val columnCount = meta.columnCount
-                        val columns = (1..columnCount).map { meta.getColumnLabel(it) }
+                        val allColumns = (1..columnCount).map { meta.getColumnLabel(it) }
+                        val easydbPrefixes = setOf("_easydb_")
+                        val columns = allColumns.filter { col -> easydbPrefixes.none { col.startsWith(it) } }
+                        val easydbColumnIndices = allColumns.mapIndexedNotNull { idx, col ->
+                            if (easydbPrefixes.any { col.startsWith(it) }) idx + 1 else null
+                        }.toSet()
                         val rows = mutableListOf<Map<String, String?>>()
                         var queryHasMore = false
 
@@ -116,6 +123,7 @@ class SqlExecutionService {
                             }
                             val row = mutableMapOf<String, String?>()
                             for (i in 1..columnCount) {
+                                if (i in easydbColumnIndices) continue
                                 val value = rs.getString(i)
                                 row[columns[i - 1]] = when {
                                     value == null -> null
@@ -181,7 +189,8 @@ class SqlExecutionService {
         sql: String,
         offset: Int,
         pageSize: Int,
-        maxCellChars: Int
+        maxCellChars: Int,
+        dialect: DialectAdapter
     ): SqlResult {
         val jdbcSession = session as? com.easydb.common.DatabaseSession
             ?: return SqlResult(
@@ -201,13 +210,14 @@ class SqlExecutionService {
         return try {
             val conn = getConnection(jdbcSession)
 
-            conn.createStatement().use { stmt ->
-                stmt.execute("USE `$database`")
+            dialect.buildSwitchDatabaseSql(database)?.let { switchSql ->
+                conn.createStatement().use { stmt ->
+                    stmt.execute(switchSql)
+                }
             }
 
-            // DBeaver 风格：LIMIT/OFFSET 分页，MySQL 只扫描前 N 行
-            // 多取 1 行用于判断 hasMore
-            val pagedSql = "SELECT * FROM ($normalizedSql) _easydb_page LIMIT ${safePageSize + 1} OFFSET $safeOffset"
+            // DBeaver 风格：分页包装，多取 1 行用于判断 hasMore
+            val pagedSql = dialect.buildPaginationSql(normalizedSql, safePageSize + 1, safeOffset)
 
             conn.createStatement(
                 java.sql.ResultSet.TYPE_FORWARD_ONLY,
@@ -242,7 +252,12 @@ class SqlExecutionService {
                 stmt.resultSet.use { rs ->
                     val meta = rs.metaData
                     val columnCount = meta.columnCount
-                    val columns = (1..columnCount).map { meta.getColumnLabel(it) }
+                    val allColumns = (1..columnCount).map { meta.getColumnLabel(it) }
+                    val easydbPrefixes = setOf("_easydb_")
+                    val columns = allColumns.filter { col -> easydbPrefixes.none { col.startsWith(it) } }
+                    val easydbColumnIndices = allColumns.mapIndexedNotNull { idx, col ->
+                        if (easydbPrefixes.any { col.startsWith(it) }) idx + 1 else null
+                    }.toSet()
                     val rows = mutableListOf<Map<String, String?>>()
                     var truncatedCellCount = 0
 
@@ -267,6 +282,7 @@ class SqlExecutionService {
 
                         val row = linkedMapOf<String, String?>()
                         for (i in 1..columnCount) {
+                            if (i in easydbColumnIndices) continue
                             val colType = meta.getColumnType(i)
 
                             // 处理 BLOB/BINARY 类型：不读取实际内容，只显示大小标签
@@ -336,7 +352,8 @@ class SqlExecutionService {
         session: DatabaseSession,
         database: String,
         file: File,
-        reporter: TaskReporter
+        reporter: TaskReporter,
+        dialect: DialectAdapter
     ): TaskResult {
         if (!file.exists() || !file.isFile) {
             return TaskResult(success = false, errorMessage = "SQL 文件不存在或不可读")
@@ -352,8 +369,10 @@ class SqlExecutionService {
         reporter.onLog("INFO", "文件大小: ${formatBytes(totalBytes)}")
         reporter.onProgress(IMPORT_PROGRESS_MIN, "正在初始化 SQL 文件导入...")
 
-        conn.createStatement().use { stmt ->
-            stmt.execute("USE `$database`")
+        dialect.buildSwitchDatabaseSql(database)?.let { switchSql ->
+            conn.createStatement().use { stmt ->
+                stmt.execute(switchSql)
+            }
         }
 
         val state = SqlParseState()

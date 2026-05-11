@@ -2,13 +2,40 @@ import type { SqlResult, ColumnInfo, EditabilityStatus, EditabilityReason } from
 
 /**
  * 从 SQL 中提取表名
- * 使用正则匹配 FROM / UPDATE / INTO 后的表名
+ * 支持：FROM a, b, c 逗号分隔 / JOIN 语法 / 子查询
  */
 export function extractAllTableNames(sql: string): string[] {
   if (!sql) return []
-  const regex = /(?:FROM|UPDATE|INTO)\s+([`'"]?[a-zA-Z0-9_$.]+[`'"]?)/gi
-  const matches = [...sql.matchAll(regex)]
-  return matches.map(m => m[1].replace(/[`'"]/g, '').split('.').pop() ?? m[1])
+  const names: string[] = []
+  const seen = new Set<string>()
+
+  const addName = (raw: string) => {
+    const clean = raw.replace(/[`'"]/g, '').split('.').pop() ?? raw
+    if (clean && !seen.has(clean.toLowerCase())) {
+      seen.add(clean.toLowerCase())
+      names.push(clean)
+    }
+  }
+
+  // 匹配 FROM/UPDATE/INTO 后的表名（含别名），支持逗号分隔多表
+  const fromRegex = /(?:FROM|UPDATE|INTO)\s+([\s\S]*?)(?=\s+(?:WHERE|SET|ON|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|FETCH|FOR\s)|$)/gi
+  for (const fromMatch of sql.matchAll(fromRegex)) {
+    const clause = fromMatch[1]
+    // 按逗号拆分，每个段取第一个标识符为表名
+    const segments = clause.split(',')
+    for (const seg of segments) {
+      const m = seg.trim().match(/^[`'"]?([a-zA-Z0-9_$.]+)[`'"]?/)
+      if (m) addName(m[1])
+    }
+  }
+
+  // 匹配所有类型的 JOIN
+  const joinRegex = /(?:LEFT|RIGHT|INNER|OUTER|CROSS|FULL)?\s*JOIN\s+[`'"]?([a-zA-Z0-9_$.]+)[`'"]?/gi
+  for (const joinMatch of sql.matchAll(joinRegex)) {
+    addName(joinMatch[1])
+  }
+
+  return names
 }
 
 /**

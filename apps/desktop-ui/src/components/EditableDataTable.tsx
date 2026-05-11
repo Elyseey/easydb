@@ -35,6 +35,7 @@ interface EditableDataTableProps {
   database: string
   tableName: string
   columns: ColumnInfo[]
+  visibleColumns?: string[] // SQL SELECT 中实际选中的列名，用于过滤显示
   dataSource: Record<string, unknown>[]
   onRefresh: () => void
   onFilter?: (params: { where?: string; orderBy?: string }) => void
@@ -132,6 +133,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   database,
   tableName,
   columns,
+  visibleColumns,
   dataSource,
   onRefresh,
   onFilter,
@@ -230,6 +232,10 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     cellChangesRef.current = []
     setCellChangeCount(0)
     setEditorState(null)
+    setPendingRows([])
+    setInsertPositions([])
+    setSelectedRowKeys([])
+    setContextMenu(null)
     setWhereClause('')
     setAppliedWhere('')
     setSortColumn(null)
@@ -836,7 +842,10 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
 
   // 表格列（不包含编辑状态判断，render 纯展示）
   const tableColumns = useMemo<ColumnsType<TableRow>>(() => {
-    const cols: ColumnsType<TableRow> = columns.map((col) => ({
+    const displayColumns = visibleColumns
+      ? columns.filter(col => visibleColumns.some(vc => vc.toLowerCase() === col.name.toLowerCase()))
+      : columns
+    const cols: ColumnsType<TableRow> = displayColumns.map((col) => ({
       title: (
         <div
           style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', userSelect: 'none' }}
@@ -878,9 +887,9 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
       },
     }))
 
-    // 移除“操作”列，行级删除改为右键菜单操作
+    // 移除”操作”列，行级删除改为右键菜单操作
     return cols
-  }, [columns, isEditable, token, hasCellChange, getCellValue, handleSort, sortColumn, sortDirection])
+  }, [columns, visibleColumns, isEditable, token, hasCellChange, getCellValue, handleSort, sortColumn, sortDirection])
 
   const tableData = useMemo<TableRow[]>(
     () => effectiveData.map((r, i) => ({ ...r, _key: i, _rowIndex: i })),
