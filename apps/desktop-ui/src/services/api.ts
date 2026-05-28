@@ -182,7 +182,7 @@ export const metadataApi = {
     }),
   charsets: (connectionId: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/charsets`),
-  createDatabase: (connectionId: string, name: string, charset: string, collation: string) =>
+  createDatabase: (connectionId: string, name: string, charset?: string, collation?: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/create-database`, {
       method: 'POST',
       body: JSON.stringify({ name, charset, collation }),

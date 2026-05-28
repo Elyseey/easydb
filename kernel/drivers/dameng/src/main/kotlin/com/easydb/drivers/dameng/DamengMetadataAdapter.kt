@@ -269,7 +269,12 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun createDatabase(session: DatabaseSession, name: String, charset: String, collation: String) {
-        throw UnsupportedOperationException("达梦暂不支持创建 schema")
+        val schema = normalizeName(name)
+        require(schema.isNotBlank()) { "Schema 名称不能为空" }
+        val conn = session.getJdbcConnection()
+        conn.createStatement().use { stmt ->
+            stmt.execute("CREATE SCHEMA ${dialect.quoteIdentifier(schema)}")
+        }
     }
 
     override fun dropDatabase(session: DatabaseSession, name: String) {

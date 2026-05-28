@@ -2,6 +2,8 @@ import type { DbType } from '@/types'
 
 export interface MetadataCapability {
   schemas: boolean
+  schemaCreation: boolean
+  schemaManagement: boolean
   tables: boolean
   views: boolean
   procedures: boolean
@@ -46,7 +48,7 @@ export interface DbCapabilities {
 }
 
 const MYSQL: DbCapabilities = {
-  metadata: { schemas: true, tables: true, views: true, procedures: true, functions: true, triggers: true, ddl: true },
+  metadata: { schemas: true, schemaCreation: true, schemaManagement: true, tables: true, views: true, procedures: true, functions: true, triggers: true, ddl: true },
   sql: { execute: true, paginatedPreview: true, explain: true },
   workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, importSql: true, exportData: true, backup: true, restore: true },
   tasks: { migration: true, sync: true, structureCompare: true },
@@ -54,7 +56,7 @@ const MYSQL: DbCapabilities = {
 }
 
 const DAMENG: DbCapabilities = {
-  metadata: { schemas: true, tables: true, views: true, procedures: false, functions: false, triggers: false, ddl: true },
+  metadata: { schemas: true, schemaCreation: true, schemaManagement: false, tables: true, views: true, procedures: false, functions: false, triggers: false, ddl: true },
   sql: { execute: true, paginatedPreview: true, explain: false },
   workbench: { dataPreview: true, rowEdit: false, tableDesigner: false, importSql: false, exportData: false, backup: false, restore: false },
   tasks: { migration: false, sync: false, structureCompare: false },
@@ -62,7 +64,7 @@ const DAMENG: DbCapabilities = {
 }
 
 const STUB: DbCapabilities = {
-  metadata: { schemas: false, tables: false, views: false, procedures: false, functions: false, triggers: false, ddl: false },
+  metadata: { schemas: false, schemaCreation: false, schemaManagement: false, tables: false, views: false, procedures: false, functions: false, triggers: false, ddl: false },
   sql: { execute: false, paginatedPreview: false, explain: false },
   workbench: { dataPreview: false, rowEdit: false, tableDesigner: false, importSql: false, exportData: false, backup: false, restore: false },
   tasks: { migration: false, sync: false, structureCompare: false },

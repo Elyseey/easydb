@@ -333,7 +333,7 @@ export const WorkbenchPage: React.FC = () => {
   }, [treeCtxMenu])
 
   // --- 新建数据库弹窗状态 ---
-  const [createDbModal, setCreateDbModal] = useState<{ connectionId: string; connectionName: string } | null>(null)
+  const [createDbModal, setCreateDbModal] = useState<{ connectionId: string; connectionName: string; dbType: ConnectionConfig['dbType'] } | null>(null)
 
   // --- 编辑数据库弹窗状态 ---
   const [editDbModal, setEditDbModal] = useState<{ connectionId: string; databaseName: string } | null>(null)
@@ -1058,20 +1058,25 @@ export const WorkbenchPage: React.FC = () => {
     if (nodeKey.startsWith('conn:')) {
       const connId = nodeKey.slice(5)
       const conn = openConnections.find((c) => c.id === connId)
-      return [
-        {
+      const cap = getDbCapabilities(conn?.dbType ?? null)
+      const items: MenuProps['items'] = []
+      if (cap.metadata.schemaCreation) {
+        items.push({
           key: 'create-db',
           icon: <PlusOutlined />,
-          label: '新建数据库',
-          onClick: () => setCreateDbModal({ connectionId: connId, connectionName: conn?.name ?? '' }),
-        },
+          label: conn?.dbType === 'dameng' ? '新建 Schema' : '新建数据库',
+          onClick: () => setCreateDbModal({ connectionId: connId, connectionName: conn?.name ?? '', dbType: conn?.dbType ?? 'mysql' }),
+        })
+      }
+      items.push(
         {
           key: 'refresh-conn',
           icon: <ReloadOutlined />,
           label: '刷新',
           onClick: () => loadDatabases(connId),
         },
-      ]
+      )
+      return items
     }
     // 数据库节点：刷新 / 删除数据库
     if (nodeKey.startsWith('db:')) {
@@ -1089,7 +1094,7 @@ export const WorkbenchPage: React.FC = () => {
         },
         { type: 'divider' },
       ]
-      if (cap.metadata.schemas) {
+      if (cap.metadata.schemaManagement) {
         items.unshift({
           key: 'edit-db',
           icon: <EditOutlined />,
@@ -1129,7 +1134,7 @@ export const WorkbenchPage: React.FC = () => {
           onClick: () => setImportSqlModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName }),
         })
       }
-      if (cap.metadata.schemas) {
+      if (cap.metadata.schemaManagement) {
         items.push(
           { type: 'divider' },
           {
@@ -2262,6 +2267,7 @@ export const WorkbenchPage: React.FC = () => {
           open={!!createDbModal}
           connectionId={createDbModal.connectionId}
           connectionName={createDbModal.connectionName}
+          dbType={createDbModal.dbType}
           onClose={() => setCreateDbModal(null)}
           onSuccess={() => loadDatabases(createDbModal.connectionId)}
         />
