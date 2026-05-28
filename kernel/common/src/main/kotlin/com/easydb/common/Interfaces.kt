@@ -74,6 +74,10 @@ interface MetadataAdapter {
     fun listTriggers(session: DatabaseSession, database: String): List<TriggerInfo> = emptyList()
     fun listRoutines(session: DatabaseSession, database: String): List<RoutineInfo> = emptyList()
     fun getTableDefinition(session: DatabaseSession, database: String, table: String): TableDefinition
+    fun getTableInfo(session: DatabaseSession, database: String, table: String): TableInfo =
+        getTableDefinition(session, database, table).table
+    fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> =
+        getTableDefinition(session, database, table).columns
     fun getIndexes(session: DatabaseSession, database: String, table: String): List<IndexInfo>
     fun previewRows(session: DatabaseSession, database: String, table: String, limit: Int = 100, where: String? = null, orderBy: String? = null, offset: Int = 0): List<Map<String, String?>>
     fun getDdl(session: DatabaseSession, database: String, table: String): String

@@ -114,7 +114,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 function extractConnectionId(path: string): string | null {
   // 元数据路径格式: /api/metadata/{connectionId}/...
   // SQL 路径格式: /api/sql/execute (body 中有 connectionId)
-  const match = path.match(/\/api\/metadata\/([^\/]+)/)
+  const match = path.match(/\/api\/metadata\/([^/]+)/)
   return match ? decodeURIComponent(match[1]) : null
 }
 
@@ -166,6 +166,10 @@ export const metadataApi = {
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/objects`),
   tableDefinition: (connectionId: string, database: string, table: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/definition`),
+  tableInfo: (connectionId: string, database: string, table: string) =>
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/info`),
+  columns: (connectionId: string, database: string, table: string) =>
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/columns`),
   indexes: (connectionId: string, database: string, table: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/indexes`),
   previewRows: (connectionId: string, database: string, table: string, params?: { where?: string; orderBy?: string; limit?: number; offset?: number }) =>

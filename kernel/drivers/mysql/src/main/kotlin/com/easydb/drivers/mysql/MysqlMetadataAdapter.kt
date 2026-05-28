@@ -143,7 +143,7 @@ class MysqlMetadataAdapter : MetadataAdapter {
         )
     }
 
-    private fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> {
+    override fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> {
         val conn = session.getJdbcConnection()
         val result = mutableListOf<ColumnInfo>()
         conn.prepareStatement("""

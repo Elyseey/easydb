@@ -50,6 +50,7 @@ export interface TableTabState {
   loadingMoreRows: boolean
   detailTab: 'data' | 'design' | 'ddl'
   loadedTabs: string[]
+  loadingTabs: string[]
 }
 
 /** 数据库概览 Tab 状态 */

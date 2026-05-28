@@ -340,6 +340,30 @@ fun Route.metadataRoutes() {
         }
     }
 
+    get("/{connectionId}/{database}/tables/{table}/info") {
+        val session = getSessionOrFail(call, connMgr) ?: return@get
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        try {
+            call.ok(adapterFor(session).metadataAdapter().getTableInfo(session, database, table))
+        } catch (e: Exception) {
+            System.err.println("[EasyDB] getTableInfo failed for $database.$table: ${e.message}")
+            call.ok(com.easydb.common.TableInfo(name = table, schema = database))
+        }
+    }
+
+    get("/{connectionId}/{database}/tables/{table}/columns") {
+        val session = getSessionOrFail(call, connMgr) ?: return@get
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        try {
+            call.ok(adapterFor(session).metadataAdapter().getColumns(session, database, table))
+        } catch (e: Exception) {
+            System.err.println("[EasyDB] getColumns failed for $database.$table: ${e.message}")
+            call.ok(emptyList<com.easydb.common.ColumnInfo>())
+        }
+    }
+
     get("/{connectionId}/{database}/tables/{table}/indexes") {
         val session = getSessionOrFail(call, connMgr) ?: return@get
         val database = call.parameters["database"]!!

@@ -43,6 +43,7 @@ interface EditableDataTableProps {
   hasMore?: boolean
   onLoadMore?: () => void
   loadingMore?: boolean
+  loading?: boolean
 }
 
 type CellChange = {
@@ -140,6 +141,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   hasMore,
   onLoadMore,
   loadingMore,
+  loading = false,
 }) => {
   const { token } = theme.useToken()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1229,9 +1231,11 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
           columns={tableColumns}
           dataSource={tableData}
           rowKey="_key"
+          loading={loading}
           pagination={false}
           size="small"
           scroll={{ x: 'max-content', y: tableScrollY }}
+          locale={{ emptyText: loading ? '加载中...' : '暂无数据' }}
           rowClassName={(record) => {
             const classes: string[] = []
             const rowIndex = record._rowIndex as number

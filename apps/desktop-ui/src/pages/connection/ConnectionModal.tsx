@@ -16,6 +16,7 @@ interface ConnectionModalProps {
   testResult: { success: boolean; message: string } | null
   testing: boolean
   existingGroups: ConnectionGroup[]
+  defaultGroupId?: string
 }
 
 
@@ -23,7 +24,7 @@ interface ConnectionModalProps {
 export const ConnectionModal: React.FC<ConnectionModalProps> = ({
   open, editingConnection, confirmLoading,
   onSave, onCancel, onTest,
-  testResult, testing, existingGroups,
+  testResult, testing, existingGroups, defaultGroupId,
 }) => {
   const [form] = Form.useForm()
   const [sshEnabled, setSshEnabled] = useState(false)
@@ -53,13 +54,14 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
         form.resetFields()
         form.setFieldsValue({
           dbType: 'mysql', host: '127.0.0.1', port: 3306, username: 'root',
+          groupId: defaultGroupId,
         })
         setSshEnabled(false)
         setSslEnabled(false)
         setSshAuthType('password')
       }
     }
-  }, [open, editingConnection, form])
+  }, [open, editingConnection, form, defaultGroupId])
 
   // 切换数据库类型时更新默认值（仅新建模式）
   React.useEffect(() => {
@@ -134,7 +136,7 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                 <>
                   <div style={{ display: 'flex', gap: 12 }}>
                     <Form.Item name="name" label="连接名称" style={{ flex: 1 }} rules={[{ required: true, message: '请输入连接名称' }]}>
-                      <Input placeholder="我的 MySQL 连接" />
+                      <Input />
                     </Form.Item>
                     <Form.Item name="groupId" label="分组" style={{ flex: 1 }}>
                       <Select

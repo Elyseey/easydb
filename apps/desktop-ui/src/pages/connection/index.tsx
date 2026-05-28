@@ -406,6 +406,7 @@ export const ConnectionPage: React.FC = () => {
           onTest={handleTest}
           testResult={testResult}
           testing={testing}
+          defaultGroupId={(selectedGroup === 'all' || selectedGroup === 'ungrouped') ? undefined : selectedGroup}
         />
         
         {/* 新增/编辑 分组弹窗 */}

@@ -19,7 +19,7 @@ class DamengDialectAdapter : DialectAdapter {
     }
 
     override fun buildSwitchDatabaseSql(database: String): String? {
-        return null
+        return "ALTER SESSION SET CURRENT_SCHEMA = ${quoteIdentifier(database)}"
     }
 
     override val paginationStrategy: PaginationStrategy = PaginationStrategy.OFFSET_FETCH

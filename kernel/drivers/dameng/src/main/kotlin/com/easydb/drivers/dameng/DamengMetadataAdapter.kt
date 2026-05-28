@@ -19,22 +19,34 @@ class DamengMetadataAdapter : MetadataAdapter {
         val conn = session.getJdbcConnection()
         val schemas = linkedSetOf<String>()
 
-        conn.createStatement().use { stmt ->
-            stmt.executeQuery("SELECT USER").use { rs ->
-                if (rs.next()) schemas.add(rs.getString(1))
+        try {
+            conn.metaData.schemas.use { rs ->
+                while (rs.next()) {
+                    schemas.add(rs.getString("TABLE_SCHEM"))
+                }
             }
+        } catch (_: Exception) {
+            // Some Dameng deployments expose fewer schemas through JDBC metadata.
         }
 
         conn.createStatement().use { stmt ->
             stmt.executeQuery(
                 """
-                SELECT USERNAME
-                FROM ALL_USERS
-                ORDER BY USERNAME
+                SELECT NAME
+                FROM (
+                    SELECT USER AS NAME FROM DUAL
+                    UNION
+                    SELECT USERNAME AS NAME FROM ALL_USERS
+                    UNION
+                    SELECT OWNER AS NAME
+                    FROM ALL_OBJECTS
+                    WHERE OBJECT_TYPE IN ('TABLE', 'VIEW')
+                )
+                ORDER BY NAME
                 """.trimIndent()
             ).use { rs ->
                 while (rs.next()) {
-                    schemas.add(rs.getString("USERNAME"))
+                    schemas.add(rs.getString("NAME"))
                 }
             }
         }
@@ -52,10 +64,13 @@ class DamengMetadataAdapter : MetadataAdapter {
 
         conn.prepareStatement(
             """
-            SELECT OWNER, TABLE_NAME, NUM_ROWS
-            FROM ALL_TABLES
-            WHERE OWNER = ?
-            ORDER BY TABLE_NAME
+            SELECT t.OWNER, t.TABLE_NAME, t.NUM_ROWS, comm.COMMENTS
+            FROM ALL_TABLES t
+            LEFT JOIN ALL_TAB_COMMENTS comm
+              ON t.OWNER = comm.OWNER
+             AND t.TABLE_NAME = comm.TABLE_NAME
+            WHERE t.OWNER = ?
+            ORDER BY t.TABLE_NAME
             """.trimIndent()
         ).use { stmt ->
             stmt.setString(1, schema)
@@ -67,6 +82,7 @@ class DamengMetadataAdapter : MetadataAdapter {
                             schema = rs.getString("OWNER"),
                             type = "table",
                             rowCount = rs.getNullableLong("NUM_ROWS"),
+                            comment = rs.getString("COMMENTS")?.trim(),
                             engine = "DM"
                         )
                     )
@@ -76,10 +92,13 @@ class DamengMetadataAdapter : MetadataAdapter {
 
         conn.prepareStatement(
             """
-            SELECT OWNER, VIEW_NAME
-            FROM ALL_VIEWS
-            WHERE OWNER = ?
-            ORDER BY VIEW_NAME
+            SELECT v.OWNER, v.VIEW_NAME, comm.COMMENTS
+            FROM ALL_VIEWS v
+            LEFT JOIN ALL_TAB_COMMENTS comm
+              ON v.OWNER = comm.OWNER
+             AND v.VIEW_NAME = comm.TABLE_NAME
+            WHERE v.OWNER = ?
+            ORDER BY v.VIEW_NAME
             """.trimIndent()
         ).use { stmt ->
             stmt.setString(1, schema)
@@ -90,6 +109,7 @@ class DamengMetadataAdapter : MetadataAdapter {
                             name = rs.getString("VIEW_NAME"),
                             schema = rs.getString("OWNER"),
                             type = "view",
+                            comment = rs.getString("COMMENTS")?.trim(),
                             engine = "DM"
                         )
                     )
@@ -105,18 +125,84 @@ class DamengMetadataAdapter : MetadataAdapter {
     override fun getTableDefinition(session: DatabaseSession, database: String, table: String): TableDefinition {
         val schema = normalizeName(database)
         val objectName = normalizeName(table)
-        val tableInfo = listTables(session, schema).firstOrNull { it.name.equals(objectName, ignoreCase = true) }
+        val tableInfo = findTableInfo(session, schema, objectName)
             ?: TableInfo(name = objectName, schema = schema, type = "table", engine = "DM")
 
         val (ddl, ddlSource) = resolveDdl(session, schema, objectName)
+        val columns = getColumns(session, schema, objectName)
 
         return TableDefinition(
             table = tableInfo,
-            columns = getColumns(session, schema, objectName),
+            columns = columns,
             indexes = getIndexes(session, schema, objectName),
-            ddl = ddl,
+            ddl = appendCommentsToDdl(session, schema, objectName, ddl, columns),
             ddlSource = ddlSource
         )
+    }
+
+    override fun getTableInfo(session: DatabaseSession, database: String, table: String): TableInfo {
+        val schema = normalizeName(database)
+        val objectName = normalizeName(table)
+        return findTableInfo(session, schema, objectName)
+            ?: TableInfo(name = objectName, schema = schema, type = "table", engine = "DM")
+    }
+
+    private fun findTableInfo(session: DatabaseSession, schema: String, objectName: String): TableInfo? {
+        val conn = session.getJdbcConnection()
+        conn.prepareStatement(
+            """
+            SELECT t.OWNER, t.TABLE_NAME, t.NUM_ROWS, comm.COMMENTS
+            FROM ALL_TABLES t
+            LEFT JOIN ALL_TAB_COMMENTS comm
+              ON t.OWNER = comm.OWNER
+             AND t.TABLE_NAME = comm.TABLE_NAME
+            WHERE t.OWNER = ?
+              AND t.TABLE_NAME = ?
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, objectName)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    return TableInfo(
+                        name = rs.getString("TABLE_NAME"),
+                        schema = rs.getString("OWNER"),
+                        type = "table",
+                        rowCount = rs.getNullableLong("NUM_ROWS"),
+                        comment = rs.getString("COMMENTS")?.trim(),
+                        engine = "DM"
+                    )
+                }
+            }
+        }
+
+        conn.prepareStatement(
+            """
+            SELECT v.OWNER, v.VIEW_NAME, comm.COMMENTS
+            FROM ALL_VIEWS v
+            LEFT JOIN ALL_TAB_COMMENTS comm
+              ON v.OWNER = comm.OWNER
+             AND v.VIEW_NAME = comm.TABLE_NAME
+            WHERE v.OWNER = ?
+              AND v.VIEW_NAME = ?
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, objectName)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    return TableInfo(
+                        name = rs.getString("VIEW_NAME"),
+                        schema = rs.getString("OWNER"),
+                        type = "view",
+                        comment = rs.getString("COMMENTS")?.trim(),
+                        engine = "DM"
+                    )
+                }
+            }
+        }
+
+        return null
     }
 
     override fun getIndexes(session: DatabaseSession, database: String, table: String): List<IndexInfo> {
@@ -252,7 +338,10 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun getDdl(session: DatabaseSession, database: String, table: String): String {
-        return resolveDdl(session, normalizeName(database), normalizeName(table)).first
+        val schema = normalizeName(database)
+        val objectName = normalizeName(table)
+        val ddl = resolveDdl(session, schema, objectName).first
+        return appendCommentsToDdl(session, schema, objectName, ddl)
     }
 
     /**
@@ -283,23 +372,43 @@ class DamengMetadataAdapter : MetadataAdapter {
 
     override fun listCharsets(session: DatabaseSession): List<CharsetInfo> = emptyList()
 
-    private fun getColumns(session: DatabaseSession, schema: String, table: String): List<ColumnInfo> {
-        val primaryColumns = getPrimaryColumns(session, schema, table)
+    override fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> {
+        val schema = normalizeName(database)
+        val objectName = normalizeName(table)
+        val primaryColumns = getPrimaryColumns(session, schema, objectName)
+
+        return try {
+            getColumnsWithCommentView(session, schema, objectName, primaryColumns, "DBA_COL_COMMENTS")
+        } catch (_: Exception) {
+            getColumnsWithCommentView(session, schema, objectName, primaryColumns, "ALL_COL_COMMENTS")
+        }
+    }
+
+    private fun getColumnsWithCommentView(
+        session: DatabaseSession,
+        schema: String,
+        objectName: String,
+        primaryColumns: Set<String>,
+        commentView: String
+    ): List<ColumnInfo> {
         val conn = session.getJdbcConnection()
         val columns = mutableListOf<ColumnInfo>()
-
         conn.prepareStatement(
             """
-            SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE,
-                   NULLABLE, DATA_DEFAULT
-            FROM ALL_TAB_COLUMNS
-            WHERE OWNER = ?
-              AND TABLE_NAME = ?
-            ORDER BY COLUMN_ID
+            SELECT c.COLUMN_NAME, c.DATA_TYPE, c.DATA_LENGTH, c.CHAR_LENGTH, c.DATA_PRECISION, c.DATA_SCALE,
+                   c.NULLABLE, c.DATA_DEFAULT, comm.COMMENTS
+            FROM ALL_TAB_COLUMNS c
+            LEFT JOIN $commentView comm
+              ON c.OWNER = comm.OWNER
+             AND c.TABLE_NAME = comm.TABLE_NAME
+             AND c.COLUMN_NAME = comm.COLUMN_NAME
+            WHERE c.OWNER = ?
+              AND c.TABLE_NAME = ?
+            ORDER BY c.COLUMN_ID
             """.trimIndent()
         ).use { stmt ->
             stmt.setString(1, schema)
-            stmt.setString(2, table)
+            stmt.setString(2, objectName)
             stmt.executeQuery().use { rs ->
                 while (rs.next()) {
                     val name = rs.getString("COLUMN_NAME")
@@ -311,7 +420,7 @@ class DamengMetadataAdapter : MetadataAdapter {
                             defaultValue = rs.getString("DATA_DEFAULT")?.trim(),
                             isPrimaryKey = name in primaryColumns,
                             isAutoIncrement = false,
-                            comment = null
+                            comment = rs.getString("COMMENTS")?.trim()
                         )
                     )
                 }
@@ -350,12 +459,15 @@ class DamengMetadataAdapter : MetadataAdapter {
     private fun buildColumnType(rs: ResultSet): String {
         val dataType = rs.getString("DATA_TYPE") ?: return "UNKNOWN"
         val length = rs.getNullableLong("DATA_LENGTH")
+        val charLength = rs.getNullableLong("CHAR_LENGTH")
         val precision = rs.getNullableLong("DATA_PRECISION")
         val scale = rs.getNullableLong("DATA_SCALE")
 
         return when (dataType.uppercase()) {
-            "CHAR", "NCHAR", "VARCHAR", "VARCHAR2", "NVARCHAR2", "BINARY", "VARBINARY" ->
-                if (length != null) "$dataType($length)" else dataType
+            "CHAR", "NCHAR", "VARCHAR", "VARCHAR2", "NVARCHAR2" ->
+                (charLength ?: length)?.let { "$dataType($it)" } ?: dataType
+            "BINARY", "VARBINARY" ->
+                length?.let { "$dataType($it)" } ?: dataType
             "DECIMAL", "NUMERIC", "NUMBER" -> when {
                 precision != null && scale != null -> "$dataType($precision,$scale)"
                 precision != null -> "$dataType($precision)"
@@ -452,6 +564,71 @@ class DamengMetadataAdapter : MetadataAdapter {
             appendLine()
             append(");")
         }
+    }
+
+    private fun appendCommentsToDdl(
+        session: DatabaseSession,
+        schema: String,
+        objectName: String,
+        ddl: String,
+        columns: List<ColumnInfo> = getColumns(session, schema, objectName)
+    ): String {
+        if (ddl.isBlank()) return ddl
+
+        val tableComment = getTableComment(session, schema, objectName)
+        val commentStatements = mutableListOf<String>()
+        val qualifiedName = quoteQualified(schema, objectName)
+
+        if (!tableComment.isNullOrBlank() && !ddl.containsIgnoreCase("COMMENT ON TABLE $qualifiedName")) {
+            commentStatements.add(
+                "COMMENT ON TABLE $qualifiedName IS ${quoteStringLiteral(tableComment)};"
+            )
+        }
+
+        columns
+            .filter { !it.comment.isNullOrBlank() }
+            .forEach { column ->
+                val columnTarget = "$qualifiedName.${dialect.quoteIdentifier(column.name)}"
+                if (!ddl.containsIgnoreCase("COMMENT ON COLUMN $columnTarget")) {
+                    commentStatements.add(
+                        "COMMENT ON COLUMN $columnTarget IS ${quoteStringLiteral(column.comment!!)};"
+                    )
+                }
+            }
+
+        if (commentStatements.isEmpty()) return ddl
+        return buildString {
+            append(ddl.trimEnd())
+            appendLine()
+            appendLine()
+            append(commentStatements.joinToString("\n"))
+        }
+    }
+
+    private fun getTableComment(session: DatabaseSession, schema: String, objectName: String): String? {
+        val conn = session.getJdbcConnection()
+        return conn.prepareStatement(
+            """
+            SELECT COMMENTS
+            FROM ALL_TAB_COMMENTS
+            WHERE OWNER = ?
+              AND TABLE_NAME = ?
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, objectName)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) rs.getString("COMMENTS")?.trim() else null
+            }
+        }
+    }
+
+    private fun quoteStringLiteral(value: String): String {
+        return "'${value.replace("'", "''")}'"
+    }
+
+    private fun String.containsIgnoreCase(value: String): Boolean {
+        return indexOf(value, ignoreCase = true) >= 0
     }
 
     private fun quoteQualified(schema: String, name: String): String {

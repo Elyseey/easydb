@@ -58,6 +58,8 @@ type TreeDataNode = DataNode & { 'data-node-key'?: string }
 
 /** 每次 previewRows 加载的行数（与后端 limit 对齐） */
 const PREVIEW_PAGE_SIZE = 1000
+const addUnique = (items: string[], item: string) => items.includes(item) ? items : [...items, item]
+const removeItems = (items: string[], removing: string[]) => items.filter((item) => !removing.includes(item))
 
 /** 分类列表视图 — 独立组件，搜索状态通过 props 持久化 */
 import type { MenuProps } from 'antd'
@@ -310,9 +312,9 @@ export const WorkbenchPage: React.FC = () => {
   const activeTab = activeTableTabKey ? openTableTabs[activeTableTabKey] ?? null : null
 
   // --- 请求竞态控制 ---
-  const loadSeqRef = useRef(0)
+  const loadSeqRef = useRef<Record<string, number>>({})
   useEffect(() => {
-    return () => { loadSeqRef.current++ }
+    return () => { loadSeqRef.current = {} }
   }, [])
 
   // --- Tab 右键菜单 ---
@@ -467,24 +469,33 @@ export const WorkbenchPage: React.FC = () => {
   }, [setOpenTableTabs])
 
   const loadTabDataForTab = useCallback(async (tabKey: string, connId: string, dbName: string, tableName: string, tab: string) => {
-    const seq = ++loadSeqRef.current
+    const requestKey = `${tabKey}::${tab}`
+    const seq = (loadSeqRef.current[requestKey] ?? 0) + 1
+    loadSeqRef.current[requestKey] = seq
+    const isCurrentRequest = () => loadSeqRef.current[requestKey] === seq
+    const startedTabs: string[] = []
     try {
       // columns 始终加载
       const promises: Promise<void>[] = []
       // currentTab 可能为 undefined（新 Tab 刚创建，state 还未 commit）
-      const currentTab = openTableTabs[tabKey]
+      const currentTab = useWorkbenchStore.getState().openTableTabs[tabKey] ?? openTableTabs[tabKey]
       if (currentTab && currentTab.type !== 'table') return
       const tableTab = currentTab as TableTabState | undefined
       const needColumns = !tableTab?.loadedTabs.includes('columns')
       const needTab = tab !== 'columns' && !tableTab?.loadedTabs.includes(tab)
       if (!needColumns && !needTab) return
+      if (needColumns) startedTabs.push('columns')
+      if (needTab) startedTabs.push(tab)
+      updateTabState(tabKey, (prev) => ({
+        loadingTabs: startedTabs.reduce((next, item) => addUnique(next, item), prev.loadingTabs),
+      }))
       if (needColumns) {
         promises.push(
-          metadataApi.tableDefinition(connId, dbName, tableName).then((def: unknown) => {
-            if (seq !== loadSeqRef.current) return
+          metadataApi.columns(connId, dbName, tableName).then((columns: unknown) => {
+            if (!isCurrentRequest()) return
             updateTabState(tabKey, (prev) => ({
-              columns: (def as { columns: ColumnInfo[] }).columns || [],
-              loadedTabs: [...prev.loadedTabs, 'columns'],
+              columns: (columns as ColumnInfo[]) || [],
+              loadedTabs: addUnique(prev.loadedTabs, 'columns'),
             }))
           })
         )
@@ -493,30 +504,30 @@ export const WorkbenchPage: React.FC = () => {
         if (tab === 'data') {
           promises.push(
             metadataApi.previewRows(connId, dbName, tableName, { limit: PREVIEW_PAGE_SIZE }).then((rows: unknown) => {
-              if (seq !== loadSeqRef.current) return
+              if (!isCurrentRequest()) return
               const rowArr = rows as Record<string, unknown>[]
               updateTabState(tabKey, (prev) => ({
                 previewRows: rowArr,
                 hasMoreRows: rowArr.length >= PREVIEW_PAGE_SIZE,
-                loadedTabs: [...prev.loadedTabs, 'data'],
+                loadedTabs: addUnique(prev.loadedTabs, 'data'),
               }))
             })
           )
         } else if (tab === 'design') {
           // TableDesigner handles its own data loading internally, so nothing is strictly required here except marking it loaded.
           promises.push(Promise.resolve().then(() => {
-              if (seq !== loadSeqRef.current) return
+              if (!isCurrentRequest()) return
               updateTabState(tabKey, (prev) => ({
-                loadedTabs: [...prev.loadedTabs, 'design'],
+                loadedTabs: addUnique(prev.loadedTabs, 'design'),
               }))
           }))
         } else if (tab === 'ddl') {
           promises.push(
             metadataApi.ddl(connId, dbName, tableName).then((ddlStr: unknown) => {
-              if (seq !== loadSeqRef.current) return
+              if (!isCurrentRequest()) return
               updateTabState(tabKey, (prev) => ({
                 ddl: ddlStr as string,
-                loadedTabs: [...prev.loadedTabs, 'ddl'],
+                loadedTabs: addUnique(prev.loadedTabs, 'ddl'),
               }))
             })
           )
@@ -524,8 +535,14 @@ export const WorkbenchPage: React.FC = () => {
       }
       await Promise.all(promises)
     } catch (e) {
-      if (seq !== loadSeqRef.current) return
+      if (!isCurrentRequest()) return
       handleApiError(e, '加载表详情失败')
+    } finally {
+      if (isCurrentRequest() && startedTabs.length > 0) {
+        updateTabState(tabKey, (prev) => ({
+          loadingTabs: removeItems(prev.loadingTabs, startedTabs),
+        }))
+      }
     }
   }, [openTableTabs, updateTabState])
 
@@ -549,6 +566,7 @@ export const WorkbenchPage: React.FC = () => {
         loadingMoreRows: false,
         detailTab: defaultTab,
         loadedTabs: [],
+        loadingTabs: [],
       }
       batchUpdate({
         openTableTabs: { ...openTableTabs, [tabKey]: newTab },
@@ -1040,11 +1058,11 @@ export const WorkbenchPage: React.FC = () => {
   ) => {
     try {
       toast.info('正在获取数据...')
-      const [def, rows] = await Promise.all([
-        metadataApi.tableDefinition(connId, dbName, tableName) as Promise<{ columns: ColumnInfo[] }>,
+      const [columns, rows] = await Promise.all([
+        metadataApi.columns(connId, dbName, tableName) as Promise<ColumnInfo[]>,
         metadataApi.previewRows(connId, dbName, tableName) as Promise<Record<string, unknown>[]>,
       ])
-      const colNames = (def.columns || []).map(c => c.name)
+      const colNames = (columns || []).map(c => c.name)
       exportTableData(tableName, colNames, rows, format)
       toast.success('导出成功')
     } catch (e) {
@@ -1369,7 +1387,7 @@ export const WorkbenchPage: React.FC = () => {
       ]
     }
     return []
-  }, [openConnections, loadDatabases, loadTables, selectedCtx, setSelectedCtx, handleTableExport, setCreateDbModal, setEditDbModal, setImportSqlModal, setExportModal, openTableDesignerTab, objectsMap, openOrActivateTab, updateTabState, loadTabDataForTab])
+  }, [openConnections, loadDatabases, loadTables, selectedCtx, setSelectedCtx, handleTableExport, setCreateDbModal, setEditDbModal, setImportSqlModal, setExportModal, openTableDesignerTab, objectsMap, openOrActivateTab])
 
   // 延迟计算菜单项：仅在右键触发瞬间计算 1 次（而非 titleRender 中 N 次）
   const treeCtxMenuItems = useMemo(
@@ -1861,6 +1879,13 @@ export const WorkbenchPage: React.FC = () => {
               // ===== 表详情 Tab =====
               if (activeTab.type === 'table') {
                 const t = activeTab
+                const isDataLoading = t.detailTab === 'data' && (
+                  t.loadingTabs.includes('data') ||
+                  t.loadingTabs.includes('columns')
+                )
+                const isDdlLoading = t.detailTab === 'ddl' && (
+                  t.loadingTabs.includes('ddl')
+                )
                 return (
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                     <div style={{ padding: '12px 16px 0 16px', flexShrink: 0 }}>
@@ -1927,7 +1952,9 @@ export const WorkbenchPage: React.FC = () => {
                                 <Text type="secondary" style={{ fontSize: 12, flex: 1 }}>
                                   {t.objectType === 'view'
                                     ? '视图数据为只读模式'
-                                    : t.columns.length > 0 && t.columns.some((c: ColumnInfo) => c.isPrimaryKey)
+                                    : isDataLoading
+                                      ? '正在加载表数据...'
+                                      : t.columns.length > 0 && t.columns.some((c: ColumnInfo) => c.isPrimaryKey)
                                       ? `可编辑数据 · 主键：${t.columns.filter((c: ColumnInfo) => c.isPrimaryKey).map((c: ColumnInfo) => c.name).join(', ')}`
                                       : '当前表缺少主键，数据编辑功能不可用'}
                                 </Text>
@@ -1957,6 +1984,7 @@ export const WorkbenchPage: React.FC = () => {
                                   dataSource={t.previewRows}
                                   hasMore={t.hasMoreRows}
                                   loadingMore={t.loadingMoreRows}
+                                  loading={isDataLoading}
                                   onLoadMore={async () => {
                                     // 防止并发
                                     if (t.loadingMoreRows || !t.hasMoreRows) return
@@ -2018,6 +2046,7 @@ export const WorkbenchPage: React.FC = () => {
                                 connectionName={t.connectionName}
                                 database={t.database}
                                 editTableName={t.tableName}
+                                lightweightStructureLoad={openConnections.find(c => c.id === t.connectionId)?.dbType === 'dameng'}
                                 onSuccess={() => {
                                   updateTabState(tabKey, (prev) => ({
                                     loadedTabs: prev.loadedTabs.filter(k => k !== 'columns'),
@@ -2046,7 +2075,7 @@ export const WorkbenchPage: React.FC = () => {
                                 overflow: 'auto',
                                 height: '100%',
                               }}>
-                                {t.ddl || '无 DDL 数据'}
+                                {isDdlLoading ? '正在加载 DDL...' : (t.ddl || '无 DDL 数据')}
                               </pre>
                             </div>
                           ),
@@ -2225,6 +2254,7 @@ export const WorkbenchPage: React.FC = () => {
                       connectionName={activeTab.connectionName}
                       database={activeTab.database}
                       editTableName={activeTab.tableName}
+                      lightweightStructureLoad={openConnections.find(c => c.id === activeTab.connectionId)?.dbType === 'dameng'}
                       onSuccess={() => {
                         loadTables(activeTab.connectionId, activeTab.database)
                         closeTableTab(activeTableTabKey!)
