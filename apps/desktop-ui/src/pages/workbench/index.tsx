@@ -2241,7 +2241,13 @@ export const WorkbenchPage: React.FC = () => {
               if (activeTab.type === 'sql-query') {
                 return (
                   <div style={{ flex: 1, overflow: 'hidden' }}>
-                    <QueryEditorPane queryId={activeTab.queryId} />
+                    <QueryEditorPane
+                      queryId={activeTab.queryId}
+                      onOpenObjectDetail={({ database, name, objectType }) => {
+                        const defaultTab = (objectType === 'table' || objectType === 'view') ? 'data' : 'ddl'
+                        openOrActivateTab(activeTab.connectionId, activeTab.connectionName, database, name, defaultTab, objectType)
+                      }}
+                    />
                   </div>
                 )
               }

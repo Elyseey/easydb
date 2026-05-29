@@ -3,7 +3,7 @@ import { Layout, Button, Space, Typography, Tabs, Select, Spin, theme, Tooltip }
 import { PlayCircleOutlined, ClearOutlined, StarOutlined, FolderOpenOutlined, HistoryOutlined } from '@ant-design/icons'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
-import type { SqlResult, EditabilityStatus } from '@/types'
+import type { SqlResult, EditabilityStatus, TableInfo } from '@/types'
 import { useSqlEditorStore, type EditorTab } from '@/stores/sqlEditorStore'
 import { useConnectionStore } from '@/stores/connectionStore'
 import { sqlApi, connectionApi, metadataApi } from '@/services/api'
@@ -29,13 +29,102 @@ import { EmptyState } from '@/components/EmptyState'
 const { Content } = Layout
 const { Text } = Typography
 
+type OpenObjectDetailRequest = {
+  database: string
+  name: string
+  objectType: 'table' | 'view' | 'procedure' | 'function' | 'trigger'
+}
+
 interface QueryEditorPaneProps {
   queryId: string
   /** 开启高级 SQL 工具（收藏脚本、SQL 历史等）。默认开启。 */
   showAdvancedTools?: boolean
+  /** 打开工作台对象详情页。 */
+  onOpenObjectDetail?: (request: OpenObjectDetailRequest) => void
 }
 
-export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showAdvancedTools = true }) => {
+const SQL_KEYWORDS = new Set([
+  'SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'FULL', 'ON',
+  'AND', 'OR', 'GROUP', 'ORDER', 'BY', 'HAVING', 'LIMIT', 'OFFSET', 'INSERT', 'UPDATE',
+  'DELETE', 'CREATE', 'ALTER', 'DROP', 'TABLE', 'VIEW', 'INDEX', 'INTO', 'VALUES', 'SET',
+])
+
+const OBJECT_TOKEN_CHARS = /[A-Za-z0-9_$#.`"[\]-]/
+
+function stripIdentifierQuote(value: string): string {
+  const trimmed = value.trim()
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith('`') && trimmed.endsWith('`')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']'))
+  ) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
+function splitQualifiedIdentifier(raw: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let quote: '"' | '`' | '[' | null = null
+
+  for (const ch of raw.trim()) {
+    if (quote) {
+      current += ch
+      if ((quote === '[' && ch === ']') || (quote !== '[' && ch === quote)) quote = null
+      continue
+    }
+    if (ch === '"' || ch === '`' || ch === '[') {
+      quote = ch
+      current += ch
+      continue
+    }
+    if (ch === '.') {
+      if (current.trim()) parts.push(stripIdentifierQuote(current))
+      current = ''
+      continue
+    }
+    current += ch
+  }
+
+  if (current.trim()) parts.push(stripIdentifierQuote(current))
+  return parts
+}
+
+function extractObjectTokenAtPosition(model: editor.ITextModel, position: { lineNumber: number; column: number }): string | null {
+  const line = model.getLineContent(position.lineNumber)
+  let left = Math.max(0, position.column - 2)
+  let right = Math.max(0, position.column - 1)
+
+  while (left >= 0 && OBJECT_TOKEN_CHARS.test(line[left])) left--
+  while (right < line.length && OBJECT_TOKEN_CHARS.test(line[right])) right++
+
+  const token = line.slice(left + 1, right).trim().replace(/^[,;()]+|[,;()]+$/g, '')
+  if (!token) return null
+
+  const parts = splitQualifiedIdentifier(token)
+  const last = parts[parts.length - 1]
+  if (!last || SQL_KEYWORDS.has(last.toUpperCase())) return null
+  return token
+}
+
+function resolveObjectName(rawToken: string, currentDatabase: string): { database: string; objectName: string } | null {
+  const parts = splitQualifiedIdentifier(rawToken).filter(Boolean)
+  if (parts.length === 0) return null
+  const objectName = parts[parts.length - 1]
+  if (!objectName || SQL_KEYWORDS.has(objectName.toUpperCase())) return null
+  return {
+    database: parts.length >= 2 ? parts[parts.length - 2] : currentDatabase,
+    objectName,
+  }
+}
+
+function findObjectByName(objects: TableInfo[], objectName: string): TableInfo | undefined {
+  return objects.find((obj) => obj.name === objectName) ??
+    objects.find((obj) => obj.name.toLowerCase() === objectName.toLowerCase())
+}
+
+export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showAdvancedTools = true, onOpenObjectDetail }) => {
   const { token } = theme.useToken()
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null)
@@ -46,6 +135,8 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
   
   const activeEditorTab = useSqlEditorStore(useCallback(s => s.tabs.find(t => t.key === queryId), [queryId]))
   const storeUpdateTab = useSqlEditorStore((s) => s.updateTab)
+  const activeEditorTabRef = useRef<typeof activeEditorTab>(activeEditorTab)
+  const onOpenObjectDetailRef = useRef(onOpenObjectDetail)
 
   // Advanced tools state
   const sqlHistoryEnabled          = useAppSettingsStore((s) => s.sqlHistoryEnabled)
@@ -62,6 +153,11 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
 
   const [editorHeight, setEditorHeight] = useState(300)
   const isDraggingRef = useRef(false)
+
+  useEffect(() => {
+    activeEditorTabRef.current = activeEditorTab
+    onOpenObjectDetailRef.current = onOpenObjectDetail
+  }, [activeEditorTab, onOpenObjectDetail])
 
   useEffect(() => {
     const handleMouseMove = (e: globalThis.MouseEvent) => {
@@ -127,6 +223,50 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
     }
   }
 
+  const handleOpenObjectAtPosition = useCallback(async (
+    position?: { lineNumber: number; column: number },
+    showWarnings = true,
+  ) => {
+    const editor = editorRef.current
+    const model = editor?.getModel()
+    const targetPosition = position ?? editor?.getPosition()
+    const currentTab = activeEditorTabRef.current
+    if (!editor || !model || !targetPosition || !currentTab?.connectionId || !currentTab.database) return
+
+    const rawToken = extractObjectTokenAtPosition(model, targetPosition)
+    if (!rawToken) {
+      if (showWarnings) toast.warning('当前光标位置不是可跳转的数据库对象')
+      return
+    }
+
+    const resolved = resolveObjectName(rawToken, currentTab.database)
+    if (!resolved) {
+      if (showWarnings) toast.warning('当前光标位置不是可跳转的数据库对象')
+      return
+    }
+
+    try {
+      const objects = await metadataApi.objects(currentTab.connectionId, resolved.database) as TableInfo[]
+      const object = findObjectByName(objects, resolved.objectName)
+      if (!object || !['table', 'view', 'procedure', 'function', 'trigger'].includes(object.type)) {
+        if (showWarnings) toast.warning(`未找到对象「${resolved.objectName}」`)
+        return
+      }
+
+      onOpenObjectDetailRef.current?.({
+        database: resolved.database,
+        name: object.name,
+        objectType: object.type,
+      })
+    } catch (error) {
+      handleApiError(error, '打开对象详情失败')
+    }
+  }, [])
+
+  const handleOpenObjectAtCursor = useCallback(() => {
+    return handleOpenObjectAtPosition(undefined, true)
+  }, [handleOpenObjectAtPosition])
+
   const handleEditorMount: OnMount = (editorInstance, monaco) => {
     editorRef.current = editorInstance
     monacoRef.current = monaco
@@ -135,6 +275,24 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
       label: '执行 SQL',
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
       run: () => handleExecute(),
+    })
+    editorInstance.addAction({
+      id: 'open-object-detail',
+      label: '打开对象详情',
+      contextMenuGroupId: 'navigation',
+      contextMenuOrder: 1.5,
+      run: () => handleOpenObjectAtCursor(),
+    })
+    editorInstance.onMouseDown((event) => {
+      const mouseEvent = event.event as unknown as {
+        leftButton?: boolean
+        metaKey?: boolean
+        ctrlKey?: boolean
+        preventDefault?: () => void
+      }
+      if (!event.target.position || !mouseEvent.leftButton || (!mouseEvent.metaKey && !mouseEvent.ctrlKey)) return
+      mouseEvent.preventDefault?.()
+      handleOpenObjectAtPosition(event.target.position, false)
     })
 
     if (activeEditorTab?.connectionId && activeEditorTab?.database) {
