@@ -27,6 +27,7 @@ import {
 import type { ColumnInfo, RowChange, DataEditResult } from '@/types'
 import { metadataApi } from '@/services/api'
 import { toast, handleApiError } from '@/utils/notification'
+import { startDeferredColumnResize } from '@/utils/columnResize'
 
 const { Text } = Typography
 
@@ -66,6 +67,9 @@ type TableRow = Record<string, unknown> & {
 
 /** 虚拟滚动估算行高（px），用于计算滚动偏移 */
 const ESTIMATED_ROW_HEIGHT = 35
+const DEFAULT_DATA_COLUMN_WIDTH = 150
+const MIN_DATA_COLUMN_WIDTH = 80
+const MAX_DATA_COLUMN_WIDTH = 900
 
 /**
  * 浮层编辑器：不触发表格重渲染，直接在单元格上方覆盖 Input
@@ -187,6 +191,9 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
 
   // 右键菜单
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number } | null>(null)
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
+  const [columnOrder, setColumnOrder] = useState<string[]>([])
+  const dragColumnRef = useRef<string | null>(null)
 
   const primaryKeys = useMemo(() =>
     columns.filter((c) => c.isPrimaryKey).map((c) => c.name),
@@ -210,6 +217,55 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
 
   const hasChanges = cellChangeCount > 0 || pendingRows.length > 0
   const editableColumnNames = useMemo(() => columns.map((col) => col.name), [columns])
+
+  const displayColumnNames = useMemo(() => (
+    visibleColumns
+      ? columns
+        .filter(col => visibleColumns.some(vc => vc.toLowerCase() === col.name.toLowerCase()))
+        .map(col => col.name)
+      : columns.map(col => col.name)
+  ), [columns, visibleColumns])
+
+  const orderedDisplayColumns = useMemo(() => {
+    const order = columnOrder.length > 0 ? columnOrder : displayColumnNames
+    const names = [
+      ...order.filter((column) => displayColumnNames.includes(column)),
+      ...displayColumnNames.filter((column) => !order.includes(column)),
+    ]
+    return names
+      .map((name) => columns.find((col) => col.name === name))
+      .filter((col): col is ColumnInfo => Boolean(col))
+  }, [columnOrder, columns, displayColumnNames])
+
+  const beginColumnResize = useCallback((column: string, event: React.MouseEvent) => {
+    startDeferredColumnResize({
+      event,
+      startWidth: columnWidths[column] ?? DEFAULT_DATA_COLUMN_WIDTH,
+      minWidth: MIN_DATA_COLUMN_WIDTH,
+      maxWidth: MAX_DATA_COLUMN_WIDTH,
+      boundsElement: tableWrapperRef.current,
+      onCommit: (width) => {
+        setColumnWidths((prev) => {
+          if (prev[column] === width) return prev
+          return { ...prev, [column]: width }
+        })
+      },
+    })
+  }, [columnWidths])
+
+  const moveColumn = useCallback((source: string, target: string) => {
+    if (source === target) return
+    setColumnOrder((prev) => {
+      const current = prev.length > 0 ? prev : displayColumnNames
+      const from = current.indexOf(source)
+      const to = current.indexOf(target)
+      if (from < 0 || to < 0) return current
+      const next = [...current]
+      const [item] = next.splice(from, 1)
+      next.splice(to, 0, item)
+      return next
+    })
+  }, [displayColumnNames])
 
   // 加载更多逻辑
   const maybeLoadMore = useCallback(() => {
@@ -844,26 +900,70 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
 
   // 表格列（不包含编辑状态判断，render 纯展示）
   const tableColumns = useMemo<ColumnsType<TableRow>>(() => {
-    const displayColumns = visibleColumns
-      ? columns.filter(col => visibleColumns.some(vc => vc.toLowerCase() === col.name.toLowerCase()))
-      : columns
-    const cols: ColumnsType<TableRow> = displayColumns.map((col) => ({
+    const cols: ColumnsType<TableRow> = orderedDisplayColumns.map((col) => ({
       title: (
         <div
-          style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', userSelect: 'none' }}
-          onClick={() => handleSort(col.name)}
+          draggable
+          onDragStart={(event) => {
+            dragColumnRef.current = col.name
+            event.dataTransfer.effectAllowed = 'move'
+            event.dataTransfer.setData('text/plain', col.name)
+          }}
+          onDragOver={(event) => {
+            event.preventDefault()
+            event.dataTransfer.dropEffect = 'move'
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            const source = dragColumnRef.current || event.dataTransfer.getData('text/plain')
+            dragColumnRef.current = null
+            if (source) moveColumn(source, col.name)
+          }}
+          onDragEnd={() => { dragColumnRef.current = null }}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'grab', userSelect: 'none', minWidth: 0 }}
+          title="拖动表头调整列顺序"
         >
-          <Space size={2}>
-            {col.name}
-            {col.isPrimaryKey && <Tag color="gold" style={{ fontSize: 10, lineHeight: '14px', padding: '0 3px' }}>PK</Tag>}
-          </Space>
-          {sortColumn === col.name && sortDirection === 'ASC' && <CaretUpOutlined style={{ fontSize: 10, color: token.colorPrimary }} />}
-          {sortColumn === col.name && sortDirection === 'DESC' && <CaretDownOutlined style={{ fontSize: 10, color: token.colorPrimary }} />}
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              handleSort(col.name)
+            }}
+            style={{
+              all: 'unset',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              minWidth: 0,
+              flex: 1,
+              cursor: 'pointer',
+            }}
+            title="点击排序"
+          >
+            <Space size={2} style={{ minWidth: 0 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.name}</span>
+              {col.isPrimaryKey && <Tag color="gold" style={{ fontSize: 10, lineHeight: '14px', padding: '0 3px' }}>PK</Tag>}
+            </Space>
+            {sortColumn === col.name && sortDirection === 'ASC' && <CaretUpOutlined style={{ fontSize: 10, color: token.colorPrimary }} />}
+            {sortColumn === col.name && sortDirection === 'DESC' && <CaretDownOutlined style={{ fontSize: 10, color: token.colorPrimary }} />}
+          </button>
+          <span
+            aria-hidden
+            onMouseDown={(event) => beginColumnResize(col.name, event)}
+            style={{
+              width: 8,
+              height: 24,
+              cursor: 'col-resize',
+              borderRight: `2px solid ${token.colorBorderSecondary}`,
+              flex: '0 0 auto',
+            }}
+            title="拖动调整列宽"
+          />
         </div>
       ),
       dataIndex: col.name,
       key: col.name,
-      width: 150,
+      width: columnWidths[col.name] ?? DEFAULT_DATA_COLUMN_WIDTH,
       ellipsis: true,
       onCell: (record: TableRow) => ({
         'data-row-key': record._key,
@@ -885,13 +985,25 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
             </span>
           )
         }
-        return <span data-cell-display data-column={col.name} style={{ display: 'block', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(displayValue)}</span>
+        return <span data-cell-display data-column={col.name} style={{ display: 'block', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(displayValue)}</span>
       },
     }))
 
     // 移除”操作”列，行级删除改为右键菜单操作
     return cols
-  }, [columns, visibleColumns, isEditable, token, hasCellChange, getCellValue, handleSort, sortColumn, sortDirection])
+  }, [
+    beginColumnResize,
+    columnWidths,
+    isEditable,
+    token,
+    hasCellChange,
+    getCellValue,
+    handleSort,
+    moveColumn,
+    orderedDisplayColumns,
+    sortColumn,
+    sortDirection,
+  ])
 
   const tableData = useMemo<TableRow[]>(
     () => effectiveData.map((r, i) => ({ ...r, _key: i, _rowIndex: i })),

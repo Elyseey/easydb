@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Dropdown, Modal, Space, Table, Tag, Tooltip, Typography, theme } from 'antd'
 import { DownloadOutlined, EditOutlined, StopOutlined } from '@ant-design/icons'
 import type { SqlResult, EditabilityReason } from '@/types'
@@ -10,6 +10,7 @@ import {
   previewSqlCellText,
   stripSqlCellTruncationMarker,
 } from '@/pages/sql-editor/queryPreview'
+import { startDeferredColumnResize } from '@/utils/columnResize'
 
 const { Text } = Typography
 
@@ -20,7 +21,6 @@ interface SqlResultPanelProps {
   loadMoreKey?: string
   currentLoadKey?: string | null
   onLoadMore?: () => void
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   onResultMetaChange?: (patch: Partial<SqlResult>) => void
   editabilityReason?: EditabilityReason  // 不可编辑原因
 }
@@ -31,6 +31,10 @@ interface CellPreviewState {
   truncated: boolean
 }
 
+const DEFAULT_RESULT_COLUMN_WIDTH = 180
+const MIN_RESULT_COLUMN_WIDTH = 80
+const MAX_RESULT_COLUMN_WIDTH = 900
+
 export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
   result,
   displayLabel,
@@ -38,18 +42,58 @@ export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
   loadMoreKey,
   currentLoadKey,
   onLoadMore,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  onResultMetaChange: _onResultMetaChange,
   editabilityReason,
 }) => {
   const { token } = theme.useToken()
   const [cellPreview, setCellPreview] = useState<CellPreviewState | null>(null)
   const [tableScrollY, setTableScrollY] = useState(Math.max(220, tableHeight - 24))
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
+  const [columnOrder, setColumnOrder] = useState<string[]>([])
+  const dragColumnRef = useRef<string | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const toolbarRef = useRef<HTMLDivElement | null>(null)
   const tableBodyRef = useRef<HTMLDivElement | null>(null)
   const autoLoadLockRef = useRef(false)
   const isLoadingMore = currentLoadKey === loadMoreKey
+
+  const beginColumnResize = useCallback((column: string, event: React.MouseEvent) => {
+    startDeferredColumnResize({
+      event,
+      startWidth: columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH,
+      minWidth: MIN_RESULT_COLUMN_WIDTH,
+      maxWidth: MAX_RESULT_COLUMN_WIDTH,
+      boundsElement: containerRef.current,
+      onCommit: (width) => {
+        setColumnWidths((prev) => {
+          if (prev[column] === width) return prev
+          return { ...prev, [column]: width }
+        })
+      },
+    })
+  }, [columnWidths])
+
+  const moveColumn = useCallback((source: string, target: string) => {
+    if (source === target) return
+    setColumnOrder((prev) => {
+      const current = prev.length > 0 ? prev : (result.columns ?? [])
+      const from = current.indexOf(source)
+      const to = current.indexOf(target)
+      if (from < 0 || to < 0) return current
+      const next = [...current]
+      const [item] = next.splice(from, 1)
+      next.splice(to, 0, item)
+      return next
+    })
+  }, [result.columns])
+
+  const orderedColumns = useMemo(() => {
+    const sourceColumns = result.columns ?? []
+    const order = columnOrder.length > 0 ? columnOrder : sourceColumns
+    return [
+      ...order.filter((column) => sourceColumns.includes(column)),
+      ...sourceColumns.filter((column) => !order.includes(column)),
+    ]
+  }, [columnOrder, result.columns])
 
   const maybeLoadMore = useMemo(() => {
     return () => {
@@ -127,16 +171,54 @@ export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
   }, [maybeLoadMore, result.rows?.length, tableScrollY])
 
   const columns = useMemo(() => (
-    result.columns?.map((column) => ({
-      title: column,
+    orderedColumns.map((column) => ({
+      title: (
+        <div
+          draggable
+          onDragStart={(event) => {
+            dragColumnRef.current = column
+            event.dataTransfer.effectAllowed = 'move'
+            event.dataTransfer.setData('text/plain', column)
+          }}
+          onDragOver={(event) => {
+            event.preventDefault()
+            event.dataTransfer.dropEffect = 'move'
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            const source = dragColumnRef.current || event.dataTransfer.getData('text/plain')
+            dragColumnRef.current = null
+            if (source) moveColumn(source, column)
+          }}
+          onDragEnd={() => { dragColumnRef.current = null }}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, cursor: 'grab', userSelect: 'none' }}
+          title="拖动表头调整列顺序"
+        >
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{column}</span>
+          <span
+            aria-hidden
+            onMouseDown={(event) => beginColumnResize(column, event)}
+            style={{
+              width: 8,
+              height: 24,
+              cursor: 'col-resize',
+              borderRight: `2px solid ${token.colorBorderSecondary}`,
+              flex: '0 0 auto',
+            }}
+            title="拖动调整列宽"
+          />
+        </div>
+      ),
       dataIndex: column,
       key: column,
-      width: 180,
+      width: columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH,
       ellipsis: true,
       render: (value: unknown) => {
         const cellText = formatSqlCell(value)
         const truncated = isSqlCellTruncated(cellText)
         const cleanValue = stripSqlCellTruncationMarker(cellText)
+        const columnWidth = columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH
+        const maxPreviewChars = Math.max(24, Math.min(4096, Math.floor((columnWidth - 24) / 8)))
         return (
           <button
             type="button"
@@ -155,7 +237,7 @@ export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
             }}
             title={truncated ? '点击查看已加载内容（当前单元格已截断）' : '点击查看内容'}
           >
-            {previewSqlCellText(cleanValue)}
+            {previewSqlCellText(cleanValue, maxPreviewChars)}
           </button>
         )
       },
@@ -168,10 +250,10 @@ export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
         },
       }),
       onHeaderCell: () => ({
-        style: { padding: '6px 8px', fontWeight: 600 },
+        style: { padding: '6px 8px', fontWeight: 600, userSelect: 'none' as const },
       }),
     })) ?? []
-  ), [result.columns, token.colorText])
+  ), [beginColumnResize, columnWidths, moveColumn, orderedColumns, token.colorBorderSecondary, token.colorText])
 
   return (
     <div ref={containerRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
