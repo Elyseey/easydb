@@ -2047,6 +2047,7 @@ export const WorkbenchPage: React.FC = () => {
                                 database={t.database}
                                 editTableName={t.tableName}
                                 lightweightStructureLoad={openConnections.find(c => c.id === t.connectionId)?.dbType === 'dameng'}
+                                dbType={openConnections.find(c => c.id === t.connectionId)?.dbType}
                                 onSuccess={() => {
                                   updateTabState(tabKey, (prev) => ({
                                     loadedTabs: prev.loadedTabs.filter(k => k !== 'columns'),
@@ -2255,6 +2256,7 @@ export const WorkbenchPage: React.FC = () => {
                       database={activeTab.database}
                       editTableName={activeTab.tableName}
                       lightweightStructureLoad={openConnections.find(c => c.id === activeTab.connectionId)?.dbType === 'dameng'}
+                      dbType={openConnections.find(c => c.id === activeTab.connectionId)?.dbType}
                       onSuccess={() => {
                         loadTables(activeTab.connectionId, activeTab.database)
                         closeTableTab(activeTableTabKey!)

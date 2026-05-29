@@ -129,6 +129,7 @@ enum class PaginationStrategy {
 interface DialectAdapter {
     fun quoteIdentifier(name: String): String
     fun buildCreateTable(table: TableDefinition): String
+    fun buildCreateTableStatements(table: TableDefinition): List<String> = listOf(buildCreateTable(table))
     fun buildInsert(tableName: String, columns: List<String>): String
 
     /** 生成 UPDATE SQL */

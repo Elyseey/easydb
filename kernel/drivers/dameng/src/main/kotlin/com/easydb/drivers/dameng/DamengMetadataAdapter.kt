@@ -6,8 +6,10 @@ import com.easydb.common.DatabaseInfo
 import com.easydb.common.DatabaseSession
 import com.easydb.common.IndexInfo
 import com.easydb.common.MetadataAdapter
+import com.easydb.common.RoutineInfo
 import com.easydb.common.TableDefinition
 import com.easydb.common.TableInfo
+import com.easydb.common.TriggerInfo
 import java.sql.ResultSet
 import java.sql.Types
 
@@ -120,6 +122,82 @@ class DamengMetadataAdapter : MetadataAdapter {
         return result
             .distinctBy { "${it.type}:${it.schema}:${it.name}" }
             .sortedWith(compareBy<TableInfo> { it.type }.thenBy { it.name })
+    }
+
+    override fun listRoutines(session: DatabaseSession, database: String): List<RoutineInfo> {
+        val schema = normalizeName(database)
+        val conn = session.getJdbcConnection()
+        val result = mutableListOf<RoutineInfo>()
+        conn.prepareStatement(
+            """
+            SELECT o.NAME AS OBJECT_NAME,
+                   CASE o.SUBTYPE$ WHEN 'PROC' THEN 'PROCEDURE' ELSE 'FUNCTION' END AS ROUTINE_TYPE
+            FROM SYS.SYSOBJECTS o
+            JOIN SYS.SYSOBJECTS sch ON o.SCHID = sch.ID
+            WHERE sch.NAME = ?
+              AND o.TYPE$ = 'SCHOBJ'
+              AND o.SUBTYPE$ IN ('PROC', 'FUNC')
+            ORDER BY o.NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    result.add(
+                        RoutineInfo(
+                            name = rs.getString("OBJECT_NAME"),
+                            type = rs.getString("ROUTINE_TYPE")
+                        )
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    override fun listTriggers(session: DatabaseSession, database: String): List<TriggerInfo> {
+        val schema = normalizeName(database)
+        val conn = session.getJdbcConnection()
+        val result = mutableListOf<TriggerInfo>()
+        conn.prepareStatement(
+            """
+            SELECT o.NAME AS TRIGGER_NAME
+            FROM SYS.SYSOBJECTS o
+            JOIN SYS.SYSOBJECTS sch ON o.SCHID = sch.ID
+            WHERE sch.NAME = ?
+              AND o.TYPE$ = 'SCHOBJ'
+              AND o.SUBTYPE$ = 'TRIG'
+            ORDER BY o.NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    result.add(
+                        TriggerInfo(
+                            name = rs.getString("TRIGGER_NAME")
+                        )
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    override fun getObjectDdl(session: DatabaseSession, database: String, name: String, objectType: String): String {
+        val schema = normalizeName(database)
+        val objectName = normalizeName(name)
+        val dmType = when (objectType.uppercase()) {
+            "PROCEDURE" -> "PROCEDURE"
+            "FUNCTION" -> "FUNCTION"
+            "TRIGGER" -> "TRIGGER"
+            "VIEW" -> "VIEW"
+            else -> "TABLE"
+        }
+        val ddl = tryGetDdl(session, dmType, schema, objectName)
+            ?: tryGetDdl(session, "TABLE", schema, objectName)
+            ?: ""
+        return if (ddl.isNotBlank()) appendCommentsToDdl(session, schema, objectName, ddl) else ddl
     }
 
     override fun getTableDefinition(session: DatabaseSession, database: String, table: String): TableDefinition {
@@ -349,7 +427,7 @@ class DamengMetadataAdapter : MetadataAdapter {
      */
     private fun resolveDdl(session: DatabaseSession, schema: String, objectName: String): Pair<String, String?> {
         val objectType = getObjectType(session, schema, objectName)
-        for (type in listOfNotNull(objectType, "TABLE", "VIEW")) {
+        for (type in listOfNotNull(objectType, "TABLE", "VIEW", "PROCEDURE", "FUNCTION")) {
             val ddl = tryGetDdl(session, type, schema, objectName)
             if (!ddl.isNullOrBlank()) return ddl to "native"
         }
@@ -367,7 +445,11 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun dropDatabase(session: DatabaseSession, name: String) {
-        throw UnsupportedOperationException("达梦暂不支持删除 schema")
+        val schema = normalizeName(name)
+        val conn = session.getJdbcConnection()
+        conn.createStatement().use { stmt ->
+            stmt.execute("DROP SCHEMA ${dialect.quoteIdentifier(schema)} CASCADE")
+        }
     }
 
     override fun listCharsets(session: DatabaseSession): List<CharsetInfo> = emptyList()
@@ -515,7 +597,7 @@ class DamengMetadataAdapter : MetadataAdapter {
             FROM ALL_OBJECTS
             WHERE OWNER = ?
               AND OBJECT_NAME = ?
-              AND OBJECT_TYPE IN ('TABLE', 'VIEW')
+              AND OBJECT_TYPE IN ('TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION', 'TRIGGER')
             ORDER BY CASE OBJECT_TYPE WHEN 'TABLE' THEN 1 ELSE 2 END
             """.trimIndent()
         ).use { stmt ->

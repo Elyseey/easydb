@@ -33,7 +33,7 @@ class MysqlDialectAdapter : DialectAdapter {
                     }
                 }
                 if (col.isAutoIncrement) append(" AUTO_INCREMENT")
-                if (!col.comment.isNullOrBlank()) append(" COMMENT '${col.comment}'")
+                if (!col.comment.isNullOrBlank()) append(" COMMENT ${escapeValue(col.comment)}")
             }
             lines.add(line)
         }
@@ -56,6 +56,9 @@ class MysqlDialectAdapter : DialectAdapter {
         sb.append(lines.joinToString(",\n"))
         sb.appendLine()
         sb.append(") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")
+        if (!table.table.comment.isNullOrBlank()) {
+            sb.append(" COMMENT=${escapeValue(table.table.comment)}")
+        }
 
         return sb.toString()
     }

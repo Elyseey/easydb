@@ -405,7 +405,8 @@ fun Route.metadataRoutes() {
         try {
             val body = call.receive<kotlinx.serialization.json.JsonObject>()
             val tableDef = parseTableDefinition(body)
-            val ddl = adapterFor(session).dialectAdapter().buildCreateTable(tableDef)
+            val ddl = adapterFor(session).dialectAdapter().buildCreateTableStatements(tableDef)
+                .joinToString("\n") { it.trim().trimEnd(';') + ";" }
             val escaped = ddl.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
             call.respondText("""{"success":true,"data":{"ddl":"$escaped"}}""", io.ktor.http.ContentType.Application.Json)
         } catch (e: Exception) {
@@ -421,12 +422,16 @@ fun Route.metadataRoutes() {
             val body = call.receive<kotlinx.serialization.json.JsonObject>()
             val tableDef = parseTableDefinition(body)
             val adapter = adapterFor(session)
-            val ddl = adapter.dialectAdapter().buildCreateTable(tableDef)
+            val ddlStatements = adapter.dialectAdapter().buildCreateTableStatements(tableDef)
+            val ddl = ddlStatements.joinToString("\n") { it.trim().trimEnd(';') + ";" }
 
             val jdbcConn = session.getJdbcConnection()
             jdbcConn.createStatement().use { stmt ->
                 adapter.dialectAdapter().buildSwitchDatabaseSql(database)?.let { stmt.execute(it) }
-                stmt.execute(ddl)
+                ddlStatements.forEach { statement ->
+                    val sql = statement.trim().trimEnd(';')
+                    if (sql.isNotBlank()) stmt.execute(sql)
+                }
             }
             val escaped = ddl.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
             call.respondText("""{"success":true,"data":{"success":true,"ddl":"$escaped"}}""", io.ktor.http.ContentType.Application.Json)
