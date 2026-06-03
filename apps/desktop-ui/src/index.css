@@ -373,12 +373,18 @@ body {
   background: rgba(0,0,0,0.4) !important;
 }
 .ant-modal-content {
-  background: var(--glass-panel) !important;
+  background: var(--glass-popup) !important;
   backdrop-filter: var(--glass-blur) !important;
   -webkit-backdrop-filter: var(--glass-blur) !important;
   border: 1px solid var(--glass-border) !important;
   border-radius: var(--edb-radius-xl) !important;
   box-shadow: var(--glass-shadow-lg), var(--glass-inner-glow) !important;
+  color: var(--edb-text-primary) !important;
+}
+.ant-modal-container {
+  background: var(--glass-popup) !important;
+  border-radius: var(--edb-radius-xl) !important;
+  color: var(--edb-text-primary) !important;
 }
 .ant-modal-header {
   background: transparent !important;
@@ -386,6 +392,117 @@ body {
 }
 .ant-modal-footer {
   border-top: 1px solid rgba(255,255,255,0.08) !important;
+}
+.ant-modal-title,
+.ant-modal-confirm-title {
+  color: var(--edb-text-primary) !important;
+}
+.ant-modal-body,
+.ant-modal-confirm-content {
+  color: var(--edb-text-secondary) !important;
+}
+.ant-modal-footer .ant-btn,
+.ant-modal-confirm-btns .ant-btn {
+  min-width: 72px;
+}
+.ant-modal-footer .ant-btn-default,
+.ant-modal-confirm-btns .ant-btn-default,
+.ant-modal-footer .ant-btn-color-default,
+.ant-modal-confirm-btns .ant-btn-color-default {
+  background: var(--edb-bg-surface) !important;
+  border-color: var(--edb-border-default) !important;
+  color: var(--edb-text-primary) !important;
+}
+.ant-modal-footer .ant-btn-default:hover,
+.ant-modal-confirm-btns .ant-btn-default:hover,
+.ant-modal-footer .ant-btn-color-default:hover,
+.ant-modal-confirm-btns .ant-btn-color-default:hover {
+  background: var(--edb-bg-hover) !important;
+  border-color: var(--glass-border-hover) !important;
+  color: var(--edb-text-primary) !important;
+}
+.ant-modal-footer .ant-btn-primary,
+.ant-modal-confirm-btns .ant-btn-primary,
+.ant-modal-footer .ant-btn-color-primary.ant-btn-variant-solid,
+.ant-modal-confirm-btns .ant-btn-color-primary.ant-btn-variant-solid {
+  background: var(--edb-accent) !important;
+  border-color: var(--edb-accent) !important;
+  color: #fff !important;
+}
+.ant-modal-footer .ant-btn-primary:hover,
+.ant-modal-confirm-btns .ant-btn-primary:hover,
+.ant-modal-footer .ant-btn-color-primary.ant-btn-variant-solid:hover,
+.ant-modal-confirm-btns .ant-btn-color-primary.ant-btn-variant-solid:hover {
+  background: var(--edb-accent-hover) !important;
+  border-color: var(--edb-accent-hover) !important;
+  color: #fff !important;
+}
+.ant-modal-footer .ant-btn-dangerous,
+.ant-modal-confirm-btns .ant-btn-dangerous,
+.ant-modal-footer .ant-btn-color-dangerous,
+.ant-modal-confirm-btns .ant-btn-color-dangerous {
+  border-color: rgba(248,113,113,0.55) !important;
+  color: var(--edb-error) !important;
+}
+.ant-modal-footer .ant-btn-primary.ant-btn-dangerous,
+.ant-modal-confirm-btns .ant-btn-primary.ant-btn-dangerous,
+.ant-modal-footer .ant-btn-color-dangerous.ant-btn-variant-solid,
+.ant-modal-confirm-btns .ant-btn-color-dangerous.ant-btn-variant-solid {
+  background: var(--edb-error) !important;
+  border-color: var(--edb-error) !important;
+  color: #fff !important;
+}
+.ant-modal-confirm .ant-modal-content,
+.ant-modal-confirm .ant-modal-container,
+.ant-modal-confirm-body-wrapper,
+.ant-modal-confirm-body {
+  background: transparent !important;
+  color: var(--edb-text-primary) !important;
+}
+.ant-modal-confirm .ant-modal-content,
+.ant-modal-confirm .ant-modal-container {
+  background: var(--glass-popup) !important;
+}
+.ant-modal-confirm-title,
+.ant-modal-confirm-title *,
+.ant-modal-confirm-content,
+.ant-modal-confirm-content * {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+.ant-modal-confirm-title,
+.ant-modal-confirm-title * {
+  color: var(--edb-text-primary) !important;
+}
+.ant-modal-confirm-content,
+.ant-modal-confirm-content * {
+  color: var(--edb-text-secondary) !important;
+}
+.ant-modal-confirm-btns .ant-btn > span,
+.ant-modal-footer .ant-btn > span {
+  color: inherit !important;
+}
+
+:root[data-theme="dark"] .ant-modal-root .ant-modal .ant-modal-content,
+:root[data-theme="dark"] .ant-modal-root .ant-modal .ant-modal-container,
+:root[data-theme="dark"] .ant-modal-root .ant-modal-confirm .ant-modal-content,
+:root[data-theme="dark"] .ant-modal-root .ant-modal-confirm .ant-modal-container {
+  background: rgba(15, 12, 41, 0.98) !important;
+  color: rgba(255,255,255,0.95) !important;
+}
+:root[data-theme="dark"] .ant-modal-confirm-title,
+:root[data-theme="dark"] .ant-modal-confirm-title * {
+  color: rgba(255,255,255,0.95) !important;
+}
+:root[data-theme="dark"] .ant-modal-confirm-content,
+:root[data-theme="dark"] .ant-modal-confirm-content * {
+  color: rgba(255,255,255,0.72) !important;
+}
+:root[data-theme="dark"] .ant-modal-confirm-btns .ant-btn-color-default,
+:root[data-theme="dark"] .ant-modal-footer .ant-btn-color-default {
+  background: rgba(255,255,255,0.10) !important;
+  border-color: rgba(255,255,255,0.22) !important;
+  color: rgba(255,255,255,0.92) !important;
 }
 
 /* --- Tabs (Glass) --- */

@@ -60,7 +60,7 @@ type PendingRow = {
   data: Record<string, unknown>
 }
 
-type TableRow = Record<string, unknown> & {
+type TableRow = {
   _key: number
   _rowIndex: number
 }
@@ -1006,8 +1006,19 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   ])
 
   const tableData = useMemo<TableRow[]>(
-    () => effectiveData.map((r, i) => ({ ...r, _key: i, _rowIndex: i })),
+    () => effectiveData.map((_, i) => ({ _key: i, _rowIndex: i })),
     [effectiveData]
+  )
+
+  const tableScrollX = useMemo(
+    () => Math.max(
+      900,
+      orderedDisplayColumns.reduce(
+        (sum, col) => sum + (columnWidths[col.name] ?? DEFAULT_DATA_COLUMN_WIDTH),
+        isEditable ? 36 : 0
+      )
+    ),
+    [columnWidths, isEditable, orderedDisplayColumns]
   )
 
 
@@ -1346,7 +1357,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
           loading={loading}
           pagination={false}
           size="small"
-          scroll={{ x: 'max-content', y: tableScrollY }}
+          scroll={{ x: tableScrollX, y: tableScrollY }}
           locale={{ emptyText: loading ? '加载中...' : '暂无数据' }}
           rowClassName={(record) => {
             const classes: string[] = []

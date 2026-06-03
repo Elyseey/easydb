@@ -452,6 +452,20 @@ class DamengMetadataAdapter : MetadataAdapter {
         }
     }
 
+    override fun renameTable(session: DatabaseSession, database: String, oldName: String, newName: String) {
+        val schema = normalizeName(database)
+        val oldObjectName = normalizeName(oldName)
+        val newObjectName = newName.trim()
+        require(schema.isNotBlank()) { "Schema 名称不能为空" }
+        require(oldObjectName.isNotBlank()) { "原表名不能为空" }
+        require(newObjectName.isNotBlank()) { "新表名不能为空" }
+
+        val conn = session.getJdbcConnection()
+        conn.createStatement().use { stmt ->
+            stmt.execute("ALTER TABLE ${quoteQualified(schema, oldObjectName)} RENAME TO ${dialect.quoteIdentifier(newObjectName)}")
+        }
+    }
+
     override fun listCharsets(session: DatabaseSession): List<CharsetInfo> = emptyList()
 
     override fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> {

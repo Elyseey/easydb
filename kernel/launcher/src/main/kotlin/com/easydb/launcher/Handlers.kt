@@ -291,10 +291,7 @@ fun Route.metadataRoutes() {
                 ?: return@post call.fail("INVALID_REQUEST", "缺少 oldName 参数")
             val newName = (body["newName"] as? kotlinx.serialization.json.JsonPrimitive)?.content
                 ?: return@post call.fail("INVALID_REQUEST", "缺少 newName 参数")
-            val dialect = adapterFor(session).dialectAdapter()
-            val sql = "RENAME TABLE ${dialect.quoteIdentifier(database)}.${dialect.quoteIdentifier(oldName)} TO ${dialect.quoteIdentifier(database)}.${dialect.quoteIdentifier(newName)}"
-            val jdbcConn = session.getJdbcConnection()
-            jdbcConn.createStatement().use { it.execute(sql) }
+            adapterFor(session).metadataAdapter().renameTable(session, database, oldName, newName)
             call.ok(true)
         } catch (e: Exception) {
             call.fail("RENAME_TABLE_FAILED", e.message ?: "重命名表失败")

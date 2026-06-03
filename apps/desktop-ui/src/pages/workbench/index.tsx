@@ -46,7 +46,7 @@ import ExportDatabaseModal from '@/components/ExportDatabaseModal'
 import BackupDatabaseModal from '@/components/BackupDatabaseModal'
 import RestoreDatabaseModal from '@/components/RestoreDatabaseModal'
 import { TableDesigner } from '@/components/TableDesigner'
-import { QueryEditorPane } from '@/components/QueryEditorPane'
+import { QueryEditorPane, type OpenObjectDetailRequest } from '@/components/QueryEditorPane'
 import { ShortcutsModal } from '@/components/ShortcutsModal'
 import { CallProcedurePanel, type CallProcedureTarget } from '@/components/CallProcedurePanel'
 import { formatHotkey } from '@/utils/osUtils'
@@ -346,6 +346,9 @@ export const WorkbenchPage: React.FC = () => {
   const [exportModal, setExportModal] = useState<{ connectionId: string; connectionName: string, database: string } | null>(null)
   const [backupModal, setBackupModal] = useState<{ connectionId: string; connectionName: string; database: string } | null>(null)
   const [restoreModal, setRestoreModal] = useState<{ connectionId: string; connectionName: string; database: string } | null>(null)
+  const [renameTableTarget, setRenameTableTarget] = useState<{ connectionId: string; database: string; tableName: string } | null>(null)
+  const [renameTableInput, setRenameTableInput] = useState('')
+  const [renamingTable, setRenamingTable] = useState(false)
 
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [callProcedureTarget, setCallProcedureTarget] = useState<CallProcedureTarget | null>(null)
@@ -546,6 +549,108 @@ export const WorkbenchPage: React.FC = () => {
     }
   }, [openTableTabs, updateTabState])
 
+  const applyRenamedTableState = useCallback((connId: string, dbName: string, oldName: string, newName: string) => {
+    const oldTabKey = `table:${connId}::${dbName}::${oldName}`
+    const newTabKey = `table:${connId}::${dbName}::${newName}`
+    const state = useWorkbenchStore.getState()
+    const nextTabs: Record<string, WorkbenchTab> = { ...state.openTableTabs }
+    const oldTab = nextTabs[oldTabKey]
+    let nextActiveTableTabKey = state.activeTableTabKey
+    let reloadTabKey: string | null = null
+    let reloadDetailTab: TableTabState['detailTab'] | null = null
+
+    if (oldTab?.type === 'table') {
+      delete nextTabs[oldTabKey]
+      nextTabs[newTabKey] = {
+        ...oldTab,
+        tableName: newName,
+        columns: [],
+        indexes: [],
+        ddl: '',
+        previewRows: [],
+        hasMoreRows: false,
+        loadingMoreRows: false,
+        loadedTabs: [],
+        loadingTabs: [],
+      }
+      if (state.activeTableTabKey === oldTabKey) nextActiveTableTabKey = newTabKey
+      reloadTabKey = newTabKey
+      reloadDetailTab = oldTab.detailTab
+    }
+
+    for (const [tabKey, tab] of Object.entries(nextTabs)) {
+      if (
+        tab.type === 'table-designer' &&
+        tab.mode === 'edit' &&
+        tab.connectionId === connId &&
+        tab.database === dbName &&
+        tab.tableName === oldName
+      ) {
+        nextTabs[tabKey] = { ...tab, tableName: newName }
+      }
+    }
+
+    setObjectsMap((prev) => {
+      const objectKey = `${connId}::${dbName}`
+      const objects = prev[objectKey]
+      if (!objects) return prev
+      return {
+        ...prev,
+        [objectKey]: objects.map((item) => item.name === oldName ? { ...item, name: newName } : item),
+      }
+    })
+
+    const selected = state.selectedCtx
+    const nextSelectedCtx =
+      selected?.connectionId === connId && selected.database === dbName && selected.table === oldName
+        ? { ...selected, table: newName }
+        : selected
+    const nextActiveTable =
+      state.activeConnectionId === connId && state.activeDatabase === dbName && state.activeTable === oldName
+        ? newName
+        : state.activeTable
+
+    batchUpdate({
+      openTableTabs: nextTabs,
+      activeTableTabKey: nextActiveTableTabKey,
+      selectedCtx: nextSelectedCtx,
+      activeTable: nextActiveTable,
+    })
+
+    return { tabKey: reloadTabKey, detailTab: reloadDetailTab }
+  }, [batchUpdate, setObjectsMap])
+
+  const closeRenameTableModal = useCallback(() => {
+    if (renamingTable) return
+    setRenameTableTarget(null)
+    setRenameTableInput('')
+  }, [renamingTable])
+
+  const handleRenameTableSubmit = useCallback(async () => {
+    if (!renameTableTarget || renamingTable) return
+
+    const targetName = renameTableInput.trim()
+    const { connectionId, database, tableName } = renameTableTarget
+    if (!targetName || targetName === tableName) return
+
+    setRenamingTable(true)
+    try {
+      await metadataApi.renameTable(connectionId, database, tableName, targetName)
+      const renamedTab = applyRenamedTableState(connectionId, database, tableName, targetName)
+      toast.success(`表已重命名为「${targetName}」`)
+      setRenameTableTarget(null)
+      setRenameTableInput('')
+      loadTables(connectionId, database)
+      if (renamedTab.tabKey && renamedTab.detailTab) {
+        loadTabDataForTab(renamedTab.tabKey, connectionId, database, targetName, renamedTab.detailTab)
+      }
+    } catch (e) {
+      handleApiError(e, '重命名表失败')
+    } finally {
+      setRenamingTable(false)
+    }
+  }, [applyRenamedTableState, loadTables, loadTabDataForTab, renameTableInput, renameTableTarget, renamingTable])
+
   // 打开或激活一个表 Tab
   const openOrActivateTab = useCallback((connId: string, connName: string, dbName: string, tableName: string, defaultTab: 'data' | 'ddl' | 'design' = 'data', objectType: 'table' | 'view' | 'procedure' | 'function' | 'trigger' = 'table') => {
     const tabKey = `table:${connId}::${dbName}::${tableName}`
@@ -589,6 +694,16 @@ export const WorkbenchPage: React.FC = () => {
       })
     }
   }, [openTableTabs, batchUpdate, loadTabDataForTab])
+
+  const handleOpenObjectDetailFromQuery = useCallback((request: OpenObjectDetailRequest) => {
+    const state = useWorkbenchStore.getState()
+    const tabKey = state.activeTableTabKey
+    const tab = tabKey ? state.openTableTabs[tabKey] : null
+    if (!tab || tab.type !== 'sql-query') return
+
+    const defaultTab = (request.objectType === 'table' || request.objectType === 'view') ? 'data' : 'ddl'
+    openOrActivateTab(tab.connectionId, tab.connectionName, request.database, request.name, defaultTab, request.objectType)
+  }, [openOrActivateTab])
 
   // 打开或激活数据库概览 Tab
   const openOrActivateDbOverview = useCallback((connId: string, connName: string, dbName: string) => {
@@ -787,6 +902,7 @@ export const WorkbenchPage: React.FC = () => {
 
   // --- 收藏脚本 --------------------------------------------
   const [savedScripts, setSavedScripts] = useState<SavedScript[]>([])
+  const lastSavedScriptsFocusLoadAtRef = useRef(0)
   const loadSavedScripts = useCallback(async () => {
     try {
       const res = await scriptApi.list()
@@ -796,7 +912,12 @@ export const WorkbenchPage: React.FC = () => {
   useEffect(() => { loadSavedScripts() }, [loadSavedScripts])
   // 暴露给外部调用（如保存弹窗结束后想刷新）可以利用发布订阅，或简单定时、或重新挂载
   useEffect(() => {
-    const handleFocus = () => loadSavedScripts()
+    const handleFocus = () => {
+      const now = Date.now()
+      if (now - lastSavedScriptsFocusLoadAtRef.current < 5000) return
+      lastSavedScriptsFocusLoadAtRef.current = now
+      loadSavedScripts()
+    }
     window.addEventListener('focus', handleFocus)
     return () => window.removeEventListener('focus', handleFocus)
   }, [loadSavedScripts])
@@ -1286,33 +1407,8 @@ export const WorkbenchPage: React.FC = () => {
           icon: <EditOutlined />,
           label: '重命名',
           onClick: () => {
-            let newName = objName
-            Modal.confirm({
-              title: `重命名表「${objName}」`,
-              content: (
-                <Input
-                  defaultValue={objName}
-                  onChange={(e) => { newName = e.target.value }}
-                  style={{ marginTop: 8 }}
-                  autoFocus
-                />
-              ),
-              okText: '确定',
-              cancelText: '取消',
-              onOk: async () => {
-                if (!newName.trim() || newName === objName) return
-                try {
-                  await metadataApi.renameTable(connId, dbName, objName, newName)
-                  toast.success(`表已重命名为「${newName}」`)
-                  loadTables(connId, dbName)
-                  if (selectedCtx?.table === objName) {
-                    setSelectedCtx({ connectionId: connId, database: dbName, table: newName })
-                  }
-                } catch (e) {
-                  handleApiError(e, '重命名表失败')
-                }
-              },
-            })
+            setRenameTableTarget({ connectionId: connId, database: dbName, tableName: objName })
+            setRenameTableInput(objName)
           },
         },
         {
@@ -2243,10 +2339,7 @@ export const WorkbenchPage: React.FC = () => {
                   <div style={{ flex: 1, overflow: 'hidden' }}>
                     <QueryEditorPane
                       queryId={activeTab.queryId}
-                      onOpenObjectDetail={({ database, name, objectType }) => {
-                        const defaultTab = (objectType === 'table' || objectType === 'view') ? 'data' : 'ddl'
-                        openOrActivateTab(activeTab.connectionId, activeTab.connectionName, database, name, defaultTab, objectType)
-                      }}
+                      onOpenObjectDetail={handleOpenObjectDetailFromQuery}
                     />
                   </div>
                 )
@@ -2298,6 +2391,33 @@ export const WorkbenchPage: React.FC = () => {
           />
         )}
       </Content>
+
+      <Modal
+        open={!!renameTableTarget}
+        title={renameTableTarget ? `重命名表「${renameTableTarget.tableName}」` : '重命名表'}
+        okText="确定"
+        cancelText="取消"
+        width={420}
+        centered
+        confirmLoading={renamingTable}
+        okButtonProps={{
+          disabled: !renameTableTarget || !renameTableInput.trim() || renameTableInput.trim() === renameTableTarget.tableName,
+        }}
+        onOk={handleRenameTableSubmit}
+        onCancel={closeRenameTableModal}
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%', paddingTop: 4 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>新表名</Text>
+          <Input
+            value={renameTableInput}
+            onChange={(e) => setRenameTableInput(e.target.value)}
+            onPressEnter={handleRenameTableSubmit}
+            placeholder="输入新表名"
+            autoFocus
+            disabled={renamingTable}
+          />
+        </Space>
+      </Modal>
 
       {/* 新建数据库弹窗 */}
       {createDbModal && (

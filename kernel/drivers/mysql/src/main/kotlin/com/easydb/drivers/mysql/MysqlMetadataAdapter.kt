@@ -24,6 +24,8 @@ import com.easydb.common.*
  */
 class MysqlMetadataAdapter : MetadataAdapter {
 
+    private val dialect = MysqlDialectAdapter()
+
     override fun listDatabases(session: DatabaseSession): List<DatabaseInfo> {
         val conn = session.getJdbcConnection()
         val result = mutableListOf<DatabaseInfo>()
@@ -336,6 +338,20 @@ class MysqlMetadataAdapter : MetadataAdapter {
         val conn = session.getJdbcConnection()
         conn.createStatement().use { stmt ->
             stmt.execute("DROP DATABASE `$name`")
+        }
+    }
+
+    override fun renameTable(session: DatabaseSession, database: String, oldName: String, newName: String) {
+        require(database.isNotBlank()) { "数据库名称不能为空" }
+        require(oldName.isNotBlank()) { "原表名不能为空" }
+        require(newName.isNotBlank()) { "新表名不能为空" }
+
+        val conn = session.getJdbcConnection()
+        conn.createStatement().use { stmt ->
+            stmt.execute(
+                "RENAME TABLE ${dialect.quoteIdentifier(database)}.${dialect.quoteIdentifier(oldName)} " +
+                    "TO ${dialect.quoteIdentifier(database)}.${dialect.quoteIdentifier(newName)}"
+            )
         }
     }
 

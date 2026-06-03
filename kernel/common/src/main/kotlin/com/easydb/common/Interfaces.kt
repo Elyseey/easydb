@@ -84,6 +84,7 @@ interface MetadataAdapter {
     fun createDatabase(session: DatabaseSession, name: String, charset: String = "utf8mb4", collation: String = "utf8mb4_general_ci")
     fun listCharsets(session: DatabaseSession): List<CharsetInfo> = emptyList()
     fun dropDatabase(session: DatabaseSession, name: String)
+    fun renameTable(session: DatabaseSession, database: String, oldName: String, newName: String)
 
  /**
   * 根据对象类型精确获取 DDL（供结构对比/迁移使用）

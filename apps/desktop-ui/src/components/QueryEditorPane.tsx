@@ -29,7 +29,7 @@ import { EmptyState } from '@/components/EmptyState'
 const { Content } = Layout
 const { Text } = Typography
 
-type OpenObjectDetailRequest = {
+export type OpenObjectDetailRequest = {
   database: string
   name: string
   objectType: 'table' | 'view' | 'procedure' | 'function' | 'trigger'
@@ -124,7 +124,7 @@ function findObjectByName(objects: TableInfo[], objectName: string): TableInfo |
     objects.find((obj) => obj.name.toLowerCase() === objectName.toLowerCase())
 }
 
-export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showAdvancedTools = true, onOpenObjectDetail }) => {
+const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, showAdvancedTools = true, onOpenObjectDetail }) => {
   const { token } = theme.useToken()
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null)
@@ -803,3 +803,6 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
   </>
   )
 }
+
+export const QueryEditorPane = React.memo(QueryEditorPaneComponent)
+QueryEditorPane.displayName = 'QueryEditorPane'

@@ -31,11 +31,16 @@ interface CellPreviewState {
   truncated: boolean
 }
 
+type SqlResultRow = {
+  _key: number
+  _rowIndex: number
+}
+
 const DEFAULT_RESULT_COLUMN_WIDTH = 180
 const MIN_RESULT_COLUMN_WIDTH = 80
 const MAX_RESULT_COLUMN_WIDTH = 900
 
-export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
+const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
   result,
   displayLabel,
   tableHeight,
@@ -94,6 +99,22 @@ export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
       ...sourceColumns.filter((column) => !order.includes(column)),
     ]
   }, [columnOrder, result.columns])
+
+  const tableData = useMemo<SqlResultRow[]>(
+    () => (result.rows ?? []).map((_, index) => ({ _key: index, _rowIndex: index })),
+    [result.rows]
+  )
+
+  const tableScrollX = useMemo(
+    () => Math.max(
+      900,
+      orderedColumns.reduce(
+        (sum, column) => sum + (columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH),
+        0
+      )
+    ),
+    [columnWidths, orderedColumns]
+  )
 
   const maybeLoadMore = useMemo(() => {
     return () => {
@@ -213,7 +234,8 @@ export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
       key: column,
       width: columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH,
       ellipsis: true,
-      render: (value: unknown) => {
+      render: (_value: unknown, record: SqlResultRow) => {
+        const value = result.rows?.[record._rowIndex]?.[column]
         const cellText = formatSqlCell(value)
         const truncated = isSqlCellTruncated(cellText)
         const cleanValue = stripSqlCellTruncationMarker(cellText)
@@ -253,7 +275,7 @@ export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
         style: { padding: '6px 8px', fontWeight: 600, userSelect: 'none' as const },
       }),
     })) ?? []
-  ), [beginColumnResize, columnWidths, moveColumn, orderedColumns, token.colorBorderSecondary, token.colorText])
+  ), [beginColumnResize, columnWidths, moveColumn, orderedColumns, result.rows, token.colorBorderSecondary, token.colorText])
 
   return (
     <div ref={containerRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
@@ -310,11 +332,11 @@ export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
           virtual
           className="sql-spreadsheet-grid"
           columns={columns}
-          dataSource={result.rows?.map((row, index) => ({ ...row, _key: index })) ?? []}
+          dataSource={tableData}
           rowKey="_key"
           pagination={false}
           size="small"
-          scroll={{ x: 'max-content', y: tableScrollY }}
+          scroll={{ x: tableScrollX, y: tableScrollY }}
           rowClassName={(_, index) => index % 2 === 0 ? 'table-row-light' : 'table-row-dark'}
         />
       </div>
@@ -355,3 +377,6 @@ export const SqlResultPanel: React.FC<SqlResultPanelProps> = ({
     </div>
   )
 }
+
+export const SqlResultPanel = React.memo(SqlResultPanelComponent)
+SqlResultPanel.displayName = 'SqlResultPanel'
