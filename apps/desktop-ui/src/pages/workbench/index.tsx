@@ -30,7 +30,7 @@ import {
   FileText, Table2, Activity, Zap, Eye, KeyRound, Search, Plus, Database, Cog, FunctionSquare,
 } from 'lucide-react'
 import type { TableInfo, ColumnInfo, ConnectionConfig, SavedScript, DatabaseInfo } from '@/types'
-import { useWorkbenchStore, type TableTabState, type WorkbenchTab } from '@/stores/workbenchStore'
+import { useWorkbenchStore, type TableDataQuery, type TableTabState, type WorkbenchTab } from '@/stores/workbenchStore'
 import { useConnectionStore } from '@/stores/connectionStore'
 import { useSqlEditorStore } from '@/stores/sqlEditorStore'
 import { useCommandStore } from '@/stores/commandStore'
@@ -471,6 +471,49 @@ export const WorkbenchPage: React.FC = () => {
     })
   }, [setOpenTableTabs])
 
+  const refreshTableRows = useCallback(async (tabKey: string, query?: TableDataQuery, errorMessage = '刷新数据失败') => {
+    const requestKey = `${tabKey}::data`
+    const seq = (loadSeqRef.current[requestKey] ?? 0) + 1
+    loadSeqRef.current[requestKey] = seq
+    const isCurrentRequest = () => loadSeqRef.current[requestKey] === seq
+    const stateTab = useWorkbenchStore.getState().openTableTabs[tabKey]
+    if (!stateTab || stateTab.type !== 'table') return
+
+    const dataQuery = query ?? stateTab.dataQuery ?? {}
+    const hasQuery = Boolean(dataQuery.where || dataQuery.orderBy)
+
+    updateTabState(tabKey, (prev) => ({
+      dataQuery,
+      loadingMoreRows: false,
+      loadingTabs: addUnique(prev.loadingTabs, 'data'),
+    }))
+
+    try {
+      const rows = await metadataApi.previewRows(
+        stateTab.connectionId,
+        stateTab.database,
+        stateTab.tableName,
+        { ...dataQuery, limit: PREVIEW_PAGE_SIZE }
+      ) as Record<string, unknown>[]
+      if (!isCurrentRequest()) return
+      updateTabState(tabKey, (prev) => ({
+        previewRows: rows,
+        dataQuery,
+        hasMoreRows: !hasQuery && rows.length >= PREVIEW_PAGE_SIZE,
+        loadedTabs: addUnique(prev.loadedTabs, 'data'),
+      }))
+    } catch (e) {
+      if (!isCurrentRequest()) return
+      handleApiError(e, errorMessage)
+    } finally {
+      if (isCurrentRequest()) {
+        updateTabState(tabKey, (prev) => ({
+          loadingTabs: removeItems(prev.loadingTabs, ['data']),
+        }))
+      }
+    }
+  }, [updateTabState])
+
   const loadTabDataForTab = useCallback(async (tabKey: string, connId: string, dbName: string, tableName: string, tab: string) => {
     const requestKey = `${tabKey}::${tab}`
     const seq = (loadSeqRef.current[requestKey] ?? 0) + 1
@@ -505,13 +548,15 @@ export const WorkbenchPage: React.FC = () => {
       }
       if (needTab) {
         if (tab === 'data') {
+          const dataQuery = tableTab?.dataQuery ?? {}
+          const hasQuery = Boolean(dataQuery.where || dataQuery.orderBy)
           promises.push(
-            metadataApi.previewRows(connId, dbName, tableName, { limit: PREVIEW_PAGE_SIZE }).then((rows: unknown) => {
+            metadataApi.previewRows(connId, dbName, tableName, { ...dataQuery, limit: PREVIEW_PAGE_SIZE }).then((rows: unknown) => {
               if (!isCurrentRequest()) return
               const rowArr = rows as Record<string, unknown>[]
               updateTabState(tabKey, (prev) => ({
                 previewRows: rowArr,
-                hasMoreRows: rowArr.length >= PREVIEW_PAGE_SIZE,
+                hasMoreRows: !hasQuery && rowArr.length >= PREVIEW_PAGE_SIZE,
                 loadedTabs: addUnique(prev.loadedTabs, 'data'),
               }))
             })
@@ -568,6 +613,7 @@ export const WorkbenchPage: React.FC = () => {
         indexes: [],
         ddl: '',
         previewRows: [],
+        dataQuery: {},
         hasMoreRows: false,
         loadingMoreRows: false,
         loadedTabs: [],
@@ -667,6 +713,7 @@ export const WorkbenchPage: React.FC = () => {
         indexes: [],
         ddl: '',
         previewRows: [],
+        dataQuery: {},
         hasMoreRows: false,
         loadingMoreRows: false,
         detailTab: defaultTab,
@@ -2058,6 +2105,17 @@ export const WorkbenchPage: React.FC = () => {
                                   <Text type="secondary" style={{ fontSize: 12 }}>
                                     {t.previewRows.length > 0 ? `共 ${t.previewRows.length} 行` : ''}
                                   </Text>
+                                  <Tooltip title="刷新当前数据">
+                                    <Button
+                                      size="small"
+                                      icon={<ReloadOutlined />}
+                                      loading={isDataLoading}
+                                      style={quietButtonStyle}
+                                      onClick={() => refreshTableRows(tabKey)}
+                                    >
+                                      刷新
+                                    </Button>
+                                  </Tooltip>
                                   {t.previewRows.length > 0 && (
                                     <Dropdown menu={{
                                       items: [
@@ -2084,49 +2142,33 @@ export const WorkbenchPage: React.FC = () => {
                                   onLoadMore={async () => {
                                     // 防止并发
                                     if (t.loadingMoreRows || !t.hasMoreRows) return
+                                    const requestKey = `${tabKey}::data`
+                                    const seq = (loadSeqRef.current[requestKey] ?? 0) + 1
+                                    loadSeqRef.current[requestKey] = seq
+                                    const isCurrentRequest = () => loadSeqRef.current[requestKey] === seq
                                     updateTabState(tabKey, () => ({ loadingMoreRows: true }))
                                     try {
                                       const rows = await metadataApi.previewRows(
                                         t.connectionId, t.database, t.tableName,
-                                        { limit: PREVIEW_PAGE_SIZE, offset: t.previewRows.length }
+                                        { ...(t.dataQuery ?? {}), limit: PREVIEW_PAGE_SIZE, offset: t.previewRows.length }
                                       ) as Record<string, unknown>[]
+                                      if (!isCurrentRequest()) return
+                                      const hasQuery = Boolean(t.dataQuery?.where || t.dataQuery?.orderBy)
                                       updateTabState(tabKey, (prev) => ({
                                         previewRows: [...prev.previewRows, ...rows],
-                                        hasMoreRows: rows.length >= PREVIEW_PAGE_SIZE,
-                                        loadingMoreRows: false,
+                                        hasMoreRows: !hasQuery && rows.length >= PREVIEW_PAGE_SIZE,
                                       }))
                                     } catch (e) {
-                                      updateTabState(tabKey, () => ({ loadingMoreRows: false }))
+                                      if (!isCurrentRequest()) return
                                       handleApiError(e, '加载更多数据失败')
+                                    } finally {
+                                      if (isCurrentRequest()) {
+                                        updateTabState(tabKey, () => ({ loadingMoreRows: false }))
+                                      }
                                     }
                                   }}
-                                  onRefresh={async () => {
-                                    try {
-                                      const rows = await metadataApi.previewRows(
-                                        t.connectionId, t.database, t.tableName,
-                                        { limit: PREVIEW_PAGE_SIZE }
-                                      ) as Record<string, unknown>[]
-                                      updateTabState(tabKey, () => ({
-                                        previewRows: rows,
-                                        hasMoreRows: rows.length >= PREVIEW_PAGE_SIZE,
-                                      }))
-                                    } catch (e) {
-                                      handleApiError(e, '刷新数据失败')
-                                    }
-                                  }}
-                                  onFilter={async (params) => {
-                                    try {
-                                      const rows = await metadataApi.previewRows(
-                                        t.connectionId, t.database, t.tableName, params
-                                      ) as Record<string, unknown>[]
-                                      updateTabState(tabKey, () => ({
-                                        previewRows: rows,
-                                        hasMoreRows: false,
-                                      }))
-                                    } catch (e) {
-                                      handleApiError(e, '筛选数据失败')
-                                    }
-                                  }}
+                                  onRefresh={() => refreshTableRows(tabKey)}
+                                  onFilter={(params) => refreshTableRows(tabKey, params, '筛选数据失败')}
                                 />
                               </div>
                             </div>

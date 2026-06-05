@@ -31,6 +31,12 @@ interface OpenConnection {
   dbType: DbType
 }
 
+/** 表数据查询状态 */
+export interface TableDataQuery {
+  where?: string
+  orderBy?: string
+}
+
 /** 表详情 Tab 状态 */
 export interface TableTabState {
   type: 'table'
@@ -44,6 +50,7 @@ export interface TableTabState {
   indexes: IndexInfo[]
   ddl: string
   previewRows: Record<string, unknown>[]
+  dataQuery: TableDataQuery
   /** 是否还有更多数据可加载（用于滚动加载） */
   hasMoreRows: boolean
   /** 是否正在加载更多数据 */
