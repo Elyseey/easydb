@@ -104,7 +104,7 @@ export interface SqlResult {
   type: 'query' | 'update' | 'error'
   columns?: string[]
   rows?: Record<string, unknown>[]
-  affectedRows?: number
+  affectedRows?: number | null
   preview?: boolean
   hasMore?: boolean
   connectionId?: string // 用于加载更多
@@ -501,4 +501,3 @@ export interface EditabilityStatus {
   primaryKeys?: string[]
   columns?: ColumnInfo[]
 }
-

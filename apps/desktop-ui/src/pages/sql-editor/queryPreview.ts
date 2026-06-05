@@ -72,3 +72,26 @@ export function mergeSqlPreviewResult(current: SqlResult, next: SqlResult): SqlR
     duration: (current.duration ?? 0) + (next.duration ?? 0),
   }
 }
+
+export function hasKnownAffectedRows(result: SqlResult): result is SqlResult & { affectedRows: number } {
+  return typeof result.affectedRows === 'number'
+}
+
+export function sqlAffectedRowsSummary(results: SqlResult[]): string | null {
+  const updateResults = results.filter((result) => result.type === 'update')
+  const knownResults = updateResults.filter(hasKnownAffectedRows)
+  if (knownResults.length === 0) return null
+  const totalAffected = knownResults.reduce((sum, result) => sum + result.affectedRows, 0)
+  return knownResults.length === updateResults.length
+    ? `共影响 ${totalAffected} 行`
+    : `已知影响 ${totalAffected} 行`
+}
+
+export function sqlSuccessToastMessage(results: SqlResult[]): string {
+  const summary = sqlAffectedRowsSummary(results)
+  return summary ? `执行成功，${summary}` : '执行成功'
+}
+
+export function sqlUpdateResultText(result: SqlResult): string {
+  return hasKnownAffectedRows(result) ? `影响 ${result.affectedRows} 行` : '执行成功'
+}

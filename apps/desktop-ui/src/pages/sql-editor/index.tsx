@@ -41,6 +41,9 @@ import {
   MAX_SQL_PREVIEW_CELL_CHARS,
   mergeSqlPreviewResult,
   normalizeExecutableSql,
+  sqlAffectedRowsSummary,
+  sqlSuccessToastMessage,
+  sqlUpdateResultText,
 } from './queryPreview'
 import { SaveScriptModal } from './SaveScriptModal'
 import { SavedScriptsModal } from './SavedScriptsModal'
@@ -302,8 +305,7 @@ export const SqlEditorPage: React.FC = () => {
         if (hasQuery) {
           updateActiveTab({ results: newResults, currentBatch: enrichedResultList, resultTab: 'result-0' })
         } else {
-          const totalAffected = enrichedResultList.reduce((sum, r) => sum + (r.affectedRows ?? 0), 0)
-          toast.success(`执行成功，共影响 ${totalAffected} 行`)
+          toast.success(sqlSuccessToastMessage(enrichedResultList))
           updateActiveTab({ results: newResults, currentBatch: enrichedResultList, resultTab: 'messages' }) // 全是 update 的情况跳转到消息
         }
       }
@@ -596,7 +598,7 @@ export const SqlEditorPage: React.FC = () => {
                         <div style={{ padding: 24, textAlign: 'center' }}>
                           <Tag color="success">执行成功</Tag>
                           <Text type="secondary">
-                            影响 {currentBatch.reduce((sum, r) => sum + (r.affectedRows ?? 0), 0)} 行
+                            {sqlAffectedRowsSummary(currentBatch) ?? '影响行数不可用'}
                           </Text>
                         </div>
                       ) : (
@@ -624,7 +626,7 @@ export const SqlEditorPage: React.FC = () => {
                                   ? r.preview
                                     ? `✅ 预览加载 ${r.loadedRows ?? r.rows?.length ?? 0} 行${r.hasMore ? '（还有更多）' : ''} (${r.duration}ms)`
                                     : `✅ 查询返回 ${r.rows?.length ?? 0} 行 (${r.duration}ms)`
-                                  : `✅ 影响 ${r.affectedRows} 行 (${r.duration}ms)`
+                                  : `✅ ${sqlUpdateResultText(r)} (${r.duration}ms)`
                               }
                             </div>
                           ))}

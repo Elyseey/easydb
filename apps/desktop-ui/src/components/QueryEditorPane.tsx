@@ -23,6 +23,8 @@ import {
   MAX_SQL_PREVIEW_CELL_CHARS,
   mergeSqlPreviewResult,
   normalizeExecutableSql,
+  sqlSuccessToastMessage,
+  sqlUpdateResultText,
 } from '../pages/sql-editor/queryPreview'
 import { EmptyState } from '@/components/EmptyState'
 
@@ -397,8 +399,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, sho
         if (hasQuery) {
           updateActiveTab({ results: newResults, currentBatch: adjustedResults, resultTab: 'result-0' })
         } else {
-          const totalAffected = resultList.reduce((sum, r) => sum + (r.affectedRows ?? 0), 0)
-          toast.success(`执行成功，共影响 ${totalAffected} 行`)
+          toast.success(sqlSuccessToastMessage(resultList))
           updateActiveTab({ results: newResults, currentBatch: adjustedResults, resultTab: 'messages' })
         }
       }
@@ -749,7 +750,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, sho
                           ? r.preview
                             ? `[OK] 预览加载 ${r.loadedRows ?? r.rows?.length ?? 0} 行${r.hasMore ? '（还有更多）' : ''}. (耗时 ${r.duration}ms)`
                             : `[OK] 查询返回 ${r.loadedRows ?? r.rows?.length ?? 0} 行${r.hasMore ? '（结果已截断，请添加 LIMIT 限制查询范围）' : ''}. (耗时 ${r.duration}ms)`
-                          : `[OK] 影响 ${r.affectedRows} 行. (耗时 ${r.duration}ms)`}
+                          : `[OK] ${sqlUpdateResultText(r)}. (耗时 ${r.duration}ms)`}
                       <div style={{ color: token.colorTextQuaternary, fontSize: 12, marginTop: 2, whiteSpace: 'pre-wrap' }}>{r.sql}</div>
                     </div>
                   ))}

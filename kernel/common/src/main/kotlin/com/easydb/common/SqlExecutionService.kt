@@ -66,6 +66,25 @@ class SqlExecutionService {
         }
     }
 
+    private fun firstSqlKeyword(sql: String): String? {
+        var remaining = sql.trimStart()
+        while (remaining.isNotEmpty()) {
+            remaining = when {
+                remaining.startsWith("--") -> remaining.substringAfter('\n', "").trimStart()
+                remaining.startsWith("#") -> remaining.substringAfter('\n', "").trimStart()
+                remaining.startsWith("/*") && remaining.contains("*/") ->
+                    remaining.substringAfter("*/").trimStart()
+                else -> break
+            }
+        }
+        return Regex("^[A-Za-z]+").find(remaining)?.value?.uppercase()
+    }
+
+    private fun affectedRowsForStatement(sql: String, updateCount: Int): Int? {
+        val rowCountUnknownKeywords = setOf("TRUNCATE", "CREATE", "ALTER", "DROP", "COMMENT", "RENAME")
+        return if (firstSqlKeyword(sql) in rowCountUnknownKeywords) null else updateCount
+    }
+
     private val timeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
     /**
@@ -148,7 +167,7 @@ class SqlExecutionService {
                             break
                         }
                         results.add(SqlResult(
-                            type = "update", affectedRows = updateCount,
+                            type = "update", affectedRows = affectedRowsForStatement(sql, updateCount),
                             duration = duration, sql = truncateSql(sql),
                             executedAt = LocalDateTime.now().format(timeFormatter)
                         ))
@@ -159,7 +178,7 @@ class SqlExecutionService {
 
                 if (results.isEmpty()) {
                     results.add(SqlResult(
-                        type = "update", affectedRows = 0,
+                        type = "update", affectedRows = affectedRowsForStatement(sql, 0),
                         duration = System.currentTimeMillis() - start, sql = truncateSql(sql),
                         executedAt = LocalDateTime.now().format(timeFormatter)
                     ))
@@ -233,7 +252,7 @@ class SqlExecutionService {
                     return if (updateCount >= 0) {
                         SqlResult(
                             type = "update",
-                            affectedRows = updateCount,
+                            affectedRows = affectedRowsForStatement(sql, updateCount),
                             duration = duration,
                             sql = sql,
                             executedAt = LocalDateTime.now().format(timeFormatter)

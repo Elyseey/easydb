@@ -263,6 +263,39 @@ loadTables(connId, dbName)
 
 ---
 
+### Mistake 10: DDL/JDBC Update Count Treated as Business Row Count
+
+**Scenario**: A user executes `TRUNCATE TABLE ...` against a table that contains rows. The database successfully clears the table, but JDBC reports update count `0`, and the frontend displays "影响 0 行".
+
+**Root Cause Chain**:
+1. DDL/metadata-like statements (`TRUNCATE`, `CREATE`, `ALTER`, `DROP`, `COMMENT`, `RENAME`) do not have portable affected-row semantics.
+2. The backend copied `Statement.updateCount` into `SqlResult.affectedRows` for every non-query statement.
+3. The frontend aggregated `affectedRows ?? 0`, turning "unknown/not applicable" into the misleading business claim "0 rows affected".
+
+**Example**:
+```kotlin
+// ❌ Bad — DDL updateCount is not a deleted row count
+SqlResult(type = "update", affectedRows = stmt.updateCount, ...)
+
+// ✅ Good — preserve unknown row-count semantics
+val affectedRows = if (firstKeyword in ddlRowCountUnknownKeywords) null else stmt.updateCount
+SqlResult(type = "update", affectedRows = affectedRows, ...)
+```
+
+```ts
+// ❌ Bad — null/undefined becomes a false zero
+const total = results.reduce((sum, r) => sum + (r.affectedRows ?? 0), 0)
+toast.success(`执行成功，共影响 ${total} 行`)
+
+// ✅ Good — only show affected rows when the backend says they are known
+const known = results.filter((r) => typeof r.affectedRows === 'number')
+toast.success(known.length > 0 ? `执行成功，共影响 ${total} 行` : '执行成功')
+```
+
+**Rule**: Cross-layer result contracts must distinguish **known zero** from **unknown/not applicable**. Do not coerce nullable backend fields into `0` in frontend summaries. For SQL execution, DDL-like statements should return `affectedRows = null` unless the driver provides a portable, meaningful business row count.
+
+---
+
 ## Checklist for Cross-Layer Features（更新版）
 
 Before implementation:
@@ -275,6 +308,7 @@ Before implementation:
 - [ ] **SQL 解析正则是否覆盖逗号分隔和 JOIN 多表语法**
 - [ ] **分页策略注入的合成列是否在列提取后被过滤掉**
 - [ ] **对象重命名/移动后是否同步所有以旧对象名为 key 的前端状态**
+- [ ] **跨层结果字段是否区分“已知 0”和“未知/不适用”（不要把 nullable affectedRows 合并成 0）**
 
 After implementation:
 - [ ] Tested with edge cases (null, empty, invalid)
@@ -286,3 +320,4 @@ After implementation:
 - [ ] **多表 JOIN 查询的列显示是否与 SQL SELECT 一致（非完整表列）**
 - [ ] **ROWNUM_SUBQUERY 等分页策略的合成列是否被过滤**
 - [ ] **重命名成功后 UI 对象树、选中上下文、active tab、打开 tab key 是否都指向新对象名**
+- [ ] **DDL/TRUNCATE 等行数不可知语句的前端文案是否只显示执行成功，不显示误导性 0 行**
