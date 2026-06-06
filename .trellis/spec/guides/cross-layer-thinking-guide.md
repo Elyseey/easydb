@@ -271,6 +271,7 @@ loadTables(connId, dbName)
 1. DDL/metadata-like statements (`TRUNCATE`, `CREATE`, `ALTER`, `DROP`, `COMMENT`, `RENAME`) do not have portable affected-row semantics.
 2. The backend copied `Statement.updateCount` into `SqlResult.affectedRows` for every non-query statement.
 3. The frontend aggregated `affectedRows ?? 0`, turning "unknown/not applicable" into the misleading business claim "0 rows affected".
+4. A later message-log path still interpolated `affectedRows` directly, so `COMMENT ON COLUMN ...` displayed "影响 null 行" even though the backend correctly returned `affectedRows = null`.
 
 **Example**:
 ```kotlin
@@ -287,12 +288,18 @@ SqlResult(type = "update", affectedRows = affectedRows, ...)
 const total = results.reduce((sum, r) => sum + (r.affectedRows ?? 0), 0)
 toast.success(`执行成功，共影响 ${total} 行`)
 
+// ❌ Bad — null is still rendered as a fake row-count value
+message = `[OK] 影响 ${result.affectedRows} 行`
+
 // ✅ Good — only show affected rows when the backend says they are known
 const known = results.filter((r) => typeof r.affectedRows === 'number')
 toast.success(known.length > 0 ? `执行成功，共影响 ${total} 行` : '执行成功')
+
+// ✅ Good — every SQL message/log path goes through the same nullable-aware helper
+message = `[OK] ${sqlUpdateResultText(result)}`
 ```
 
-**Rule**: Cross-layer result contracts must distinguish **known zero** from **unknown/not applicable**. Do not coerce nullable backend fields into `0` in frontend summaries. For SQL execution, DDL-like statements should return `affectedRows = null` unless the driver provides a portable, meaningful business row count.
+**Rule**: Cross-layer result contracts must distinguish **known zero** from **unknown/not applicable**. Do not coerce nullable backend fields into `0` in frontend summaries, and do not directly interpolate nullable fields into user-visible messages. For SQL execution, DDL-like statements should return `affectedRows = null` unless the driver provides a portable, meaningful business row count. Frontend toasts, result panes, message logs, task logs, and import logs must all use one nullable-aware formatting helper for update results.
 
 ---
 
@@ -332,6 +339,7 @@ Before implementation:
 - [ ] **分页策略注入的合成列是否在列提取后被过滤掉**
 - [ ] **对象重命名/移动后是否同步所有以旧对象名为 key 的前端状态**
 - [ ] **跨层结果字段是否区分“已知 0”和“未知/不适用”（不要把 nullable affectedRows 合并成 0）**
+- [ ] **SQL 更新结果文案是否统一走 nullable-aware helper，而不是直接拼接 affectedRows**
 - [ ] **SQL 查询结果区摘要是否显示行数/结果集数，而不是把 batch length 显示成“条语句”**
 
 After implementation:
@@ -345,4 +353,5 @@ After implementation:
 - [ ] **ROWNUM_SUBQUERY 等分页策略的合成列是否被过滤**
 - [ ] **重命名成功后 UI 对象树、选中上下文、active tab、打开 tab key 是否都指向新对象名**
 - [ ] **DDL/TRUNCATE 等行数不可知语句的前端文案是否只显示执行成功，不显示误导性 0 行**
+- [ ] **CREATE/COMMENT/ALTER 等 affectedRows=null 的消息日志是否没有出现“影响 null 行”**
 - [ ] **单条 SELECT 返回多行时，结果区摘要是否展示已加载/总行数，不误导为 1 条数据**
