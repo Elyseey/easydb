@@ -39,6 +39,7 @@ These guides help you **ask the right questions before coding**.
 - [ ] You're not sure where to put some logic
 - [ ] **新建 XxxModels.kt 文件，其中包含 enum class**（→ 检查每个 enum 是否有 `@Serializable`）
 - [ ] **SQL 查询结果列与前端显示列来源不同**（→ `result.columns` 是 SQL 实际列，`tableDef.columns` 是完整表列，不可混用）
+- [ ] **SQL 查询结果区同时展示执行批次和结果表**（→ 行数/结果集数与语句数必须分开命名）
 - [ ] **分页 SQL 包装注入合成列**（→ 列提取后必须过滤 `_easydb_` 前缀）
 - [ ] **用正则解析 SQL 提取表名**（→ 必须覆盖逗号分隔、JOIN、子查询等所有多表语法）
 - [ ] **数据库对象重命名/移动后 UI 看起来没变**（→ 同步所有以旧对象名为 key 的前端状态，再后台刷新）
