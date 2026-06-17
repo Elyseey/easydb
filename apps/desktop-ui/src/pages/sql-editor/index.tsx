@@ -42,6 +42,7 @@ import {
   mergeSqlPreviewResult,
   normalizeExecutableSql,
   sqlAffectedRowsSummary,
+  sqlBatchSummary,
   sqlSuccessToastMessage,
   sqlUpdateResultText,
 } from './queryPreview'
@@ -380,6 +381,7 @@ export const SqlEditorPage: React.FC = () => {
   const currentBatch = activeEditorTab?.currentBatch ?? []
   const results = activeEditorTab?.results ?? []
   const totalDuration = currentBatch.reduce((sum, r) => sum + (r.duration || 0), 0)
+  const currentBatchSummary = sqlBatchSummary(currentBatch, totalDuration)
   const queryResults = currentBatch.filter((r) => r.type === 'query')
   const resultTableHeight = Math.max(240, (typeof window !== 'undefined' ? window.innerHeight : 900) - editorHeight - 250)
   const tableNameCounts: Record<string, number> = {}
@@ -553,9 +555,9 @@ export const SqlEditorPage: React.FC = () => {
                   size="small"
                   style={{ padding: '0 16px', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
                   tabBarExtraContent={
-                    currentBatch.length > 0 && !currentBatch.some(r => r.type === 'error') ? (
+                    currentBatchSummary ? (
                       <Text type="secondary" style={{ fontSize: 12 }}>
-                        共 {currentBatch.length} 条语句 · 耗时 {totalDuration}ms
+                        {currentBatchSummary}
                       </Text>
                     ) : null
                   }

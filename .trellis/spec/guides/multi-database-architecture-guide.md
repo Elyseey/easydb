@@ -122,6 +122,11 @@ source db type + target db type -> adapter
 
 Do not model these as source-only or target-only features.
 
+Frontend capability flags for pair features are only coarse entry controls. For example,
+`tasks.migration = true` means the database type can participate in at least one supported
+migration pair, not that it can be used as both source and target. The feature page and backend
+route must still validate the exact `(sourceDbType, targetDbType)` pair before preview/start.
+
 ## Pre-Commit Search
 
 ```bash

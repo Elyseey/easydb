@@ -18,6 +18,7 @@ interface SqlResultPanelProps {
   result: SqlResult
   displayLabel: string
   tableHeight: number
+  active?: boolean
   loadMoreKey?: string
   currentLoadKey?: string | null
   onLoadMore?: () => void
@@ -44,6 +45,7 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
   result,
   displayLabel,
   tableHeight,
+  active = true,
   loadMoreKey,
   currentLoadKey,
   onLoadMore,
@@ -57,9 +59,32 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
   const dragColumnRef = useRef<string | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const toolbarRef = useRef<HTMLDivElement | null>(null)
+  const tableWrapperRef = useRef<HTMLDivElement | null>(null)
   const tableBodyRef = useRef<HTMLDivElement | null>(null)
+  const scrollTopRef = useRef(0)
   const autoLoadLockRef = useRef(false)
   const isLoadingMore = currentLoadKey === loadMoreKey
+
+  const updateMeasuredTableHeight = useCallback(() => {
+    const wrapperEl = tableWrapperRef.current
+    if (!wrapperEl) return
+    const wrapperHeight = wrapperEl.clientHeight
+    if (wrapperHeight === 0) return
+    const thead = wrapperEl.querySelector('.ant-table-thead')
+    const headerHeight = thead ? Math.ceil(thead.getBoundingClientRect().height) : 40
+    setTableScrollY(Math.max(220, wrapperHeight - headerHeight - 2))
+  }, [])
+
+  const forceVirtualRefresh = useCallback(() => {
+    const scrollBody = tableBodyRef.current
+    if (scrollBody) {
+      scrollBody.scrollTop = scrollTopRef.current
+    }
+    window.dispatchEvent(new Event('resize'))
+    if (!scrollBody) return
+    scrollBody.scrollTop = scrollTopRef.current
+    scrollBody.dispatchEvent(new Event('scroll'))
+  }, [])
 
   const beginColumnResize = useCallback((column: string, event: React.MouseEvent) => {
     startDeferredColumnResize({
@@ -134,31 +159,25 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
   }, [isLoadingMore, onLoadMore, result.hasMore, result.preview])
 
   useLayoutEffect(() => {
-    const container = containerRef.current
-    if (!container) return undefined
+    const wrapperEl = tableWrapperRef.current
+    if (!wrapperEl) return undefined
 
-    const updateHeight = () => {
-      const toolbarHeight = toolbarRef.current?.getBoundingClientRect().height ?? 0
-      const headerHeight = 40
-      const outerGap = 16
-      
-      const containerTop = container.getBoundingClientRect().top
-      const availableHeight = window.innerHeight - containerTop
-      
-      const next = Math.max(
-        220,
-        Math.floor(availableHeight - toolbarHeight - headerHeight - outerGap)
-      )
-      
-      setTableScrollY(next)
-    }
+    updateMeasuredTableHeight()
+    requestAnimationFrame(updateMeasuredTableHeight)
 
-    updateHeight()
-    const observer = new ResizeObserver(updateHeight)
-    observer.observe(container)
+    const observer = new ResizeObserver(updateMeasuredTableHeight)
+    observer.observe(wrapperEl)
     if (toolbarRef.current) observer.observe(toolbarRef.current)
     return () => observer.disconnect()
-  }, [result.hasMore, result.rows?.length, tableHeight])
+  }, [result.hasMore, result.rows?.length, tableHeight, updateMeasuredTableHeight])
+
+  useEffect(() => {
+    if (!active) return
+    requestAnimationFrame(() => {
+      updateMeasuredTableHeight()
+      requestAnimationFrame(forceVirtualRefresh)
+    })
+  }, [active, forceVirtualRefresh, updateMeasuredTableHeight])
 
   useEffect(() => {
     autoLoadLockRef.current = false
@@ -177,6 +196,7 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
     if (!nextTableBody) return undefined
 
     const handleScroll = () => {
+      scrollTopRef.current = nextTableBody.scrollTop
       maybeLoadMore()
     }
 
@@ -326,7 +346,7 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
         </Dropdown>
       </div>
 
-      <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+      <div ref={tableWrapperRef} style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
         <Table
           bordered
           virtual

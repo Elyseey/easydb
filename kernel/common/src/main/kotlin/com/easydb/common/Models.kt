@@ -43,7 +43,9 @@ data class ConnectionConfig(
     val lastUsedAt: String? = null,
     val ssh: SshConfig? = null,
     val ssl: SslConfig? = null,
-    val groupId: String? = null
+    val groupId: String? = null,
+    /** Credential vault reference for the database password. */
+    val passwordRef: String? = null
 )
 
 // ─── 连接分组 ──────────────────────────────────────────────
@@ -63,7 +65,9 @@ data class SshConfig(
     val username: String = "",
     val authType: String = "password", // password | privateKey
     val password: String? = null,
-    val privateKeyPath: String? = null
+    val privateKeyPath: String? = null,
+    /** Credential vault reference for the SSH password. */
+    val passwordRef: String? = null
 )
 
 // ─── SSL 配置 ──────────────────────────────────────────────
@@ -106,10 +110,17 @@ data class DatabaseCapabilities(
 /**
  * 返回密码脱敏的副本（用于 API 响应）。
  * 内存中的原始对象保持明文不变。
+ *
+ * 脱敏规则：
+ *   - password 字段清空（API 永不返回明文），passwordRef 保留以指示凭据存在
+ *   - SSH password 同规则
+ *   - 调用方通过 passwordRef == null 判断是否有已存储凭据
  */
 fun ConnectionConfig.masked(): ConnectionConfig = copy(
-    password = if (password.isNotBlank()) "***" else "",
+    password = "",
+    passwordRef = passwordRef,
     ssh = ssh?.copy(
-        password = if (!ssh.password.isNullOrBlank()) "***" else null
+        password = null,
+        passwordRef = ssh.passwordRef
     )
 )

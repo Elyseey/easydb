@@ -46,10 +46,23 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
   React.useEffect(() => {
     if (open) {
       if (editingConnection) {
-        form.setFieldsValue(editingConnection)
+        // 编辑模式：不预填已存储密码，避免 *** 回传
+        const hasStoredPassword = !!editingConnection.passwordRef
+        const hasStoredSshPassword = !!editingConnection.ssh?.passwordRef
+        form.setFieldsValue({
+          ...editingConnection,
+          password: '',  // 清空，由 placeholder 提示
+          ssh: editingConnection.ssh ? {
+            ...editingConnection.ssh,
+            password: '',  // 清空 SSH 密码同理
+          } : undefined,
+        })
         setSshEnabled(!!editingConnection.ssh?.enabled)
         setSslEnabled(!!editingConnection.ssl?.enabled)
         setSshAuthType((editingConnection.ssh?.authType as 'password' | 'privateKey') ?? 'password')
+        // 保存原始 passwordRef，用于判断 save 时是否修改了密码
+        ;(form as any).__hasStoredPassword = hasStoredPassword
+        ;(form as any).__hasStoredSshPassword = hasStoredSshPassword
       } else {
         form.resetFields()
         form.setFieldsValue({
@@ -59,6 +72,8 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
         setSshEnabled(false)
         setSslEnabled(false)
         setSshAuthType('password')
+        ;(form as any).__hasStoredPassword = false
+        ;(form as any).__hasStoredSshPassword = false
       }
     }
   }, [open, editingConnection, form, defaultGroupId])
@@ -172,7 +187,9 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                       <Input placeholder="root" />
                     </Form.Item>
                     <Form.Item name="password" label="密码" style={{ flex: 1 }}>
-                      <Input.Password placeholder="密码" />
+                      <Input.Password
+                        placeholder={editingConnection?.passwordRef ? '密码已存储，留空保持不变' : '密码'}
+                      />
                     </Form.Item>
                   </div>
                   <Form.Item name="database" label="默认数据库">
@@ -214,7 +231,9 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                       {/* 密码认证 */}
                       {sshAuthType === 'password' && (
                         <Form.Item name={['ssh', 'password']} label="SSH 密码">
-                          <Input.Password placeholder="SSH 密码" />
+                          <Input.Password
+                            placeholder={editingConnection?.ssh?.passwordRef ? '密码已存储，留空保持不变' : 'SSH 密码'}
+                          />
                         </Form.Item>
                       )}
                       {/* 私钥认证：输入私钥文件路径 */}

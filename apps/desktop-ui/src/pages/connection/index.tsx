@@ -145,7 +145,15 @@ export const ConnectionPage: React.FC = () => {
     setTesting(true)
     setTestResult(null)
     try {
-      const result = await connectionApi.test(values) as { success: boolean; message: string }
+      // 编辑模式下，如果用户未修改密码，需要携带 passwordRef 以便后端从 vault 解析
+      const testData = { ...values }
+      if (editingConn?.passwordRef && !testData.password) {
+        testData.passwordRef = editingConn.passwordRef
+      }
+      if (editingConn?.ssh?.passwordRef && testData.ssh && !testData.ssh.password) {
+        testData.ssh = { ...testData.ssh, passwordRef: editingConn.ssh.passwordRef }
+      }
+      const result = await connectionApi.test(testData) as { success: boolean; message: string }
       setTestResult(result)
     } catch (e) {
       setTestResult({ success: false, message: e instanceof Error ? e.message : '测试失败' })

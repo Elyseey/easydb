@@ -87,6 +87,42 @@ export function sqlAffectedRowsSummary(results: SqlResult[]): string | null {
     : `已知影响 ${totalAffected} 行`
 }
 
+export function sqlQueryRowsSummary(results: SqlResult[]): string | null {
+  const queryResults = results.filter((result) => result.type === 'query')
+  if (queryResults.length === 0) return null
+
+  const loadedRows = queryResults.reduce(
+    (sum, result) => sum + (result.loadedRows ?? result.rows?.length ?? 0),
+    0
+  )
+  const knownTotalRows = queryResults
+    .map((result) => result.totalRows)
+    .filter((totalRows): totalRows is number => typeof totalRows === 'number')
+
+  if (queryResults.length === 1) {
+    const [result] = queryResults
+    const loaded = result.loadedRows ?? result.rows?.length ?? 0
+    const total = result.totalRows
+    return typeof total === 'number'
+      ? `已加载 ${loaded} 行 / 共 ${total} 行`
+      : `已加载 ${loaded} 行${result.hasMore ? '（还有更多）' : ''}`
+  }
+
+  const totalText = knownTotalRows.length === queryResults.length
+    ? ` / 共 ${knownTotalRows.reduce((sum, totalRows) => sum + totalRows, 0)} 行`
+    : ''
+  return `已加载 ${loadedRows} 行${totalText} · ${queryResults.length} 个结果集`
+}
+
+export function sqlBatchSummary(results: SqlResult[], durationMs: number): string | null {
+  if (results.length === 0 || results.some((result) => result.type === 'error')) return null
+
+  const querySummary = sqlQueryRowsSummary(results)
+  if (querySummary) return `${querySummary} · 耗时 ${durationMs}ms`
+
+  return `共 ${results.length} 条语句 · 耗时 ${durationMs}ms`
+}
+
 export function sqlSuccessToastMessage(results: SqlResult[]): string {
   const summary = sqlAffectedRowsSummary(results)
   return summary ? `执行成功，${summary}` : '执行成功'

@@ -76,6 +76,8 @@ requestAnimationFrame(() => {
 - 重型 pane 是否从 `WorkbenchPage` 内联 JSX 中提取为 memoized child。
 - 传给 memoized pane 的回调是否用 `useCallback` 稳定。
 - `<Table virtual>` 是否使用 numeric `scroll.x` / `scroll.y`，避免 `x: 'max-content'`。
+- KeepAlive 中的 SQL pane 是否只在 active 时挂载 Monaco DOM，并为每个 SQL tab 使用唯一 `path` + `keepCurrentModel`。
+- KeepAlive 中的 SQL 结果虚拟表是否在 active 恢复时重测 wrapper 高度、恢复 `scrollTop` 并触发 resize/scroll。
 
 > 详见 [Component Guidelines — Workbench Tab Switching](./component-guidelines.md)
 
@@ -101,6 +103,8 @@ requestAnimationFrame(() => {
 - [ ] 已有 tab 切换是否不触发新的元数据或预览数据请求？
 - [ ] 表页签切换是否不复制整行宽表数据？
 - [ ] SQL 页签切换是否不会因为父组件重渲染重建 Monaco？
+- [ ] SQL 页签在工作台 KeepAlive 中是否只为 active pane 挂载 Monaco DOM，并使用唯一 model `path` + `keepCurrentModel`？
+- [ ] SQL 查询结果表切回时是否不会空白，并能保留切走前的滚动位置？
 - [ ] 用至少一个宽表（约 50 列、1000 行 preview）手动验证 tab 切换无明显停顿？
 
 ### 涉及弹窗/Modal 的 PR
@@ -110,6 +114,25 @@ requestAnimationFrame(() => {
 - [ ] 全局 Modal 样式是否同时覆盖 `.ant-modal-content` 和 AntD v6 的 `.ant-modal-container`？
 - [ ] 含输入框的弹窗是否使用受控 `<Modal>`，而不是把表单塞进 `Modal.confirm`？
 - [ ] 右键菜单是否做了边界检测（靠近底部/右侧时翻转）？
+
+### 涉及 AutoComplete + Enter 触发的 PR
+
+- [ ] Enter 触发操作前是否检查下拉框已关闭？（参考 `suggestionsOpen` 追踪）
+- [ ] 是否避免在用户选择建议时误触发操作（如：确认表单 / 执行查询 / 提交）？
+- [ ] 连续输入过程中是否会因为 React 异步状态导致误判？（用 `onDropdownVisibleChange` 而非事件推断）
+
+### ❌ AutoComplete Enter 误触发（禁止模式）
+
+```tsx
+// 禁止：不区分“选建议”和“执行操作”，输入未完成就触发了
+<AutoComplete onKeyDown={(e) => { if (e.key === 'Enter') submitQuery() }}>
+
+// 必须：追踪下拉框状态，仅在下拉关闭时响应 Enter
+const [open, setOpen] = useState(false)
+<AutoComplete
+  onDropdownVisibleChange={setOpen}
+  onKeyDown={(e) => { if (e.key === 'Enter' && !open) { e.preventDefault(); submitQuery() }}}
+>
 
 ---
 

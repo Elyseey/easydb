@@ -31,6 +31,13 @@ import { startDeferredColumnResize } from '@/utils/columnResize'
 
 const { Text } = Typography
 
+export interface EditableDataTableFilterState {
+  whereDraft?: string
+  appliedWhere?: string
+  sortColumn?: string | null
+  sortDirection?: 'ASC' | 'DESC' | null
+}
+
 interface EditableDataTableProps {
   connectionId: string
   database: string
@@ -45,6 +52,10 @@ interface EditableDataTableProps {
   onLoadMore?: () => void
   loadingMore?: boolean
   loading?: boolean
+  active?: boolean
+  onDirtyChange?: (dirty: boolean) => void
+  filterState?: EditableDataTableFilterState
+  onFilterStateChange?: (patch: Partial<EditableDataTableFilterState>) => void
 }
 
 type CellChange = {
@@ -146,6 +157,10 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   onLoadMore,
   loadingMore,
   loading = false,
+  active = true,
+  onDirtyChange,
+  filterState,
+  onFilterStateChange,
 }) => {
   const { token } = theme.useToken()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -156,16 +171,46 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   const cellChangesRef = useRef<CellChange[]>([])
   const tableBodyRef = useRef<HTMLDivElement | null>(null)
   const autoLoadLockRef = useRef(false)
+  const onDirtyChangeRef = useRef(onDirtyChange)
   // 强制触发 virtual-list 的 onHolderResize，让其重算 height 依赖并重新渲染可见行
   const forceVirtualRefreshRef = useRef<() => void>(() => {})
   // Ant Design Table 的 scrollTo ref
   const tableRef = useRef<import('@rc-component/table').Reference>(null)
 
   // 筛选状态
+  const isFilterControlled = filterState !== undefined
   const [whereClause, setWhereClause] = useState('')
   const [appliedWhere, setAppliedWhere] = useState('')
   const [sortColumn, setSortColumn] = useState<string | null>(null)
   const [sortDirection, setSortDirection] = useState<'ASC' | 'DESC' | null>(null)
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false)
+  const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (!filterState) return
+    setWhereClause(filterState.whereDraft ?? '')
+    setAppliedWhere(filterState.appliedWhere ?? '')
+    setSortColumn(filterState.sortColumn ?? null)
+    setSortDirection(filterState.sortDirection ?? null)
+  }, [
+    filterState,
+  ])
+
+  const updateFilterState = useCallback((patch: Partial<EditableDataTableFilterState>) => {
+    if (Object.prototype.hasOwnProperty.call(patch, 'whereDraft')) {
+      setWhereClause(patch.whereDraft ?? '')
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'appliedWhere')) {
+      setAppliedWhere(patch.appliedWhere ?? '')
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'sortColumn')) {
+      setSortColumn(patch.sortColumn ?? null)
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'sortDirection')) {
+      setSortDirection(patch.sortDirection ?? null)
+    }
+    onFilterStateChange?.(patch)
+  }, [onFilterStateChange])
 
   // 编辑状态用 ref 追踪，只在确认编辑时触发渲染
   const [editorState, setEditorState] = useState<{
@@ -217,6 +262,14 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
 
   const hasChanges = cellChangeCount > 0 || pendingRows.length > 0
   const editableColumnNames = useMemo(() => columns.map((col) => col.name), [columns])
+
+  useEffect(() => {
+    onDirtyChangeRef.current = onDirtyChange
+  }, [onDirtyChange])
+
+  useEffect(() => {
+    onDirtyChangeRef.current?.(hasChanges)
+  }, [hasChanges])
 
   const displayColumnNames = useMemo(() => (
     visibleColumns
@@ -294,20 +347,22 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     setInsertPositions([])
     setSelectedRowKeys([])
     setContextMenu(null)
-    setWhereClause('')
-    setAppliedWhere('')
-    setSortColumn(null)
-    setSortDirection(null)
-  }, [connectionId, database, tableName])
+    if (!isFilterControlled) {
+      setWhereClause('')
+      setAppliedWhere('')
+      setSortColumn(null)
+      setSortDirection(null)
+    }
+  }, [connectionId, database, isFilterControlled, tableName])
 
   const applyFilter = useCallback(() => {
-    setAppliedWhere(whereClause)
+    updateFilterState({ appliedWhere: whereClause })
     const orderBy = sortColumn && sortDirection ? `\`${sortColumn}\` ${sortDirection}` : undefined
     onFilter?.({
       where: whereClause || undefined,
       orderBy,
     })
-  }, [whereClause, sortColumn, sortDirection, onFilter])
+  }, [onFilter, sortColumn, sortDirection, updateFilterState, whereClause])
 
   const handleSort = useCallback((colName: string) => {
     let newDir: 'ASC' | 'DESC' | null
@@ -318,14 +373,16 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     } else {
       newDir = null
     }
-    setSortColumn(newDir ? colName : null)
-    setSortDirection(newDir)
+    updateFilterState({
+      sortColumn: newDir ? colName : null,
+      sortDirection: newDir,
+    })
     const orderBy = newDir ? `\`${colName}\` ${newDir}` : undefined
     onFilter?.({
       where: appliedWhere || undefined,
       orderBy,
     })
-  }, [sortColumn, sortDirection, appliedWhere, onFilter])
+  }, [appliedWhere, onFilter, sortColumn, sortDirection, updateFilterState])
 
   const getCellValue = useCallback((rowIndex: number, column: string): string | null => {
     const changedCell = cellChangesRef.current.find((item) => item.rowIndex === rowIndex && item.column === column)
@@ -431,20 +488,19 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     syncSelectedRowClass(nextIndex)
   })
 
+  const updateMeasuredTableHeight = useCallback(() => {
+    const wrapperEl = tableWrapperRef.current
+    if (!wrapperEl) return
+    const wrapperHeight = wrapperEl.clientHeight
+    if (wrapperHeight === 0) return
+    const thead = wrapperEl.querySelector('.ant-table-thead')
+    const headerHeight = thead ? Math.ceil(thead.getBoundingClientRect().height) : 42
+    setTableScrollY(Math.max(220, wrapperHeight - headerHeight - 2))
+  }, [])
+
   useLayoutEffect(() => {
     const wrapperEl = tableWrapperRef.current
     if (!wrapperEl) return undefined
-
-    const updateHeight = () => {
-      const wrapperHeight = wrapperEl.clientHeight
-      if (wrapperHeight === 0) return  // 容器尚未可见，跳过
-      // 动态测量表头实际高度，避免硬编码 40 导致末行被裁切
-      const thead = wrapperEl.querySelector('.ant-table-thead')
-      const headerHeight = thead ? Math.ceil(thead.getBoundingClientRect().height) : 42
-      // 2px 安全边距，确保最后一行完整可见
-      const next = Math.max(220, wrapperHeight - headerHeight - 2)
-      setTableScrollY(next)
-    }
 
     // 暴露给行变更操作调用：dispatch resize 事件，触发 rc-virtual-list 内部的 onHolderResize
     // 使其重测容器 height 并重算 visible-range，确保新行在 Tabs 场景下即时显示
@@ -452,15 +508,23 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
       window.dispatchEvent(new Event('resize'))
     }
 
-    updateHeight()
+    updateMeasuredTableHeight()
     // mount 后再测一次：首次渲染时 .ant-table-thead 可能还不存在
-    requestAnimationFrame(updateHeight)
+    requestAnimationFrame(updateMeasuredTableHeight)
 
     // 直接观测 wrapper（flex:1），toolbar 和 container 尺寸变化都会传导到 wrapper
-    const observer = new ResizeObserver(updateHeight)
+    const observer = new ResizeObserver(updateMeasuredTableHeight)
     observer.observe(wrapperEl)
     return () => observer.disconnect()
-  }, [])
+  }, [updateMeasuredTableHeight])
+
+  useEffect(() => {
+    if (!active) return
+    requestAnimationFrame(() => {
+      updateMeasuredTableHeight()
+      forceVirtualRefreshRef.current()
+    })
+  }, [active, updateMeasuredTableHeight])
 
 
   // 监听表格滚动，触发加载更多
@@ -1109,7 +1173,8 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
             size="small"
             style={{ flex: 1 }}
             value={whereClause}
-            onChange={(val) => setWhereClause(val)}
+            onChange={(val) => updateFilterState({ whereDraft: val })}
+            onDropdownVisibleChange={setSuggestionsOpen}
             options={(() => {
               // 提取光标位置前的最后一个单词
               const input = document.activeElement as HTMLInputElement | null
@@ -1138,9 +1203,27 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
                 }))
               return [...colSuggestions, ...kwSuggestions]
             })()}
+            onSelect={() => {
+              // 用户从下拉框选中了建议 → 取消待执行的筛选
+              if (enterTimerRef.current) {
+                clearTimeout(enterTimerRef.current)
+                enterTimerRef.current = null
+              }
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.defaultPrevented) {
-                setTimeout(() => applyFilter(), 0)
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                if (suggestionsOpen) {
+                  // 下拉框开着，延迟 120ms 看是否会触发 onSelect
+                  // 如果触发 → onSelect 会取消 timer → 不执行筛选（用户只是选建议）
+                  // 如果未触发 → timer 到期 → 执行筛选（用户想提交）
+                  enterTimerRef.current = setTimeout(() => {
+                    enterTimerRef.current = null
+                    applyFilter()
+                  }, 120)
+                } else {
+                  applyFilter()
+                }
               }
             }}
           >
@@ -1153,10 +1236,12 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
           <Button size="small" type="primary" onClick={applyFilter}>筛选</Button>
           {appliedWhere && (
             <Button size="small" onClick={() => {
-              setWhereClause('')
-              setAppliedWhere('')
-              setSortColumn(null)
-              setSortDirection(null)
+              updateFilterState({
+                whereDraft: '',
+                appliedWhere: '',
+                sortColumn: null,
+                sortDirection: null,
+              })
               onFilter?.({})
             }}>重置</Button>
           )}

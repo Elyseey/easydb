@@ -110,6 +110,33 @@ fun query(): List<Event> {
 
 **规则**: `@Synchronized` 方法如果返回集合，**必须返回独立副本**（`.toList()` / `.toMap()` 等），禁止返回原始集合的视图。
 
+### Mistake 5: Inconsistent Error Response Formats
+
+**Scenario**: 某个路由的异常处理使用了与 `call.fail()` 不一致的响应格式（如直接 `call.respond(HttpStatusCode.InternalServerError, ...)`），导致前端无法解析错误消息。
+
+**Result**: 用户看到 "HTTP 500: Internal Server Error" 而非有意义的错误信息，实际数据库/业务错误消息丢失。
+
+**Example**:
+```kotlin
+// ❌ Bad — 不一致的响应格式，前端无法解析
+} catch (e: Exception) {
+    call.respond(HttpStatusCode.InternalServerError,
+        mapOf("error" to (e.message ?: "unknown"), "type" to e.javaClass.simpleName))
+}
+
+// ✅ Good — 使用统一的 call.fail() 格式
+} catch (e: Exception) {
+    call.fail("PREVIEW_FAILED", e.message ?: "预览数据失败")
+}
+```
+
+**统一响应契约**:
+- 成功: `{"success": true, "data": ...}` (via `call.ok()`)
+- 失败: `{"success": false, "error": {"code": "...", "message": "..."}}` (via `call.fail()`)
+- 前端期望: `json.error?.message` 和 `json.error?.code`
+
+**规则**: 所有后端路由的错误响应**必须**使用 `call.fail(code, message)`，禁止直接使用 `call.respond()` 返回非标准错误格式。
+
 ---
 
 ## Checklist for Cross-Layer Features

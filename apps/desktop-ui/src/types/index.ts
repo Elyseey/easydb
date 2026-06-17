@@ -30,6 +30,8 @@ export interface ConnectionConfig {
   ssh?: SshConfig
   ssl?: SslConfig
   groupId?: string
+  /** Vault reference — non-null means a credential is stored */
+  passwordRef?: string | null
 }
 
 // 连接分组
@@ -46,8 +48,10 @@ export interface SshConfig {
   port: number
   username: string
   authType: 'password' | 'privateKey'
-  password?: string
+  password?: string | null
   privateKeyPath?: string
+  /** Vault reference — non-null means a credential is stored */
+  passwordRef?: string | null
 }
 
 // SSL 配置

@@ -13,10 +13,17 @@ object ServiceRegistry {
     val mysqlAdapter = MysqlDatabaseAdapter()
     val damengAdapter = DamengDatabaseAdapter()
     val adapterRegistry = DatabaseAdapterRegistry(listOf(mysqlAdapter, damengAdapter))
+    val migrationAdapterRegistry = MigrationAdapterRegistry(
+        listOf(
+            RegisteredMigrationAdapter("mysql", "mysql", mysqlAdapter.migrationAdapter()),
+            RegisteredMigrationAdapter("mysql", "dameng", MysqlToDamengMigrationAdapter())
+        )
+    )
     val connectionManager = ConnectionManager()
     val sqlService = SqlExecutionService()
     val sqlQuerySessionManager = SqlQuerySessionManager()
-    val connectionStore = ConnectionStore()
+    val credentialVault: CredentialVault = LocalFileCredentialVault()
+    val connectionStore = ConnectionStore(vault = credentialVault)
     val groupStore = GroupStore()
     val taskManager = TaskManager()
     val sqlHistoryStore = SqlHistoryStore()

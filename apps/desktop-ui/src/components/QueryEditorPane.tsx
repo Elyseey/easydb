@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react'
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { Layout, Button, Space, Typography, Tabs, Select, Spin, theme, Tooltip } from 'antd'
 import { PlayCircleOutlined, ClearOutlined, StarOutlined, FolderOpenOutlined, HistoryOutlined } from '@ant-design/icons'
 import Editor, { type OnMount } from '@monaco-editor/react'
@@ -23,6 +23,7 @@ import {
   MAX_SQL_PREVIEW_CELL_CHARS,
   mergeSqlPreviewResult,
   normalizeExecutableSql,
+  sqlBatchSummary,
   sqlSuccessToastMessage,
   sqlUpdateResultText,
 } from '../pages/sql-editor/queryPreview'
@@ -39,6 +40,7 @@ export type OpenObjectDetailRequest = {
 
 interface QueryEditorPaneProps {
   queryId: string
+  active?: boolean
   /** 开启高级 SQL 工具（收藏脚本、SQL 历史等）。默认开启。 */
   showAdvancedTools?: boolean
   /** 打开工作台对象详情页。 */
@@ -126,11 +128,12 @@ function findObjectByName(objects: TableInfo[], objectName: string): TableInfo |
     objects.find((obj) => obj.name.toLowerCase() === objectName.toLowerCase())
 }
 
-const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, showAdvancedTools = true, onOpenObjectDetail }) => {
+const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, active = true, showAdvancedTools = true, onOpenObjectDetail }) => {
   const { token } = theme.useToken()
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null)
   const completionDisposableRef = useRef<{ dispose: () => void } | null>(null)
+  const editorModelPath = useMemo(() => `inmemory://easydb/sql/${encodeURIComponent(queryId)}.sql`, [queryId])
 
   const connections = useConnectionStore((s) => s.connections)
   const updateConnection = useConnectionStore((s) => s.updateConnection)
@@ -160,6 +163,22 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, sho
     activeEditorTabRef.current = activeEditorTab
     onOpenObjectDetailRef.current = onOpenObjectDetail
   }, [activeEditorTab, onOpenObjectDetail])
+
+  useEffect(() => {
+    if (!active) return
+    const frame = window.requestAnimationFrame(() => {
+      editorRef.current?.layout()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [active, activeEditorTab?.database, editorHeight])
+
+  useEffect(() => {
+    if (active && activeEditorTab?.connectionId && activeEditorTab.database) return
+    editorRef.current = null
+    monacoRef.current = null
+    completionDisposableRef.current?.dispose()
+    completionDisposableRef.current = null
+  }, [active, activeEditorTab?.connectionId, activeEditorTab?.database])
 
   useEffect(() => {
     const handleMouseMove = (e: globalThis.MouseEvent) => {
@@ -304,7 +323,12 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, sho
         createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monaco)
       )
     }
-    editorInstance.focus()
+    if (active) {
+      window.requestAnimationFrame(() => {
+        editorInstance.layout()
+        editorInstance.focus()
+      })
+    }
   }
 
   // --- 自动重新注册 CompletionProvider ---
@@ -515,6 +539,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, sho
   const currentBatch = activeEditorTab.currentBatch ?? []
   const results = activeEditorTab.results ?? []
   const totalDuration = currentBatch.reduce((sum, r) => sum + (r.duration || 0), 0)
+  const currentBatchSummary = sqlBatchSummary(currentBatch, totalDuration)
   const resultTableHeight = Math.max(240, (typeof window !== 'undefined' ? window.innerHeight : 900) - editorHeight - 230)
   const tableNameCounts: Record<string, number> = {}
   let queryIndex = 0
@@ -605,12 +630,14 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, sho
           />
         ) : !activeEditorTab.database ? (
           <EmptyState description="请在上方选择我们要查询的数据库" />
-        ) : (
+        ) : !active ? null : (
           <Editor
             key={`editor-${queryId}`}
             height="100%"
             language="sql"
             theme="vs-dark"
+            path={editorModelPath}
+            keepCurrentModel
             defaultValue={activeEditorTab.sql}
             onChange={(value) => updateActiveTab({ sql: value ?? '' })}
             onMount={handleEditorMount}
@@ -661,9 +688,9 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, sho
           style={{ padding: '0 16px', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
           tabBarStyle={{ marginBottom: 0 }}
           tabBarExtraContent={
-            currentBatch.length > 0 && !currentBatch.some(r => r.type === 'error') ? (
+            currentBatchSummary ? (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                共 {currentBatch.length} 条语句 · 耗时 {totalDuration}ms
+                {currentBatchSummary}
               </Text>
             ) : null
           }
@@ -708,6 +735,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, sho
                         visibleColumns={r.columns}
                         dataSource={r.rows ?? []}
                         onRefresh={() => handleExecute()}
+                        active={active}
                         hasMore={r.preview && r.hasMore}
                         onLoadMore={r.preview && r.hasMore ? () => handleLoadMore(idx) : undefined}
                         loadingMore={loadingMoreKey === `${queryId}-${idx}`}
@@ -721,6 +749,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, sho
                       result={r}
                       displayLabel={displayLabel}
                       tableHeight={resultTableHeight}
+                      active={active}
                       loadMoreKey={`${queryId}-${idx}`}
                       currentLoadKey={loadingMoreKey}
                       onLoadMore={r.preview && r.hasMore ? () => handleLoadMore(idx) : undefined}

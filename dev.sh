@@ -22,6 +22,77 @@ log()  { echo -e "${GREEN}[EasyDB]${NC} $1"; }
 warn() { echo -e "${YELLOW}[EasyDB]${NC} $1"; }
 err()  { echo -e "${RED}[EasyDB]${NC} $1"; }
 
+resolve_path() {
+    local path="$1"
+    while [ -L "$path" ]; do
+        local link
+        link=$(readlink "$path") || return 1
+        case "$link" in
+            /*) path="$link" ;;
+            *)  path="$(dirname "$path")/$link" ;;
+        esac
+    done
+
+    local dir
+    dir=$(cd "$(dirname "$path")" && pwd -P) || return 1
+    echo "$dir/$(basename "$path")"
+}
+
+find_local_jre_home() {
+    local candidate
+
+    for candidate in "$EASYDB_JRE_HOME" "$JAVA_HOME"; do
+        if [ -n "$candidate" ] && [ -x "$candidate/bin/java" ]; then
+            cd "$candidate" && pwd -P
+            return 0
+        fi
+    done
+
+    local java_bin
+    java_bin=$(command -v java 2>/dev/null) || return 1
+    java_bin=$(resolve_path "$java_bin") || return 1
+
+    local detected_home
+    detected_home=$("$java_bin" -XshowSettings:properties -version 2>&1 | awk -F= '/^[[:space:]]*java.home =/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }')
+    if [ -n "$detected_home" ] && [ -x "$detected_home/bin/java" ]; then
+        cd "$detected_home" && pwd -P
+        return 0
+    fi
+
+    candidate="$(dirname "$java_bin")/.."
+    if [ -x "$candidate/bin/java" ]; then
+        cd "$candidate" && pwd -P
+        return 0
+    fi
+
+    return 1
+}
+
+embed_local_jre() {
+    local resources_dir="$1"
+    local jre_home
+    jre_home=$(find_local_jre_home) || {
+        err "❌ 找不到本机 JRE/JDK。请先激活 mise Java，或设置 EASYDB_JRE_HOME/JAVA_HOME。"
+        exit 1
+    }
+
+    local java_version
+    java_version=$("$jre_home/bin/java" -version 2>&1 | head -1)
+    if ! "$jre_home/bin/java" -version 2>&1 | grep -q 'version "21'; then
+        err "❌ 本机 Java 版本不是 21：$java_version"
+        err "   Kernel 使用 jvmTarget=21，请使用 JRE/JDK 21 打包。"
+        exit 1
+    fi
+
+    local target_jre="$resources_dir/jre"
+    log "☕ 嵌入本机 JRE/JDK：$jre_home"
+    rm -rf "$target_jre"
+    mkdir -p "$target_jre"
+    cp -R "$jre_home"/. "$target_jre/"
+    chmod +x "$target_jre/bin/java"
+    log "✅ JRE 已复制到 resources/jre ($java_version, $(du -sh "$target_jre" | cut -f1))"
+}
+
 # ─── 构建内核 ────────────────────────────────────────────
 do_build() {
     log "🔨 构建内核..."
@@ -57,7 +128,10 @@ do_package() {
     cp "$jar_file" "$resources_dir/easydb-kernel.jar"
     log "✅ 内核 JAR 已复制到 resources/ ($(du -h "$resources_dir/easydb-kernel.jar" | cut -f1))"
 
-    # 3. 构建 Tauri 应用
+    # 3. 复制本机 JRE/JDK 到 Tauri resources，保证安装包可独立启动内核
+    embed_local_jre "$resources_dir"
+
+    # 4. 构建 Tauri 应用
     log "🏗️  构建 Tauri 应用（首次可能需要 5-10 分钟）..."
     cd "$UI_DIR" && npm run tauri build
     if [ $? -eq 0 ]; then

@@ -75,11 +75,13 @@ fun Route.connectionRoutes() {
         call.ok(true)
     }
 
-    // 测试连接
+    // 测试连接（支持新建连接测试和已存连接内联测试）
     post("/test") {
         val config = call.receive<ConnectionConfig>()
-        val adapter = ServiceRegistry.adapterRegistry.get(config.dbType)
-        val result = adapter.connectionAdapter().testConnection(config)
+        // 解析凭据：如果传入了 passwordRef 但 password 为空/"***"，从 vault 解析
+        val resolved = resolveTestConfig(config)
+        val adapter = ServiceRegistry.adapterRegistry.get(resolved.dbType)
+        val result = adapter.connectionAdapter().testConnection(resolved)
         call.ok(result)
     }
 
@@ -88,6 +90,17 @@ fun Route.connectionRoutes() {
         val id = call.parameters["id"] ?: return@post call.fail("INVALID_ID", "缺少连接 ID")
         val config = store.getById(id)
             ?: return@post call.fail("NOT_FOUND", "连接不存在")
+
+        // 检查凭据可用性：有 ref 但无密码 → 凭据不可用
+        if (config.passwordRef != null && config.password.isBlank()) {
+            call.fail("CREDENTIAL_UNAVAILABLE", "密码凭据不可用，请重新输入密码")
+            return@post
+        }
+        val sshForCheck = config.ssh
+        if (sshForCheck != null && sshForCheck.passwordRef != null && sshForCheck.password.isNullOrBlank()) {
+            call.fail("CREDENTIAL_UNAVAILABLE", "SSH 密码凭据不可用，请重新输入 SSH 密码")
+            return@post
+        }
 
         try {
             querySessionMgr.closeByConnectionId(id)
@@ -381,7 +394,7 @@ fun Route.metadataRoutes() {
             call.ok(adapterFor(session).metadataAdapter().previewRows(session, database, table, limit, where, orderBy, offset))
         } catch (e: Exception) {
             System.err.println("[EasyDB] previewRows failed for $database.$table: ${e.message}")
-            call.respond(io.ktor.http.HttpStatusCode.InternalServerError, mapOf("error" to (e.message ?: "unknown"), "type" to e.javaClass.simpleName))
+            call.fail("PREVIEW_FAILED", e.message ?: "预览数据失败")
         }
     }
 
@@ -718,8 +731,8 @@ fun Route.sqlRoutes() {
 
 // ─── 数据迁移路由 ──────────────────────────────────────────
 fun Route.migrationRoutes() {
-    val adapter = ServiceRegistry.mysqlAdapter
     val adapterRegistry = ServiceRegistry.adapterRegistry
+    val migrationAdapterRegistry = ServiceRegistry.migrationAdapterRegistry
     val connMgr = ServiceRegistry.connectionManager
     val taskMgr = ServiceRegistry.taskManager
 
@@ -731,11 +744,13 @@ fun Route.migrationRoutes() {
             call.fail("NOT_CONNECTED", "源或目标连接未打开")
             return@post
         }
-        if (sourceSession.config.dbType != "mysql" || targetSession.config.dbType != "mysql") {
-            call.fail("UNSUPPORTED_MIGRATION_PAIR", "当前仅支持 MySQL → MySQL 迁移，源=${sourceSession.config.dbType}，目标=${targetSession.config.dbType}")
+        val migrationAdapter = try {
+            migrationAdapterRegistry.get(sourceSession.config.dbType, targetSession.config.dbType)
+        } catch (e: IllegalArgumentException) {
+            call.fail("UNSUPPORTED_MIGRATION_PAIR", e.message ?: "当前迁移组合暂不支持")
             return@post
         }
-        val preview = adapter.migrationAdapter().preview(
+        val preview = migrationAdapter.preview(
             config, SessionPair(sourceSession, targetSession)
         )
         call.ok(preview)
@@ -749,8 +764,10 @@ fun Route.migrationRoutes() {
             call.fail("NOT_CONNECTED", "源或目标连接未打开")
             return@post
         }
-        if (sourceSession.config.dbType != "mysql" || targetSession.config.dbType != "mysql") {
-            call.fail("UNSUPPORTED_MIGRATION_PAIR", "当前仅支持 MySQL → MySQL 迁移，源=${sourceSession.config.dbType}，目标=${targetSession.config.dbType}")
+        val migrationAdapter = try {
+            migrationAdapterRegistry.get(sourceSession.config.dbType, targetSession.config.dbType)
+        } catch (e: IllegalArgumentException) {
+            call.fail("UNSUPPORTED_MIGRATION_PAIR", e.message ?: "当前迁移组合暂不支持")
             return@post
         }
 
@@ -775,7 +792,7 @@ fun Route.migrationRoutes() {
                 taskTargetSession = targetAdapter.open(targetConfig)
                 reporter.onLog("INFO", "已创建任务专用连接")
 
-                val result = adapter.migrationAdapter().execute(
+                val result = migrationAdapter.execute(
                     config, SessionPair(taskSourceSession, taskTargetSession), reporter
                 )
                 val duration = System.currentTimeMillis() - startTime
@@ -977,6 +994,45 @@ fun Route.compareRoutes() {
 }
 
 // ─── 辅助函数 ──────────────────────────────────────────────
+
+/**
+ * 解析测试连接配置中的凭据。
+ *
+ * 如果传入的 config 有 passwordRef 但 password 为空或 "***"，
+ * 从 vault 解析已存储的密码。否则直接使用传入的密码。
+ */
+private fun resolveTestConfig(config: ConnectionConfig): ConnectionConfig {
+    val vault = ServiceRegistry.credentialVault
+
+    // 解析数据库密码
+    val resolvedPassword = if (config.password.isBlank() || config.password == "***") {
+        config.passwordRef?.let { ref ->
+            when (val result = vault.get(ref)) {
+                is CredentialResult.Found -> result.value
+                else -> config.password
+            }
+        } ?: config.password
+    } else {
+        config.password
+    }
+
+    // 解析 SSH 密码
+    val resolvedSsh = config.ssh?.let { ssh ->
+        val sshPwd = if (ssh.password.isNullOrBlank() || ssh.password == "***") {
+            ssh.passwordRef?.let { ref ->
+                when (val result = vault.get(ref)) {
+                    is CredentialResult.Found -> result.value
+                    else -> ssh.password
+                }
+            } ?: ssh.password
+        } else {
+            ssh.password
+        }
+        ssh.copy(password = sshPwd)
+    }
+
+    return config.copy(password = resolvedPassword, ssh = resolvedSsh)
+}
 
 private suspend fun getSessionOrFail(
     call: ApplicationCall,

@@ -35,6 +35,10 @@ interface OpenConnection {
 export interface TableDataQuery {
   where?: string
   orderBy?: string
+  whereDraft?: string
+  appliedWhere?: string
+  sortColumn?: string | null
+  sortDirection?: 'ASC' | 'DESC' | null
 }
 
 /** 表详情 Tab 状态 */

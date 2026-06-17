@@ -43,6 +43,7 @@ These guides help you **ask the right questions before coding**.
 - [ ] **分页 SQL 包装注入合成列**（→ 列提取后必须过滤 `_easydb_` 前缀）
 - [ ] **用正则解析 SQL 提取表名**（→ 必须覆盖逗号分隔、JOIN、子查询等所有多表语法）
 - [ ] **数据库对象重命名/移动后 UI 看起来没变**（→ 同步所有以旧对象名为 key 的前端状态，再后台刷新）
+- [ ] **新增路由/修改异常处理时使用了非标准错误响应**（→ 必须使用 `call.fail()` 而非 `call.respond(HttpStatusCode.xxx)`）
 
 → Read [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md)
 

@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import {
   Typography, Select, Button, Alert, Card,
   theme, Row, Col, Table, Space, Radio, Tag
@@ -37,9 +37,20 @@ import { useConnectionStore } from '@/stores/connectionStore'
 import { migrationApi, metadataApi, connectionApi } from '@/services/api'
 import { toast, handleApiError } from '@/utils/notification'
 import { useNavigate } from 'react-router-dom'
-import type { ConnectionConfig } from '@/types'
+import { getDbCapabilities } from '@/utils/dbCapabilities'
+import type { ConnectionConfig, DbType } from '@/types'
 
 const { Title, Text } = Typography
+
+const supportedMigrationPairs: Array<{ source: DbType; target: DbType }> = [
+  { source: 'mysql', target: 'mysql' },
+  { source: 'mysql', target: 'dameng' },
+]
+
+const supportsMigrationPair = (source?: ConnectionConfig, target?: ConnectionConfig) => {
+  if (!source || !target) return false
+  return supportedMigrationPairs.some((pair) => pair.source === source.dbType && pair.target === target.dbType)
+}
 
 export const MigrationPage: React.FC = () => {
   const { token } = theme.useToken()
@@ -69,6 +80,22 @@ export const MigrationPage: React.FC = () => {
   const [loadingObjects, setLoadingObjects] = useState(false)
   const [selectedTables, setSelectedTables] = useState<React.Key[]>([])
 
+  const sourceConn = useMemo(() => connections.find((c) => c.id === sourceId), [connections, sourceId])
+  const targetConn = useMemo(() => connections.find((c) => c.id === targetId), [connections, targetId])
+  const isMysqlToDameng = sourceConn?.dbType === 'mysql' && targetConn?.dbType === 'dameng'
+  const currentPairSupported = supportsMigrationPair(sourceConn, targetConn)
+  const sourceDbTypes = new Set(supportedMigrationPairs.map((pair) => pair.source))
+  const targetDbTypes = new Set(supportedMigrationPairs.map((pair) => pair.target))
+
+  const visibleSourceObjects = useMemo(() => {
+    if (!isMysqlToDameng) return sourceObjects
+    return sourceObjects.filter((object) => object.type === 'table')
+  }, [sourceObjects, isMysqlToDameng])
+  const selectedVisibleTables = useMemo(() => {
+    const allowedNames = new Set(visibleSourceObjects.map((object) => object.name))
+    return selectedTables.filter((key) => allowedNames.has(String(key)))
+  }, [selectedTables, visibleSourceObjects])
+
   // 自动加载连接列表
   useEffect(() => {
     if (connections.length === 0) {
@@ -96,14 +123,23 @@ export const MigrationPage: React.FC = () => {
       setSourceId(connId)
       setSourceDb(undefined)
       setSourceObjects([])
+      if (targetConn && !supportsMigrationPair(conn, targetConn)) {
+        setTargetId(undefined)
+        setTargetDb(undefined)
+        setTargetDbs([])
+      }
     } else {
+      if (sourceConn && !supportsMigrationPair(sourceConn, conn)) {
+        toast.error('当前仅支持 MySQL → MySQL、MySQL → 达梦迁移')
+        return
+      }
       setTargetId(connId)
       setTargetDb(undefined)
     }
   }
 
   // 格式化连接下拉项
-  const connOptions = connections.map((c) => ({
+  const toConnOptions = (items: ConnectionConfig[]) => items.map((c) => ({
     value: c.id,
     label: (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -114,6 +150,16 @@ export const MigrationPage: React.FC = () => {
       </div>
     )
   }))
+  const sourceConnOptions = toConnOptions(
+    connections.filter((c) => sourceDbTypes.has(c.dbType) && getDbCapabilities(c.dbType).tasks.migration)
+  )
+  const targetConnOptions = toConnOptions(
+    connections.filter((c) => {
+      if (!targetDbTypes.has(c.dbType)) return false
+      if (!sourceConn) return getDbCapabilities(c.dbType).tasks.migration
+      return supportsMigrationPair(sourceConn, c)
+    })
+  )
 
   // 监听源连接以加载数据库
   useEffect(() => {
@@ -169,7 +215,7 @@ export const MigrationPage: React.FC = () => {
 
   // 执行迁移
   const handleStart = async () => {
-    if (selectedTables.length === 0) {
+    if (selectedVisibleTables.length === 0) {
       toast.error('请至少选择一个要迁移的数据表/对象！')
       return
     }
@@ -181,7 +227,7 @@ export const MigrationPage: React.FC = () => {
         targetConnectionId: targetId,
         sourceDatabase: sourceDb,
         targetDatabase: targetDb,
-        tables: selectedTables as string[],
+        tables: selectedVisibleTables as string[],
         mode,
       })
       toast.success('迁移任务已创建，可在任务中心查看进度')
@@ -194,7 +240,7 @@ export const MigrationPage: React.FC = () => {
   }
 
   // 是否满足执行条件
-  const canNext = !!sourceId && !!targetId && !!sourceDb && !!targetDb && selectedTables.length > 0
+  const canNext = !!sourceId && !!targetId && !!sourceDb && !!targetDb && selectedVisibleTables.length > 0 && currentPairSupported
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'transparent' }}>
@@ -222,7 +268,7 @@ export const MigrationPage: React.FC = () => {
                   <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>选择源连接实例</Text>
                   <Select
                     value={sourceId} onChange={(v) => handleConnectionSelect(v, 'source')}
-                    options={connOptions} placeholder="选择源连接"
+                    options={sourceConnOptions} placeholder="选择源连接"
                     style={{ width: '100%' }}
                     size="large"
                     listHeight={320}
@@ -280,7 +326,7 @@ export const MigrationPage: React.FC = () => {
                   <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>选择目标连接实例</Text>
                   <Select
                     value={targetId} onChange={(v) => handleConnectionSelect(v, 'target')}
-                    options={connOptions} placeholder="选择目标连接"
+                    options={targetConnOptions} placeholder="选择目标连接"
                     style={{ width: '100%' }}
                     size="large"
                     listHeight={320}
@@ -312,17 +358,25 @@ export const MigrationPage: React.FC = () => {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                <Title level={5} style={{ margin: 0 }}><TableOutlined style={{ marginRight: 8 }}/>选择要迁移的表对象</Title>
-               <Text type="secondary">已选择 {selectedTables.length} / {sourceObjects.length} 个对象</Text>
+               <Text type="secondary">已选择 {selectedVisibleTables.length} / {visibleSourceObjects.length} 个对象</Text>
             </div>
+            {isMysqlToDameng && sourceObjects.length !== visibleSourceObjects.length && (
+              <Alert
+                message="MySQL → 达梦当前仅迁移表结构和表数据，视图、过程、函数、触发器已从列表中过滤"
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+              />
+            )}
             <Table
               size="small"
               loading={loadingObjects}
-              dataSource={sourceObjects}
+              dataSource={visibleSourceObjects}
               rowKey="name"
               scroll={{ y: 300 }}
               pagination={false}
               rowSelection={{
-                selectedRowKeys: selectedTables,
+                selectedRowKeys: selectedVisibleTables,
                 onChange: (keys) => setSelectedTables(keys)
               }}
               columns={[
@@ -364,11 +418,13 @@ export const MigrationPage: React.FC = () => {
             </Radio.Group>
           </div>
           <Alert
-            message={mode === 'data_only' && selectedTables.some(k => {
+            message={!currentPairSupported && sourceConn && targetConn ? '当前仅支持 MySQL → MySQL、MySQL → 达梦迁移'
+              : isMysqlToDameng ? 'MySQL → 达梦当前支持表结构和表数据迁移，同名目标表会被覆盖'
+              : mode === 'data_only' && selectedVisibleTables.some(k => {
               const obj = sourceObjects.find(o => o.name === k)
               return obj && obj.type !== 'table'
             }) ? '仅数据模式下，视图/存储过程/函数/触发器将被自动跳过' : '警告：目标库中同名对象将被覆盖，请三思而后行。'}
-            type={mode === 'data_only' ? 'info' : 'warning'}
+            type={isMysqlToDameng || mode === 'data_only' ? 'info' : 'warning'}
             showIcon
             style={{ padding: '4px 12px', border: 'none' }}
           />
@@ -383,7 +439,7 @@ export const MigrationPage: React.FC = () => {
           onClick={handleStart}
           style={{ paddingLeft: 32, paddingRight: 32 }}
         >
-          开始执行迁移 ({selectedTables.length})
+          开始执行迁移 ({selectedVisibleTables.length})
         </Button>
       </div>
     </div>

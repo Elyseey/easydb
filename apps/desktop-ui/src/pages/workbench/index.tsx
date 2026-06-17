@@ -55,9 +55,14 @@ import { getDbCapabilities } from '@/utils/dbCapabilities'
 const { Sider, Content } = Layout
 const { Text } = Typography
 type TreeDataNode = DataNode & { 'data-node-key'?: string }
+type WorkbenchPaneRenderState = {
+  keepAliveKeys: string[]
+  dirtyKeys: string[]
+}
 
 /** 每次 previewRows 加载的行数（与后端 limit 对齐） */
 const PREVIEW_PAGE_SIZE = 1000
+const WORKBENCH_KEEP_ALIVE_LIMIT = 8
 const addUnique = (items: string[], item: string) => items.includes(item) ? items : [...items, item]
 const removeItems = (items: string[], removing: string[]) => items.filter((item) => !removing.includes(item))
 
@@ -309,7 +314,94 @@ export const WorkbenchPage: React.FC = () => {
   const activeTableTabKey = useWorkbenchStore((s) => s.activeTableTabKey)
   const setActiveTableTabKey = useWorkbenchStore((s) => s.setActiveTableTabKey)
   const batchUpdate = useWorkbenchStore((s) => s.batchUpdate)
-  const activeTab = activeTableTabKey ? openTableTabs[activeTableTabKey] ?? null : null
+  const [paneState, setPaneState] = useState<WorkbenchPaneRenderState>({
+    keepAliveKeys: [],
+    dirtyKeys: [],
+  })
+  const mountedPaneKeys = useMemo(() => {
+    const openKeys = new Set(Object.keys(openTableTabs))
+    const keys = paneState.keepAliveKeys.filter((key) => openKeys.has(key))
+    if (activeTableTabKey && openKeys.has(activeTableTabKey) && !keys.includes(activeTableTabKey)) {
+      return [...keys, activeTableTabKey]
+    }
+    return keys
+  }, [activeTableTabKey, openTableTabs, paneState.keepAliveKeys])
+
+  const pruneKeepAliveKeys = useCallback((
+    nextKeys: string[],
+    nextDirtyKeys: string[],
+    openKeys: Set<string>,
+    activeKey: string | null,
+  ) => {
+    const dirtySet = new Set(nextDirtyKeys)
+    const normalized = nextKeys.filter((key, index) => openKeys.has(key) && nextKeys.indexOf(key) === index)
+    const active = activeKey && openKeys.has(activeKey) ? activeKey : null
+    const pinned = normalized.filter((key) => key === active || dirtySet.has(key))
+    const recent = normalized.filter((key) => !pinned.includes(key))
+    const room = Math.max(0, WORKBENCH_KEEP_ALIVE_LIMIT - pinned.length)
+    return [...pinned, ...recent.slice(-room)]
+  }, [])
+
+  const markPaneVisited = useCallback((key: string | null) => {
+    if (!key) return
+    setPaneState((prev) => {
+      const openKeys = new Set(Object.keys(useWorkbenchStore.getState().openTableTabs))
+      if (!openKeys.has(key)) return prev
+      const withoutKey = prev.keepAliveKeys.filter((item) => item !== key)
+      const dirtyKeys = prev.dirtyKeys.filter((item) => openKeys.has(item))
+      return {
+        keepAliveKeys: pruneKeepAliveKeys([...withoutKey, key], dirtyKeys, openKeys, key),
+        dirtyKeys,
+      }
+    })
+  }, [pruneKeepAliveKeys])
+
+  const setPaneDirty = useCallback((key: string, dirty: boolean) => {
+    setPaneState((prev) => {
+      const openKeys = new Set(Object.keys(useWorkbenchStore.getState().openTableTabs))
+      const dirtySet = new Set(prev.dirtyKeys.filter((item) => openKeys.has(item)))
+      const wasDirty = dirtySet.has(key)
+      if (wasDirty === dirty && prev.dirtyKeys.every((item) => openKeys.has(item))) {
+        return prev
+      }
+      if (dirty) dirtySet.add(key)
+      else dirtySet.delete(key)
+      const dirtyKeys = Array.from(dirtySet)
+      return {
+        keepAliveKeys: pruneKeepAliveKeys(prev.keepAliveKeys, dirtyKeys, openKeys, activeTableTabKey),
+        dirtyKeys,
+      }
+    })
+  }, [activeTableTabKey, pruneKeepAliveKeys])
+
+  const removePaneKeys = useCallback((keys: Iterable<string>) => {
+    const removing = new Set(keys)
+    setPaneState((prev) => ({
+      keepAliveKeys: prev.keepAliveKeys.filter((key) => !removing.has(key)),
+      dirtyKeys: prev.dirtyKeys.filter((key) => !removing.has(key)),
+    }))
+  }, [])
+
+  useEffect(() => {
+    if (activeTableTabKey) markPaneVisited(activeTableTabKey)
+  }, [activeTableTabKey, markPaneVisited])
+
+  useEffect(() => {
+    const openKeys = new Set(Object.keys(openTableTabs))
+    setPaneState((prev) => {
+      const dirtyKeys = prev.dirtyKeys.filter((key) => openKeys.has(key))
+      const keepAliveKeys = pruneKeepAliveKeys(prev.keepAliveKeys, dirtyKeys, openKeys, activeTableTabKey)
+      if (
+        dirtyKeys.length === prev.dirtyKeys.length &&
+        keepAliveKeys.length === prev.keepAliveKeys.length &&
+        dirtyKeys.every((key, index) => key === prev.dirtyKeys[index]) &&
+        keepAliveKeys.every((key, index) => key === prev.keepAliveKeys[index])
+      ) {
+        return prev
+      }
+      return { keepAliveKeys, dirtyKeys }
+    })
+  }, [activeTableTabKey, openTableTabs, pruneKeepAliveKeys])
 
   // --- 请求竞态控制 ---
   const loadSeqRef = useRef<Record<string, number>>({})
@@ -479,7 +571,7 @@ export const WorkbenchPage: React.FC = () => {
     const stateTab = useWorkbenchStore.getState().openTableTabs[tabKey]
     if (!stateTab || stateTab.type !== 'table') return
 
-    const dataQuery = query ?? stateTab.dataQuery ?? {}
+    const dataQuery = query ? { ...(stateTab.dataQuery ?? {}), ...query } : stateTab.dataQuery ?? {}
     const hasQuery = Boolean(dataQuery.where || dataQuery.orderBy)
 
     updateTabState(tabKey, (prev) => ({
@@ -810,6 +902,7 @@ export const WorkbenchPage: React.FC = () => {
 
   // 关闭一个表 Tab
   const closeTableTab = useCallback((tabKey: string) => {
+    removePaneKeys([tabKey])
     setOpenTableTabs(prev => {
       const next = { ...prev }
       delete next[tabKey]
@@ -820,7 +913,7 @@ export const WorkbenchPage: React.FC = () => {
       }
       return next
     })
-  }, [activeTableTabKey, setOpenTableTabs, setActiveTableTabKey])
+  }, [activeTableTabKey, removePaneKeys, setOpenTableTabs, setActiveTableTabKey])
 
   // --- 添加连接到工作台 ---
   const [connectingId, setConnectingId] = useState<string | null>(null)
@@ -1967,6 +2060,7 @@ export const WorkbenchPage: React.FC = () => {
                         {[
                           { label: '关闭', onClick: () => closeTableTab(tabCtxMenu.tabKey) },
                           { label: '关闭其他', onClick: () => {
+                            removePaneKeys(tabKeys.filter((key) => key !== tabCtxMenu.tabKey))
                             setOpenTableTabs(prev => {
                               const keep = prev[tabCtxMenu.tabKey]
                               return keep ? { [tabCtxMenu.tabKey]: keep } : {}
@@ -1976,6 +2070,7 @@ export const WorkbenchPage: React.FC = () => {
                           { label: '关闭左侧', onClick: () => {
                             const idx = tabKeys.indexOf(tabCtxMenu.tabKey)
                             const toRemove = new Set(tabKeys.slice(0, idx))
+                            removePaneKeys(toRemove)
                             setOpenTableTabs(prev => {
                               const next = { ...prev }
                               for (const k of toRemove) delete next[k]
@@ -1986,6 +2081,7 @@ export const WorkbenchPage: React.FC = () => {
                           { label: '关闭右侧', onClick: () => {
                             const idx = tabKeys.indexOf(tabCtxMenu.tabKey)
                             const toRemove = new Set(tabKeys.slice(idx + 1))
+                            removePaneKeys(toRemove)
                             setOpenTableTabs(prev => {
                               const next = { ...prev }
                               for (const k of toRemove) delete next[k]
@@ -1994,6 +2090,7 @@ export const WorkbenchPage: React.FC = () => {
                             if (activeTableTabKey && toRemove.has(activeTableTabKey)) setActiveTableTabKey(tabCtxMenu.tabKey)
                           }},
                           { label: '关闭全部', onClick: () => {
+                            removePaneKeys(tabKeys)
                             setOpenTableTabs({})
                             setActiveTableTabKey(null)
                           }},
@@ -2014,10 +2111,28 @@ export const WorkbenchPage: React.FC = () => {
                 </>
               )
             })()}
-            {/* 当前活动 Tab 的详情内容 */}
-            {/* Tab 内容区域 — 根据 Tab 类型渲染 */}
-            {activeTab && (() => {
-              const tabKey = activeTableTabKey!
+            {/* Tab 内容区域 — 最近使用的 pane 保持挂载，避免表格切换重建 */}
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+              {mountedPaneKeys.map((paneKey) => {
+                const paneTab = openTableTabs[paneKey]
+                if (!paneTab) return null
+                const isActivePane = paneKey === activeTableTabKey
+                const tabKey = paneKey
+                const activeTab = paneTab
+
+                return (
+                  <div
+                    key={paneKey}
+                    aria-hidden={!isActivePane}
+                    style={{
+                      display: isActivePane ? 'flex' : 'none',
+                      flexDirection: 'column',
+                      height: '100%',
+                      minHeight: 0,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {(() => {
 
               // ===== 表详情 Tab =====
               if (activeTab.type === 'table') {
@@ -2139,6 +2254,19 @@ export const WorkbenchPage: React.FC = () => {
                                   hasMore={t.hasMoreRows}
                                   loadingMore={t.loadingMoreRows}
                                   loading={isDataLoading}
+                                  active={isActivePane && t.detailTab === 'data'}
+                                  onDirtyChange={(dirty) => setPaneDirty(tabKey, dirty)}
+                                  filterState={{
+                                    whereDraft: t.dataQuery?.whereDraft ?? t.dataQuery?.where ?? '',
+                                    appliedWhere: t.dataQuery?.appliedWhere ?? t.dataQuery?.where ?? '',
+                                    sortColumn: t.dataQuery?.sortColumn ?? null,
+                                    sortDirection: t.dataQuery?.sortDirection ?? null,
+                                  }}
+                                  onFilterStateChange={(patch) => {
+                                    updateTabState(tabKey, (prev) => ({
+                                      dataQuery: { ...(prev.dataQuery ?? {}), ...patch },
+                                    }))
+                                  }}
                                   onLoadMore={async () => {
                                     // 防止并发
                                     if (t.loadingMoreRows || !t.hasMoreRows) return
@@ -2355,7 +2483,7 @@ export const WorkbenchPage: React.FC = () => {
                       objectCategories={objectCategories}
                       search={activeTab.categorySearch || ''}
                       onSearchChange={(value) => {
-                        const key = activeTableTabKey!
+                        const key = tabKey
                         setOpenTableTabs((prev) => ({
                           ...prev,
                           [key]: { ...prev[key], categorySearch: value } as WorkbenchTab,
@@ -2381,6 +2509,7 @@ export const WorkbenchPage: React.FC = () => {
                   <div style={{ flex: 1, overflow: 'hidden' }}>
                     <QueryEditorPane
                       queryId={activeTab.queryId}
+                      active={isActivePane}
                       onOpenObjectDetail={handleOpenObjectDetailFromQuery}
                     />
                   </div>
@@ -2400,16 +2529,20 @@ export const WorkbenchPage: React.FC = () => {
                       dbType={openConnections.find(c => c.id === activeTab.connectionId)?.dbType}
                       onSuccess={() => {
                         loadTables(activeTab.connectionId, activeTab.database)
-                        closeTableTab(activeTableTabKey!)
+                        closeTableTab(tabKey)
                       }}
-                      onCancel={() => closeTableTab(activeTableTabKey!)}
+                      onCancel={() => closeTableTab(tabKey)}
                     />
                   </div>
                 )
               }
 
               return null
-            })()}
+                    })()}
+                  </div>
+                )
+              })}
+            </div>
           </div>
         ) : (
           <EmptyState

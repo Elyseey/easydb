@@ -130,7 +130,119 @@ const tableScrollX = Math.max(900, columns.reduce((sum, column) => sum + columnW
 <Table virtual scroll={{ x: tableScrollX, y: tableScrollY }} />
 ```
 
-If tab switching still feels slow after row-copy and scroll sizing fixes, extract the active detail pane into a memoized child component before changing data loading limits or backend APIs. Do not keep every opened table tab permanently mounted; that trades one tab switch pause for cumulative DOM and memory pressure as users open more tables.
+If tab switching still feels slow after row-copy and scroll sizing fixes, inspect whether the tab content is being unmounted. Workbench main tabs currently use a separate tab bar plus custom content rendering, so Ant Design `destroyInactiveTabPane` / `destroyOnHidden` is not enough when content is rendered outside `Tabs.items`.
+
+Correct pattern for heavy workbench panes:
+
+- Keep a bounded LRU set of recently used panes mounted.
+- Always keep the active pane mounted.
+- Pin dirty panes that contain unsaved edits.
+- Remove closed panes from the mounted set immediately.
+- Keep loaded data/query state in the tab session store so an evicted pane can remount without refetching.
+- Pass an `active` signal into virtual-table panes and force a height/resize refresh when a hidden pane becomes visible.
+- SQL query panes may stay mounted, but their Monaco editor DOM instance must exist only while the pane is active. Use a unique model `path` plus `keepCurrentModel` so tab text/model state survives without hidden editor DOM.
+
+Do not keep every opened table tab permanently mounted; that trades one tab switch pause for cumulative DOM and memory pressure as users open more tables. Use bounded KeepAlive for render-instance performance, and store-backed tab sessions for recovery after eviction.
+
+### Workbench KeepAlive — Monaco Editor Lifecycle
+
+Monaco editors are imperative components and must be treated differently from plain React panes. Workbench SQL tab state is durable in `sqlEditorStore`, and SQL panes can remain mounted for result/state continuity, but inactive SQL editor DOM instances must not be kept mounted with `display: none`.
+
+Bad pattern:
+
+```tsx
+<Editor
+  key={`editor-${queryId}`}
+  defaultValue={tab.sql}
+  onMount={(editor) => editor.focus()}
+/>
+```
+
+Why this is risky:
+
+- Without a unique `path`, `@monaco-editor/react` can create or reuse the default empty URI model across multiple SQL tabs.
+- Hidden keep-alive panes still have mounted editor instances, so a newly mounted editor and a hidden editor can compete for model state, focus, and async layout work.
+- Focusing a hidden or just-disposed Monaco instance can surface runtime errors such as `InstantiationService has been disposed` or `Cannot read properties of undefined (reading 'domNode')`.
+
+Correct pattern:
+
+```tsx
+const editorModelPath = useMemo(
+  () => `inmemory://easydb/sql/${encodeURIComponent(queryId)}.sql`,
+  [queryId],
+)
+
+useEffect(() => {
+  if (!active) return
+  const frame = window.requestAnimationFrame(() => {
+    editorRef.current?.layout()
+  })
+  return () => window.cancelAnimationFrame(frame)
+}, [active])
+
+<Editor
+  path={editorModelPath}
+  keepCurrentModel
+  defaultValue={tab.sql}
+  onMount={(editor) => {
+    editorRef.current = editor
+    if (active) {
+      window.requestAnimationFrame(() => {
+        editor.layout()
+        editor.focus()
+      })
+    }
+  }}
+/>
+```
+
+Keep SQL text and result state in the tab store or mounted SQL pane, isolate the Monaco model by tab identity, and mount/focus/layout Monaco only for the active SQL pane. Do not keep multiple hidden Monaco editor DOM instances alive just to preserve SQL tab state.
+
+### Workbench KeepAlive — SQL Result Virtual Table Restore
+
+SQL result panes can remain mounted while hidden, but Ant Design virtual tables must be explicitly refreshed when the pane becomes active again. A hidden pane uses `display: none`, so `rc-virtual-list` can keep a stale visible range. The symptom is that query result rows look blank after switching away and back, and the rows only reappear after the user scrolls.
+
+Correct pattern:
+
+```tsx
+const tableWrapperRef = useRef<HTMLDivElement | null>(null)
+const tableBodyRef = useRef<HTMLDivElement | null>(null)
+const scrollTopRef = useRef(0)
+
+const updateMeasuredTableHeight = useCallback(() => {
+  const wrapperEl = tableWrapperRef.current
+  if (!wrapperEl) return
+  const wrapperHeight = wrapperEl.clientHeight
+  if (wrapperHeight === 0) return
+  const thead = wrapperEl.querySelector('.ant-table-thead')
+  const headerHeight = thead ? Math.ceil(thead.getBoundingClientRect().height) : 40
+  setTableScrollY(Math.max(220, wrapperHeight - headerHeight - 2))
+}, [])
+
+useEffect(() => {
+  if (!active) return
+  requestAnimationFrame(() => {
+    updateMeasuredTableHeight()
+    requestAnimationFrame(() => {
+      const scrollBody = tableBodyRef.current
+      if (!scrollBody) return
+      scrollBody.scrollTop = scrollTopRef.current
+      window.dispatchEvent(new Event('resize'))
+      scrollBody.dispatchEvent(new Event('scroll'))
+    })
+  })
+}, [active, updateMeasuredTableHeight])
+```
+
+Every SQL result virtual table in a keep-alive pane must:
+
+- Accept an `active` signal from the workbench pane.
+- Record the table body's `scrollTop` on scroll.
+- Re-measure the flex wrapper height when `active` changes to true.
+- Restore `scrollTop` and dispatch resize/scroll after the pane is visible.
+- Measure the actual table wrapper, not `window.innerHeight - containerTop`.
+
+Do not rely on user scrolling to wake the virtual list after tab restore.
 
 ---
 

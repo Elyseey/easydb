@@ -3,6 +3,7 @@ node_modules/
 dist/
 .DS_Store
 *.local
+!package-lock.json
 
 # Vite
 apps/desktop-ui/.vite/
@@ -72,6 +73,14 @@ design-system/
 # Temp data / test scripts
 task/
 test/
+!test/
+test/*
+!test/e2e/
+test/e2e/*
+!test/e2e/specs/
+test/e2e/specs/*
+!test/e2e/playwright.config.ts
+!test/e2e/specs/workbench-query-monaco.spec.ts
 
 # Temp data files
 docs/*.csv
