@@ -107,7 +107,7 @@ export const CreateDatabaseModal: React.FC<CreateDatabaseModalProps> = ({
       confirmLoading={loading}
       okText="创建"
       cancelText="取消"
-      destroyOnClose
+      destroyOnHidden
       width={480}
     >
       <Form

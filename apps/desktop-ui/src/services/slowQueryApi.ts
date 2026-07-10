@@ -6,13 +6,14 @@
  * 对应后端路由：/api/slow-query
  */
 
-const BASE = 'http://localhost:18080/api/slow-query'
+import { kernelFetch } from './kernelAuth'
+
+const BASE = '/api/slow-query'
 
 // ─── 公共请求工具 ────────────────────────────────────────
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+  const res = await kernelFetch(`${BASE}${path}`, {
     cache: 'no-store',
     ...options,
   })

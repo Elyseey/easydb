@@ -1,6 +1,15 @@
-/**
- * 数据导出工具 — 前端 CSV/JSON 生成 + Blob 下载
- */
+import { invoke } from '@tauri-apps/api/core'
+import type { DbType } from '@/types'
+
+/** 数据导出工具 — 前端生成内容，Tauri 原生对话框选择保存位置 */
+
+export type ExportFormat = 'csv' | 'json' | 'sql'
+
+export interface ExportFile {
+  content: string
+  suggestedName: string
+  extension: ExportFormat
+}
 
 /** 将数据行转为 CSV 字符串 */
 export function rowsToCsv(columns: string[], rows: Record<string, unknown>[]): string {
@@ -34,99 +43,101 @@ export function rowsToJson(columns: string[], rows: Record<string, unknown>[]): 
   return JSON.stringify(cleanRows, null, 2)
 }
 
-/** 将数据行转为 SQL INSERT 语句 */
-export function rowsToSqlInsert(tableName: string, columns: string[], rows: Record<string, unknown>[]): string {
+/** 按数据库方言引用标识符。 */
+export function quoteSqlIdentifier(identifier: string, dbType: DbType): string {
+  if (dbType === 'mysql') return `\`${identifier.replace(/`/g, '``')}\``
+  if (dbType === 'sqlserver') return `[${identifier.replace(/]/g, ']]')}]`
+  return `"${identifier.replace(/"/g, '""')}"`
+}
+
+function sqlBooleanLiteral(value: boolean, dbType: DbType): string {
+  return dbType === 'mysql' || dbType === 'sqlserver' || dbType === 'sqlite'
+    ? (value ? '1' : '0')
+    : (value ? 'TRUE' : 'FALSE')
+}
+
+function sqlStringValue(value: unknown): string {
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value) ?? String(value)
+    } catch {
+      return String(value)
+    }
+  }
+  return String(value)
+}
+
+/** 将数据行转为当前数据库方言的 SQL INSERT 语句。 */
+export function rowsToSqlInsert(
+  tableName: string,
+  columns: string[],
+  rows: Record<string, unknown>[],
+  dbType: DbType,
+): string {
   if (rows.length === 0) return `-- 表 ${tableName} 无数据\n`
 
   const escapeSqlValue = (value: unknown): string => {
     if (value === null || value === undefined) return 'NULL'
-    if (typeof value === 'number') return String(value)
-    if (typeof value === 'boolean') return value ? '1' : '0'
-    const str = String(value)
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+    if (typeof value === 'bigint') return String(value)
+    if (typeof value === 'boolean') return sqlBooleanLiteral(value, dbType)
+    const str = sqlStringValue(value)
     return `'${str.replace(/'/g, "''")}'`
   }
 
-  const colList = columns.map(c => `\`${c}\``).join(', ')
+  const quotedTableName = quoteSqlIdentifier(tableName, dbType)
+  const colList = columns.map(column => quoteSqlIdentifier(column, dbType)).join(', ')
   const statements = rows.map(row => {
     const values = columns.map(col => escapeSqlValue(row[col])).join(', ')
-    return `INSERT INTO \`${tableName}\` (${colList}) VALUES (${values});`
+    return `INSERT INTO ${quotedTableName} (${colList}) VALUES (${values});`
   })
 
   return statements.join('\n')
 }
 
-/** 触发浏览器文件下载 */
-export function downloadBlob(content: string, filename: string, mimeType: string): void {
-  // 添加 BOM 以便 Excel 正确识别 UTF-8
-  const bom = mimeType.includes('csv') ? '\uFEFF' : ''
-  const blob = new Blob([bom + content], { type: `${mimeType};charset=utf-8` })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+function timestampedName(filenameBase: string, extension: ExportFormat): string {
+  const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
+  return `${filenameBase}_${timestamp}.${extension}`
 }
 
-/** 导出查询结果 — 一步到位 */
-export function exportResultSet(
+export function createResultExportFile(
   columns: string[],
   rows: Record<string, unknown>[],
   format: 'csv' | 'json',
   filenameBase = 'query_result',
-): void {
-  let content: string
-  let ext: string
-  let mime: string
-
-  switch (format) {
-    case 'csv':
-      content = rowsToCsv(columns, rows)
-      ext = 'csv'
-      mime = 'text/csv'
-      break
-    case 'json':
-      content = rowsToJson(columns, rows)
-      ext = 'json'
-      mime = 'application/json'
-      break
+): ExportFile {
+  const rawContent = format === 'csv' ? rowsToCsv(columns, rows) : rowsToJson(columns, rows)
+  return {
+    content: format === 'csv' ? `\uFEFF${rawContent}` : rawContent,
+    suggestedName: timestampedName(filenameBase, format),
+    extension: format,
   }
-
-  const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
-  downloadBlob(content, `${filenameBase}_${timestamp}.${ext}`, mime)
 }
 
-/** 导出表数据（含 SQL INSERT 格式） */
-export function exportTableData(
+export function createTableExportFile(
   tableName: string,
   columns: string[],
   rows: Record<string, unknown>[],
-  format: 'csv' | 'json' | 'sql',
-): void {
-  let content: string
-  let ext: string
-  let mime: string
-
-  switch (format) {
-    case 'csv':
-      content = rowsToCsv(columns, rows)
-      ext = 'csv'
-      mime = 'text/csv'
-      break
-    case 'json':
-      content = rowsToJson(columns, rows)
-      ext = 'json'
-      mime = 'application/json'
-      break
-    case 'sql':
-      content = rowsToSqlInsert(tableName, columns, rows)
-      ext = 'sql'
-      mime = 'text/plain'
-      break
+  format: ExportFormat,
+  dbType?: DbType,
+): ExportFile {
+  if (format === 'sql') {
+    if (!dbType) throw new Error('导出 SQL INSERT 时缺少数据库类型')
+    return {
+      content: rowsToSqlInsert(tableName, columns, rows, dbType),
+      suggestedName: timestampedName(tableName, format),
+      extension: format,
+    }
   }
+  return createResultExportFile(columns, rows, format, tableName)
+}
 
-  const timestamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
-  downloadBlob(content, `${tableName}_${timestamp}.${ext}`, mime)
+/** 打开系统“另存为”对话框。用户取消时返回 null。 */
+export function saveExportFile(file: ExportFile): Promise<string | null> {
+  return invoke<string | null>('save_export_file', {
+    suggestedName: file.suggestedName,
+    content: file.content,
+    extension: file.extension,
+  })
 }

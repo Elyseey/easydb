@@ -10,6 +10,7 @@ use std::os::windows::process::CommandExt;
 
 /// 全局持有内核子进程，应用退出时自动杀掉
 static KERNEL_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
+static KERNEL_TOKEN: Mutex<Option<String>> = Mutex::new(None);
 
 #[derive(Serialize)]
 struct SelectedSqlFile {
@@ -62,6 +63,12 @@ fn find_kernel_jar(resource_dir: &Path) -> Option<PathBuf> {
         if p.exists() { return Some(normalize_path(p)); }
     }
     None
+}
+
+fn generate_kernel_token() -> String {
+    let mut bytes = [0_u8; 32];
+    getrandom::getrandom(&mut bytes).expect("failed to generate kernel token");
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// 关闭内核进程
@@ -117,10 +124,56 @@ fn pick_backup_file() -> Result<Option<String>, String> {
     Ok(picked.map(|p| p.to_string_lossy().to_string()))
 }
 
+#[tauri::command]
+fn save_export_file(
+    suggested_name: String,
+    content: String,
+    extension: String,
+) -> Result<Option<String>, String> {
+    let (filter_name, allowed_extension) = match extension.as_str() {
+        "csv" => ("CSV", "csv"),
+        "json" => ("JSON", "json"),
+        "sql" => ("SQL", "sql"),
+        _ => return Err("不支持的导出文件格式".to_string()),
+    };
+
+    let picked = rfd::FileDialog::new()
+        .add_filter(filter_name, &[allowed_extension])
+        .set_title("选择导出文件保存位置")
+        .set_file_name(&suggested_name)
+        .save_file();
+
+    let Some(mut path) = picked else {
+        return Ok(None);
+    };
+    if path.extension().is_none() {
+        path.set_extension(allowed_extension);
+    }
+
+    std::fs::write(&path, content.as_bytes())
+        .map_err(|e| format!("写入导出文件失败: {}", e))?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn get_kernel_token() -> Result<String, String> {
+    KERNEL_TOKEN
+        .lock()
+        .map_err(|_| "读取内核令牌失败".to_string())?
+        .clone()
+        .ok_or_else(|| "内核令牌尚未初始化".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![pick_sql_file, pick_backup_folder, pick_backup_file])
+        .invoke_handler(tauri::generate_handler![
+            pick_sql_file,
+            pick_backup_folder,
+            pick_backup_file,
+            save_export_file,
+            get_kernel_token,
+        ])
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_log::Builder::default()
@@ -130,6 +183,11 @@ pub fn run() {
         .setup(|app| {
             let resource_dir = app.path().resource_dir()
                 .expect("failed to get resource dir");
+            let kernel_token = std::env::var("EASYDB_KERNEL_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty())
+                .unwrap_or_else(generate_kernel_token);
+            *KERNEL_TOKEN.lock().unwrap() = Some(kernel_token.clone());
 
             // 在后台线程启动内核（不阻塞 UI）
             std::thread::spawn(move || {
@@ -162,6 +220,7 @@ pub fn run() {
                 let mut cmd = Command::new(&java_path);
                 cmd.arg("-jar")
                     .arg(&jar_path)
+                    .env("EASYDB_KERNEL_TOKEN", &kernel_token)
                     .stdout(stdout_cfg)
                     .stderr(stderr_cfg);
 

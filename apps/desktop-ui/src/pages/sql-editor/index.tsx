@@ -581,6 +581,7 @@ export const SqlEditorPage: React.FC = () => {
                         children: (
                           <SqlResultPanel
                             result={r}
+                            dbType={connections.find((connection) => connection.id === r.connectionId)?.dbType}
                             displayLabel={displayLabel}
                             tableHeight={resultTableHeight}
                             loadMoreKey={`${activeEditorTab.key}-${idx}`}

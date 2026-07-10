@@ -86,7 +86,7 @@ export const CommandPalette: React.FC = () => {
             setSelectedIndex(0)
           }}
           onKeyDown={handleKeyDown}
-          bordered={false}
+          variant="borderless"
           prefix={<SearchOutlined style={{ color: '#94A3B8', fontSize: 18, marginRight: 8 }} />}
           style={{ fontSize: 16, padding: 0, boxShadow: 'none' }}
         />

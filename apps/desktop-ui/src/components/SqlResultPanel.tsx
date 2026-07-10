@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Dropdown, Modal, Space, Table, Tag, Tooltip, Typography, theme } from 'antd'
-import { DownloadOutlined, EditOutlined, StopOutlined } from '@ant-design/icons'
-import type { SqlResult, EditabilityReason } from '@/types'
-import { exportResultSet } from '@/utils/exportUtils'
-import { getEditabilityReasonText } from '@/utils/editabilityAnalyzer'
+import { Alert, Button, Dropdown, Modal, Space, Table, Tag, Tooltip, Typography, theme } from 'antd'
+import { CopyOutlined, DownloadOutlined, EditOutlined, StopOutlined } from '@ant-design/icons'
+import type { SqlResult, EditabilityReason, DbType } from '@/types'
+import { confirmDataExport } from '@/components/confirmDataExport'
+import { getEditabilityReasonText, resolveInsertTargetTableName } from '@/utils/editabilityAnalyzer'
+import { rowsToSqlInsert } from '@/utils/exportUtils'
+import { handleApiError, toast } from '@/utils/notification'
 import {
   formatSqlCell,
   isSqlCellTruncated,
@@ -24,6 +26,8 @@ interface SqlResultPanelProps {
   onLoadMore?: () => void
   onResultMetaChange?: (patch: Partial<SqlResult>) => void
   editabilityReason?: EditabilityReason  // 不可编辑原因
+  missingPrimaryKeys?: string[]
+  dbType?: DbType
 }
 
 interface CellPreviewState {
@@ -50,6 +54,8 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
   currentLoadKey,
   onLoadMore,
   editabilityReason,
+  missingPrimaryKeys,
+  dbType,
 }) => {
   const { token } = theme.useToken()
   const [cellPreview, setCellPreview] = useState<CellPreviewState | null>(null)
@@ -64,6 +70,38 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
   const scrollTopRef = useRef(0)
   const autoLoadLockRef = useRef(false)
   const isLoadingMore = currentLoadKey === loadMoreKey
+  const insertTargetTableName = useMemo(
+    () => resolveInsertTargetTableName(result.sql),
+    [result.sql]
+  )
+  const copyInsertDisabled = !insertTargetTableName || !dbType || (result.rows?.length ?? 0) === 0
+  const copyInsertTooltip = !insertTargetTableName
+    ? '仅支持可确定目标表的单表明细查询'
+    : !dbType
+      ? '无法识别当前连接的数据库类型'
+      : (result.rows?.length ?? 0) === 0
+        ? '当前结果没有可复制的数据'
+        : result.preview && result.hasMore
+          ? '复制当前已加载数据为 INSERT（仍有未加载数据）'
+          : '复制当前查询结果为 INSERT'
+
+  const handleCopyAsInsert = useCallback(async () => {
+    if (!insertTargetTableName || !dbType || !result.rows?.length) return
+    try {
+      const sql = rowsToSqlInsert(
+        insertTargetTableName,
+        result.columns ?? [],
+        result.rows,
+        dbType,
+      )
+      await navigator.clipboard.writeText(sql)
+      toast.success(result.preview && result.hasMore
+        ? `已复制当前加载的 ${result.rows.length} 行 INSERT`
+        : `已复制 ${result.rows.length} 行 INSERT`)
+    } catch (error) {
+      handleApiError(error, '复制 INSERT 失败')
+    }
+  }, [dbType, insertTargetTableName, result.columns, result.hasMore, result.preview, result.rows])
 
   const updateMeasuredTableHeight = useCallback(() => {
     const wrapperEl = tableWrapperRef.current
@@ -303,7 +341,7 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
         <Space size={8} style={{ flex: 1, flexWrap: 'wrap' }}>
           {result.type === 'query' && (
             editabilityReason ? (
-              <Tooltip title={getEditabilityReasonText(editabilityReason)}>
+              <Tooltip title={getEditabilityReasonText(editabilityReason, missingPrimaryKeys)}>
                 <Tag icon={<StopOutlined />} color="warning" style={{ cursor: 'help' }}>
                   不可编辑
                 </Tag>
@@ -327,12 +365,24 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
               {
                 key: 'csv',
                 label: result.preview ? '导出当前已加载为 CSV' : '导出为 CSV',
-                onClick: () => exportResultSet(result.columns ?? [], result.rows ?? [], 'csv', displayLabel),
+                onClick: () => confirmDataExport({
+                  columns: result.columns ?? [],
+                  rows: result.rows ?? [],
+                  format: 'csv',
+                  filenameBase: displayLabel,
+                  loadedOnly: Boolean(result.preview && result.hasMore),
+                }),
               },
               {
                 key: 'json',
                 label: result.preview ? '导出当前已加载为 JSON' : '导出为 JSON',
-                onClick: () => exportResultSet(result.columns ?? [], result.rows ?? [], 'json', displayLabel),
+                onClick: () => confirmDataExport({
+                  columns: result.columns ?? [],
+                  rows: result.rows ?? [],
+                  format: 'json',
+                  filenameBase: displayLabel,
+                  loadedOnly: Boolean(result.preview && result.hasMore),
+                }),
               },
             ],
           }}
@@ -344,6 +394,17 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
             </Space>
           </Typography.Link>
         </Dropdown>
+        <Tooltip title={copyInsertTooltip}>
+          <Button
+            type="text"
+            size="small"
+            icon={<CopyOutlined />}
+            disabled={copyInsertDisabled}
+            onClick={handleCopyAsInsert}
+          >
+            复制 INSERT
+          </Button>
+        </Tooltip>
       </div>
 
       <div ref={tableWrapperRef} style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>

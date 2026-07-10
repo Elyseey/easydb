@@ -728,13 +728,14 @@ fun Route.exportRoutes() {
         val taskMgr = ServiceRegistry.taskManager
 
         val task = taskMgr.get(taskId) ?: return@get call.fail("NOT_FOUND", "任务不存在")
+        if (task.type != "export") return@get call.fail("INVALID_TASK", "任务不是导出任务")
         if (task.status != "completed") return@get call.fail("INVALID_STATUS", "任务未完成，无法下载")
 
         val filePath = task.payload?.get("filePath") ?: return@get call.fail("NO_FILE", "该任务未关联任何可下载文件")
         val fileName = task.payload?.get("fileName") ?: "export.zip"
 
         val file = File(filePath)
-        if (!file.exists()) return@get call.fail("FILE_NOT_FOUND", "导出文件已丢失或被清理")
+        if (!file.exists() || !file.isFile) return@get call.fail("FILE_NOT_FOUND", "导出文件已丢失或被清理")
 
         call.response.header(io.ktor.http.HttpHeaders.ContentDisposition, "attachment; filename=\"$fileName\"")
         call.respondFile(file)

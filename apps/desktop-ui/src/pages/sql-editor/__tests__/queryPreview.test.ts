@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SqlResult } from '@/types'
-import { sqlBatchSummary, sqlUpdateResultText } from '../queryPreview'
+import { refreshSqlPreviewResult, sqlBatchSummary, sqlUpdateResultText } from '../queryPreview'
 
 function sqlResult(overrides: Partial<SqlResult>): SqlResult {
   return {
@@ -40,5 +40,35 @@ describe('sqlUpdateResultText', () => {
       affectedRows: null,
       sql: "COMMENT ON COLUMN demo.deleted IS '是否删除'",
     }))).toBe('执行成功')
+  })
+})
+
+describe('refreshSqlPreviewResult', () => {
+  it('reuses the result set SQL instead of unrelated current editor text', async () => {
+    let receivedSql = ''
+    const target = sqlResult({
+      connectionId: 'conn-1',
+      database: 'APP',
+      sql: 'SELECT id, params FROM device_config',
+      pageSize: 200,
+    })
+
+    const refreshed = await refreshSqlPreviewResult(target, async (request) => {
+      receivedSql = request.sql
+      return sqlResult({ sql: request.sql, rows: [{ id: 1, params: '{"enabled":true}' }] })
+    })
+
+    expect(receivedSql).toBe(target.sql)
+    expect(refreshed.connectionId).toBe('conn-1')
+    expect(refreshed.database).toBe('APP')
+  })
+
+  it('rejects a refresh error so save and refresh feedback stay separate', async () => {
+    const target = sqlResult({ connectionId: 'conn-1', database: 'APP' })
+
+    await expect(refreshSqlPreviewResult(target, async () => sqlResult({
+      type: 'error',
+      error: 'syntax error',
+    }))).rejects.toThrow('syntax error')
   })
 })

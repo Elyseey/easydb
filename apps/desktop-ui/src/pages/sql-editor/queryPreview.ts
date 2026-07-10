@@ -5,6 +5,42 @@ export const MAX_SQL_PREVIEW_CELL_CHARS = 4096
 export const TRUNCATED_SQL_CELL_SUFFIX = ' …[truncated]'
 const DEFAULT_SQL_CELL_DISPLAY_CHARS = 160
 
+export interface SqlPreviewRequest {
+  connectionId: string
+  database: string
+  sql: string
+  offset?: number
+  pageSize?: number
+  maxCellChars?: number
+}
+
+export async function refreshSqlPreviewResult(
+  target: SqlResult,
+  queryPreview: (request: SqlPreviewRequest) => Promise<SqlResult>,
+): Promise<SqlResult> {
+  if (target.type !== 'query' || !target.connectionId || !target.database || !target.sql) {
+    throw new Error('无法确定需要刷新的原始查询')
+  }
+
+  const refreshed = await queryPreview({
+    connectionId: target.connectionId,
+    database: target.database,
+    sql: target.sql,
+    offset: 0,
+    pageSize: target.pageSize ?? DEFAULT_SQL_PREVIEW_PAGE_SIZE,
+    maxCellChars: MAX_SQL_PREVIEW_CELL_CHARS,
+  })
+  if (refreshed.type === 'error') {
+    throw new Error(refreshed.error ?? '刷新查询结果失败')
+  }
+
+  return {
+    ...refreshed,
+    connectionId: target.connectionId,
+    database: target.database,
+  }
+}
+
 export function normalizeExecutableSql(sql: string): string {
   return sql.trim().replace(/;+\s*$/, '').trim()
 }

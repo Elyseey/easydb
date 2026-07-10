@@ -345,23 +345,23 @@ export const ConnectionPage: React.FC = () => {
         {selectedGroup === 'all' && (
           <Row gutter={16} style={{ marginBottom: 24 }}>
             <Col span={6}>
-              <Card size="small" bordered={false} style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
+              <Card size="small" variant="borderless" style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
                 <Statistic title="连接总数" value={stats.total} prefix={<ApiOutlined />} />
               </Card>
             </Col>
             <Col span={6}>
-              <Card size="small" bordered={false} style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
-                <Statistic title="已连接" value={stats.connected} valueStyle={{ color: 'var(--edb-success)' }} prefix={<CheckCircleOutlined />} />
+              <Card size="small" variant="borderless" style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
+                <Statistic title="已连接" value={stats.connected} styles={{ content: { color: 'var(--edb-success)' } }} prefix={<CheckCircleOutlined />} />
               </Card>
             </Col>
             <Col span={6}>
-              <Card size="small" bordered={false} style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
-                <Statistic title="未连接" value={stats.disconnected} valueStyle={{ color: 'var(--edb-text-secondary)' }} prefix={<DisconnectOutlined />} />
+              <Card size="small" variant="borderless" style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
+                <Statistic title="未连接" value={stats.disconnected} styles={{ content: { color: 'var(--edb-text-secondary)' } }} prefix={<DisconnectOutlined />} />
               </Card>
             </Col>
             <Col span={6}>
-              <Card size="small" bordered={false} style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
-                <Statistic title="异常" value={stats.error} valueStyle={{ color: 'var(--edb-error)' }} prefix={<ExclamationCircleOutlined />} />
+              <Card size="small" variant="borderless" style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
+                <Statistic title="异常" value={stats.error} styles={{ content: { color: 'var(--edb-error)' } }} prefix={<ExclamationCircleOutlined />} />
               </Card>
             </Col>
           </Row>
@@ -425,7 +425,7 @@ export const ConnectionPage: React.FC = () => {
            onCancel={() => setGroupModalOpen(false)}
            okText="保存"
            cancelText="取消"
-           destroyOnClose
+           destroyOnHidden
            width={400}
         >
            <Input 

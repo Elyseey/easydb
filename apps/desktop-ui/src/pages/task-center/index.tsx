@@ -160,16 +160,14 @@ export const TaskCenterPage: React.FC = () => {
   }
 
   // 日志导出 (下载物理日志文件)
-  const handleExportLogs = () => {
+  const handleExportLogs = async () => {
     if (!selectedTaskId || !selectedTask) return
-    const url = `http://localhost:18080/api/task/${selectedTaskId}/download-log`
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${selectedTask.name}-log.txt`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    toast.success('物理日志下载已启动')
+    try {
+      await taskApi.downloadLog(selectedTaskId, `${selectedTask.name}-log.txt`)
+      toast.success('物理日志下载已启动')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '日志下载失败')
+    }
   }
 
   const selectedTask = tasks.find((t) => t.id === selectedTaskId)

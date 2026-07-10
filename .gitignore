@@ -52,6 +52,7 @@ Thumbs.db
 # Runtime
 *.pid
 .kernel.log
+.kernel-token
 .ui.log
 
 # Python cache

@@ -308,7 +308,7 @@ const SlowQueryDetailDrawer: React.FC<{
       width={760}
       open={open}
       onClose={onClose}
-      destroyOnClose
+      destroyOnHidden
       styles={{ body: { padding: '16px', overflowY: 'auto' } }}
     >
       {/* SQL 指纹 */}

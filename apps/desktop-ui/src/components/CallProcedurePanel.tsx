@@ -460,7 +460,7 @@ export const CallProcedurePanel: React.FC<CallProcedurePanelProps> = ({ target, 
         disabled: step === 'loading' || step === 'executing',
         danger: false,
       }}
-      destroyOnClose
+      destroyOnHidden
       styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
     >
       {/* Step: loading */}

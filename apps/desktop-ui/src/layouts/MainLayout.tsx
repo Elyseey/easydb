@@ -90,7 +90,9 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const currentTitle = pageTitle[location.pathname] ?? ''
 
   const capabilities = getDbCapabilities(activeDbType)
-  const menuItems = allMenuItems.filter(item => !item.check || item.check(capabilities))
+  const menuItems = allMenuItems
+    .filter(item => !item.check || item.check(capabilities))
+    .map(({ key, icon, label }) => ({ key, icon, label }))
 
   useEffect(() => {
     const defaultCommands = [

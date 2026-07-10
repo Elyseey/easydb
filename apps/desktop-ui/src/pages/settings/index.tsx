@@ -194,13 +194,17 @@ export const SettingsPage: React.FC = () => {
         try {
           await backupApi.deleteFile(file.filePath)
           message.success(`已删除 ${file.fileName}`)
-          loadBackupFiles()
-          loadStorageInfo()
-        } catch {
-          message.error('删除失败')
+        } catch (err) {
+          message.error(err instanceof Error ? err.message : '删除失败')
+          return
         } finally {
           setDeletingBackup(null)
         }
+
+        await Promise.allSettled([
+          loadBackupFiles(),
+          loadStorageInfo(),
+        ])
       },
     })
   }, [modal, message, loadBackupFiles, loadStorageInfo])
@@ -554,7 +558,7 @@ export const SettingsPage: React.FC = () => {
                                 <Button
                                   size="small"
                                   icon={<DownloadOutlined />}
-                                  href={backupApi.downloadUrl(f.filePath)}
+                                  onClick={() => backupApi.downloadFile(f.fileName).catch(err => message.error(err.message || '下载失败'))}
                                   style={{ flexShrink: 0 }}
                                 />
                                 <Button

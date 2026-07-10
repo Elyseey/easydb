@@ -553,9 +553,9 @@ export default function BackupDatabaseModal({
             title="备份完成"
             subTitle="标准备份包已生成。"
             extra={[
-              resultFilePath && (
+              resultFilePath && taskId && (
                 <Button key="download" type="primary" icon={<SaveOutlined />}
-                  href={backupApi.downloadUrl(resultFilePath)} target="_blank" download>
+                  onClick={() => backupApi.downloadTask(taskId).catch(err => toast.error(err.message || '下载失败'))}>
                   下载 .edbkp 文件
                 </Button>
               ),

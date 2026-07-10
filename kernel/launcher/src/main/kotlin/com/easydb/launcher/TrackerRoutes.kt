@@ -154,6 +154,10 @@ fun Route.trackerRoutes() {
         call.ok(result)
     }
 
+    post("/events-ticket") {
+        call.ok(mapOf("ticket" to KernelSecurity.issueSseTicket()))
+    }
+
     // SSE 轻量通知（每秒推送计数更新，不推完整事件）
     get("/events") {
         val sessionId = call.request.queryParameters["sessionId"]

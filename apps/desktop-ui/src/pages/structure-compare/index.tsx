@@ -337,14 +337,14 @@ export const StructureComparePage: React.FC = () => {
             <Select
               style={{ width: 180 }} placeholder="选择源连接"
               value={sourceConnId} onChange={(v) => handleConnectionSelect(v, 'source')}
-              options={connOptions} listHeight={320} bordered={false}
+              options={connOptions} listHeight={320} variant="borderless"
             />
             <Divider type="vertical" />
             <Select
               style={{ width: 150 }} placeholder="源数据库"
               value={sourceDb} onChange={setSourceDb}
               options={sourceDbs.map((d) => ({ label: d, value: d }))}
-              disabled={!sourceConnId} showSearch bordered={false}
+              disabled={!sourceConnId} showSearch variant="borderless"
             />
           </div>
 
@@ -362,14 +362,14 @@ export const StructureComparePage: React.FC = () => {
             <Select
               style={{ width: 180 }} placeholder="选择目标连接"
               value={targetConnId} onChange={(v) => handleConnectionSelect(v, 'target')}
-              options={connOptions} listHeight={320} bordered={false}
+              options={connOptions} listHeight={320} variant="borderless"
             />
             <Divider type="vertical" />
             <Select
               style={{ width: 150 }} placeholder="目标数据库"
               value={targetDb} onChange={setTargetDb}
               options={targetDbs.map((d) => ({ label: d, value: d }))}
-              disabled={!targetConnId} showSearch bordered={false}
+              disabled={!targetConnId} showSearch variant="borderless"
             />
           </div>
         </div>

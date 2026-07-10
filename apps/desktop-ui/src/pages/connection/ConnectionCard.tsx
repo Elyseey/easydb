@@ -95,7 +95,7 @@ export const ConnectionCard: React.FC<ConnectionCardProps> = ({
       {/* Status + DB Type */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
         <Tag
-          bordered={false}
+          variant="filled"
           style={{
             background: 'var(--glass-panel)',
             color: 'var(--edb-text-secondary)',

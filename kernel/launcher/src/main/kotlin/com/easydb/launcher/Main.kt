@@ -21,7 +21,6 @@ import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.server.plugins.cors.routing.*
 import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.response.*
 import io.ktor.serialization.kotlinx.json.*
@@ -42,16 +41,8 @@ fun main() {
                 ignoreUnknownKeys = true
             })
         }
-        install(CORS) {
-            anyHost()
-            allowHeader(HttpHeaders.ContentType)
-            allowHeader(HttpHeaders.Accept)
-            allowMethod(HttpMethod.Get)
-            allowMethod(HttpMethod.Post)
-            allowMethod(HttpMethod.Put)
-            allowMethod(HttpMethod.Delete)
-            allowMethod(HttpMethod.Options)
-        }
+        configureKernelCors()
+        configureKernelSecurity()
         install(StatusPages) {
             exception<Throwable> { call, cause ->
                 logger.error("Unhandled exception: ${cause.message}", cause)

@@ -494,33 +494,65 @@ fun Route.metadataRoutes() {
         val req = call.receive<DataEditRequest>()
         val editService = DataEditService()
         val dialect = adapterFor(session).dialectAdapter()
-        val sqlStatements = editService.generateSql(dialect, table, req.changes)
+        val statements = editService.generateStatements(dialect, table, req.changes)
+        val sqlStatements = statements.map { it.previewSql }
+
+        if (sqlStatements.size != req.changes.size) {
+            call.ok(DataEditResult(
+                success = false,
+                sqlStatements = sqlStatements,
+                errors = listOf("部分数据变更缺少主键或没有实际修改，已拒绝执行")
+            ))
+            return@post
+        }
 
         if (req.dryRun) {
             call.ok(DataEditResult(success = true, sqlStatements = sqlStatements))
         } else {
+            val jdbcConn = session.getJdbcConnection()
+            val previousAutoCommit = jdbcConn.autoCommit
             try {
-                // 获取底层 JDBC 连接执行 DML
-                val jdbcConn = session.getJdbcConnection()
+                if (previousAutoCommit) jdbcConn.autoCommit = false
 
                 var totalAffected = 0
                 jdbcConn.createStatement().use { stmt ->
                     dialect.buildSwitchDatabaseSql(database)?.let { stmt.execute(it) }
-                    for (sql in sqlStatements) {
-                        totalAffected += stmt.executeUpdate(sql)
-                    }
                 }
+                for (statement in statements) {
+                    val affected = jdbcConn.prepareStatement(statement.sql).use { prepared ->
+                        statement.parameters.forEachIndexed { index, value ->
+                            if (value == null) {
+                                prepared.setNull(index + 1, java.sql.Types.NULL)
+                            } else {
+                                prepared.setString(index + 1, value)
+                            }
+                        }
+                        prepared.executeUpdate()
+                    }
+                    if (affected != 1) {
+                        throw IllegalStateException(
+                            "数据未更新：预期影响 1 行，实际影响 $affected 行。数据可能已变化，请刷新后重试"
+                        )
+                    }
+                    totalAffected += affected
+                }
+                jdbcConn.commit()
                 call.ok(DataEditResult(
                     success = true,
                     sqlStatements = sqlStatements,
                     affectedRows = totalAffected
                 ))
             } catch (e: Exception) {
+                runCatching { jdbcConn.rollback() }
                 call.ok(DataEditResult(
                     success = false,
                     sqlStatements = sqlStatements,
                     errors = listOf(e.message ?: "执行失败")
                 ))
+            } finally {
+                if (previousAutoCommit) {
+                    runCatching { jdbcConn.autoCommit = true }
+                }
             }
         }
     }

@@ -16,18 +16,20 @@
  */
 import React, { useState, useMemo, useCallback, useRef, useEffect, useLayoutEffect } from 'react'
 import {
-  Table, Input, Button, Space, Tag, Typography, theme, Modal, AutoComplete, Select, Divider, Tooltip,
+  Table, Input, Button, Space, Tag, Typography, theme, Modal, AutoComplete, Select, Divider, Tooltip, Dropdown,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import {
   PlusOutlined, DeleteOutlined, SaveOutlined, UndoOutlined,
   ExclamationCircleOutlined, FilterOutlined, CaretUpOutlined, CaretDownOutlined,
-  CopyOutlined, EditOutlined, CloseOutlined,
+  CopyOutlined, EditOutlined, CloseOutlined, DownloadOutlined,
 } from '@ant-design/icons'
-import type { ColumnInfo, RowChange, DataEditResult } from '@/types'
+import type { ColumnInfo, RowChange, DataEditResult, DbType } from '@/types'
 import { metadataApi } from '@/services/api'
 import { toast, handleApiError } from '@/utils/notification'
 import { startDeferredColumnResize } from '@/utils/columnResize'
+import { confirmDataExport } from '@/components/confirmDataExport'
+import { rowsToSqlInsert } from '@/utils/exportUtils'
 
 const { Text } = Typography
 
@@ -40,12 +42,13 @@ export interface EditableDataTableFilterState {
 
 interface EditableDataTableProps {
   connectionId: string
+  dbType?: DbType
   database: string
   tableName: string
   columns: ColumnInfo[]
   visibleColumns?: string[] // SQL SELECT 中实际选中的列名，用于过滤显示
   dataSource: Record<string, unknown>[]
-  onRefresh: () => void
+  onRefresh: () => void | Promise<void>
   onFilter?: (params: { where?: string; orderBy?: string }) => void
   // 加载更多（preview 模式）
   hasMore?: boolean
@@ -94,6 +97,7 @@ const CellEditor: React.FC<{
 }> = ({ position, value, onConfirm, onCancel, onStepCell }) => {
   const [val, setVal] = useState(value)
   const closingRef = useRef(false)
+  const editorHeight = val.includes('\n') ? Math.max(position.height, 160) : position.height
 
   return (
     <div style={{
@@ -101,17 +105,13 @@ const CellEditor: React.FC<{
       left: position.left,
       top: position.top,
       width: position.width,
-      height: position.height,
+      height: editorHeight,
       zIndex: 100,
     }}>
-      <Input
+      <Input.TextArea
         size="small"
         value={val}
         onChange={(e) => setVal(e.target.value)}
-        onPressEnter={() => {
-          closingRef.current = true
-          onConfirm(val)
-        }}
         onBlur={() => {
           if (closingRef.current) return
           onConfirm(val)
@@ -127,6 +127,12 @@ const CellEditor: React.FC<{
             e.preventDefault()
             closingRef.current = true
             onStepCell(val, e.shiftKey ? -1 : 1)
+            return
+          }
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            closingRef.current = true
+            onConfirm(val)
           }
         }}
         autoFocus
@@ -138,6 +144,7 @@ const CellEditor: React.FC<{
           border: '1px solid var(--edb-accent)',
           color: 'var(--edb-text-primary)',
           caretColor: 'var(--edb-accent)',
+          resize: 'none',
         }}
       />
     </div>
@@ -146,6 +153,7 @@ const CellEditor: React.FC<{
 
 export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   connectionId,
+  dbType,
   database,
   tableName,
   columns,
@@ -278,6 +286,20 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
         .map(col => col.name)
       : columns.map(col => col.name)
   ), [columns, visibleColumns])
+  const exportColumnNames = visibleColumns ?? displayColumnNames
+
+  const handleCopyAsInsert = useCallback(async () => {
+    if (!dbType || dataSource.length === 0) return
+    try {
+      const sql = rowsToSqlInsert(tableName, exportColumnNames, dataSource, dbType)
+      await navigator.clipboard.writeText(sql)
+      toast.success(hasMore
+        ? `已复制当前加载的 ${dataSource.length} 行 INSERT`
+        : `已复制 ${dataSource.length} 行 INSERT`)
+    } catch (error) {
+      handleApiError(error, '复制 INSERT 失败')
+    }
+  }, [dataSource, dbType, exportColumnNames, hasMore, tableName])
 
   const orderedDisplayColumns = useMemo(() => {
     const order = columnOrder.length > 0 ? columnOrder : displayColumnNames
@@ -916,6 +938,10 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     let sqlPreview = ''
     try {
       const result = await metadataApi.editData(connectionId, database, tableName, changes, true) as DataEditResult
+      if (!result.success) {
+        toast.error(`无法生成安全的保存语句：${result.errors.join('; ')}`)
+        return
+      }
       sqlPreview = result.sqlStatements.join(';\n') || '无变更'
     } catch (e) {
       handleApiError(e, '生成 SQL 失败')
@@ -952,7 +978,11 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
           if (result.success) {
             toast.success(`保存成功，影响 ${result.affectedRows} 行`)
             undoAll()
-            onRefresh()
+            try {
+              await onRefresh()
+            } catch {
+              toast.warning('数据已保存，但自动刷新失败，请手动刷新结果集')
+            }
           } else {
             toast.error(`保存失败：${result.errors.join('; ')}`)
           }
@@ -1286,6 +1316,52 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
               </>
             )}
             {/* 常驻操作 */}
+            <Dropdown menu={{
+              items: [
+                {
+                  key: 'csv',
+                  label: hasMore ? '导出当前已加载为 CSV' : '导出为 CSV',
+                  onClick: () => confirmDataExport({
+                    columns: exportColumnNames,
+                    rows: dataSource,
+                    format: 'csv',
+                    filenameBase: tableName,
+                    loadedOnly: Boolean(hasMore),
+                  }),
+                },
+                {
+                  key: 'json',
+                  label: hasMore ? '导出当前已加载为 JSON' : '导出为 JSON',
+                  onClick: () => confirmDataExport({
+                    columns: exportColumnNames,
+                    rows: dataSource,
+                    format: 'json',
+                    filenameBase: tableName,
+                    loadedOnly: Boolean(hasMore),
+                  }),
+                },
+              ],
+            }}>
+              <Tooltip title={hasChanges ? '导出最近一次查询结果，不包含未保存修改' : '导出当前查询结果'} placement="bottom">
+                <Button size="small" type="text" icon={<DownloadOutlined />} />
+              </Tooltip>
+            </Dropdown>
+            <Tooltip
+              title={hasChanges
+                ? '复制最近一次查询结果为 INSERT，不包含未保存修改'
+                : hasMore
+                  ? '复制当前已加载数据为 INSERT（仍有未加载数据）'
+                  : '复制当前查询结果为 INSERT'}
+              placement="bottom"
+            >
+              <Button
+                size="small"
+                type="text"
+                icon={<CopyOutlined />}
+                onClick={handleCopyAsInsert}
+                disabled={!dbType || dataSource.length === 0}
+              />
+            </Tooltip>
             <Tooltip title="新增一行" placement="bottom">
               <Button size="small" type="text" icon={<PlusOutlined />} onClick={addRow} />
             </Tooltip>

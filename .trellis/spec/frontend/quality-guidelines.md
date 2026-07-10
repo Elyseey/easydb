@@ -138,8 +138,99 @@ const [open, setOpen] = useState(false)
 
 ## Testing Requirements
 
-当前无自动化测试，验证方式：
+验证方式：
 
-1. `npx tsc --noEmit` 零错误
-2. 目标功能手动测试
-3. 不破坏现有功能（特别是数据编辑保存流程）
+1. `npm run build`（包含 TypeScript 编译）零错误
+2. `npx vitest run` 全部通过
+3. 目标功能手动测试
+4. 不破坏现有功能（特别是数据编辑保存流程）
+
+---
+
+## Scenario: SQL 查询结果安全回写
+
+### 1. Scope / Trigger
+
+当 SQL 查询结果允许直接编辑并通过表数据编辑 API 回写时，必须同时验证“表有主键”和“当前结果集包含完整主键”。所有用户输入值（尤其多行 JSON、引号和 CLOB 文本）必须作为 JDBC 参数传递；保存后的刷新必须绑定产生该结果集的原始 SELECT。
+
+### 2. Signatures
+
+```ts
+type EditabilityReason = 'missing_primary_key_columns' | /* existing reasons */ string
+type EditabilityStatus = {
+  editable: boolean
+  primaryKeys?: string[]
+  missingPrimaryKeys?: string[]
+}
+
+type DataEditStatement = {
+  sql: string              // executable SQL containing only ? placeholders
+  parameters: Array<string | null>
+  previewSql: string       // display only; never execute
+}
+```
+
+后端 `POST /metadata/{connectionId}/{database}/tables/{table}/edit` 执行每条按主键定位的行变更时，预期影响行数必须为 `1`。
+
+### 3. Contracts
+
+- `result.columns` 是 SQL 实际结果列，是判断主键是否随结果返回的唯一来源。
+- `tableDef.columns` 只提供表主键定义，不能证明结果行携带主键值。
+- 保存批次必须事务化：全部语句各影响 1 行后提交；任一语句影响 0 行或多行则回滚。
+- `DataEditResult.success = true` 只表示变更已提交，不能用于表示“SQL 无异常但没有更新数据”。
+- `DialectAdapter` 只负责标识符和占位符 SQL；路由必须用 `PreparedStatement` 按 `parameters` 顺序绑定值，禁止执行 `previewSql`。
+- 查询结果刷新使用当前 `SqlResult.sql`，不得调用会重新读取 Monaco 当前选区的通用执行入口。
+- 提交成功后刷新失败时保留已提交状态，并分别提示“保存成功、刷新失败”。
+
+### 4. Validation & Error Matrix
+
+- 表没有主键 → `no_primary_key`，只读。
+- SELECT 缺少任一主键列 → `missing_primary_key_columns`，只读并列出缺失列。
+- SQL 生成数量少于变更数量 → 拒绝执行。
+- 任一更新影响 0 行 → 回滚，提示刷新后重试。
+- 任一主键更新影响多行 → 回滚，提示定位条件异常。
+- JDBC 参数绑定/执行失败 → 回滚，`success = false`，保留数据库原始错误信息。
+- 保存提交成功但原 SELECT 刷新失败 → 不回滚已提交数据，显示独立刷新提示。
+
+### 5. Good/Base/Bad Cases
+
+- Good：联合主键全部在 SELECT 中，多行 JSON 通过 `?` 参数更新，恰好 1 行并提交，再以该结果集的 `SqlResult.sql` 刷新。
+- Base：`SELECT *` 包含完整主键，普通短文本保持可编辑。
+- Bad：把 JSON 拼进 SQL 字面量，或保存后调用 `handleExecute()` 导致当前编辑器选区被误执行。
+
+### 6. Tests Required
+
+- 单元测试：缺少一个或多个主键列时返回 `missing_primary_key_columns` 和准确列名。
+- 单元测试：完整主键存在时结果保持可编辑。
+- 后端/集成测试：0 行更新不返回成功，批次中任一失败会回滚。
+- 单元测试：可执行 SQL 只含占位符，多行 JSON/单引号原样存在于参数列表且顺序正确。
+- 前端单元测试：刷新请求的 SQL 必须等于目标 `SqlResult.sql`；刷新错误必须 reject 供保存流程单独提示。
+- 手动验证：保存后立即重新执行原 SELECT，必须看到持久化值。
+
+### 7. Wrong vs Correct
+
+```ts
+// ❌ Wrong：只看表元数据
+if (tablePrimaryKeys.length > 0) return { editable: true }
+
+// ✅ Correct：结果集必须包含完整主键
+const resultColumns = new Set(result.columns.map((name) => name.toLowerCase()))
+const missing = tablePrimaryKeys.filter((name) => !resultColumns.has(name.toLowerCase()))
+if (missing.length > 0) {
+  return { editable: false, reason: 'missing_primary_key_columns', missingPrimaryKeys: missing }
+}
+```
+
+```kotlin
+// ❌ Wrong：用户值进入 SQL 语法文本
+statement.executeUpdate("UPDATE ${dialect.quoteIdentifier(table)} SET value = ${dialect.escapeValue(json)}")
+
+// ✅ Correct：方言生成占位符 SQL，值只通过 JDBC 参数传递
+connection.prepareStatement(dialect.buildUpdateSql(table, setColumns, primaryKeys)).use { prepared ->
+    parameters.forEachIndexed { index, value ->
+        if (value == null) prepared.setNull(index + 1, java.sql.Types.NULL)
+        else prepared.setString(index + 1, value)
+    }
+    prepared.executeUpdate()
+}
+```

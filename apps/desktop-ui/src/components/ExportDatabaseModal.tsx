@@ -836,7 +836,7 @@ export default function ExportDatabaseModal({
               extra={[
                 <Button type="primary" key="download" icon={<DownloadOutlined />} size="large" onClick={() => {
                   if (taskId) {
-                    window.open(`http://localhost:18080/api/export/download/${taskId}`, '_blank')
+                    exportApi.download(taskId).catch(err => toast.error(err.message || '下载失败'))
                   }
                 }}>
                   立即下载打包文件

@@ -23,6 +23,7 @@ import {
   MAX_SQL_PREVIEW_CELL_CHARS,
   mergeSqlPreviewResult,
   normalizeExecutableSql,
+  refreshSqlPreviewResult,
   sqlBatchSummary,
   sqlSuccessToastMessage,
   sqlUpdateResultText,
@@ -489,6 +490,22 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
     })
   }, [activeEditorTab?.currentBatch, updateActiveTab])
 
+  const handleRefreshResult = useCallback(async (batchIndex: number) => {
+    const target = activeEditorTab?.currentBatch?.[batchIndex]
+    if (!target) {
+      throw new Error('无法确定需要刷新的原始查询')
+    }
+    const enrichedResult = await refreshSqlPreviewResult(
+      target,
+      async (request) => sqlApi.queryPreview(request) as Promise<SqlResult>,
+    )
+    updateActiveTab({
+      currentBatch: (activeEditorTab.currentBatch ?? []).map((result, idx) => (
+        idx === batchIndex ? enrichedResult : result
+      )),
+    })
+  }, [activeEditorTab, updateActiveTab])
+
   // 分析查询结果的可编辑性
   useEffect(() => {
     const currentBatch = activeEditorTab?.currentBatch ?? []
@@ -729,12 +746,13 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
                     return (
                       <EditableDataTable
                         connectionId={r.connectionId!}
+                        dbType={connections.find((connection) => connection.id === r.connectionId)?.dbType}
                         database={r.database!}
                         tableName={editability.tableName}
                         columns={editability.columns}
                         visibleColumns={r.columns}
                         dataSource={r.rows ?? []}
-                        onRefresh={() => handleExecute()}
+                        onRefresh={() => handleRefreshResult(idx)}
                         active={active}
                         hasMore={r.preview && r.hasMore}
                         onLoadMore={r.preview && r.hasMore ? () => handleLoadMore(idx) : undefined}
@@ -747,6 +765,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
                   return (
                     <SqlResultPanel
                       result={r}
+                      dbType={connections.find((connection) => connection.id === r.connectionId)?.dbType}
                       displayLabel={displayLabel}
                       tableHeight={resultTableHeight}
                       active={active}
@@ -755,6 +774,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
                       onLoadMore={r.preview && r.hasMore ? () => handleLoadMore(idx) : undefined}
                       onResultMetaChange={(patch) => handleResultMetaChange(idx, patch)}
                       editabilityReason={editability?.reason}
+                      missingPrimaryKeys={editability?.missingPrimaryKeys}
                     />
                   )
                 })()

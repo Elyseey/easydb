@@ -16,7 +16,7 @@
  */
 import React, { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { ConfigProvider, theme, Modal, App as AntApp } from 'antd'
+import { ConfigProvider, theme, App as AntApp } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import { MainLayout } from '@/layouts/MainLayout'
 import { ConnectionPage } from '@/pages/connection'
@@ -30,13 +30,15 @@ import { DataTrackerPage } from '@/pages/data-tracker'
 import { SlowQueryPage } from '@/pages/slow-query'
 import { checkForUpdate, getAutoCheckEnabled } from '@/utils/updater'
 import { useThemeStore } from '@/stores/themeStore'
+import { configureFeedbackApis } from '@/utils/notification'
 
 const fontFamily = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
 const fontFamilyCode = "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace"
 
-const App: React.FC = () => {
-  const effectiveTheme = useThemeStore((s) => s.effectiveTheme)
-  const isDark = effectiveTheme === 'dark'
+const AppContent: React.FC = () => {
+  const { message, notification, modal } = AntApp.useApp()
+
+  configureFeedbackApis({ message, notification })
 
   // 启动时自动检查更新
   useEffect(() => {
@@ -46,7 +48,7 @@ const App: React.FC = () => {
       try {
         const info = await checkForUpdate()
         if (info.hasUpdate) {
-          Modal.confirm({
+          modal.confirm({
             title: `发现新版本 v${info.latestVersion}`,
             content: (
               <div>
@@ -70,7 +72,32 @@ const App: React.FC = () => {
       }
     }, 3000)
     return () => clearTimeout(timer)
-  }, [])
+  }, [modal])
+
+  return (
+    <BrowserRouter>
+      <MainLayout>
+        <Routes>
+          <Route path="/" element={<Navigate to="/connection" replace />} />
+          <Route path="/connection" element={<ConnectionPage />} />
+          <Route path="/workbench" element={<WorkbenchPage />} />
+          <Route path="/sql-editor" element={<Navigate to="/workbench" replace />} />
+          <Route path="/migration" element={<MigrationPage />} />
+          <Route path="/sync" element={<SyncPage />} />
+          <Route path="/task-center" element={<TaskCenterPage />} />
+          <Route path="/structure-compare" element={<StructureComparePage />} />
+          <Route path="/data-tracker" element={<DataTrackerPage />} />
+          <Route path="/slow-query" element={<SlowQueryPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Routes>
+      </MainLayout>
+    </BrowserRouter>
+  )
+}
+
+const App: React.FC = () => {
+  const effectiveTheme = useThemeStore((s) => s.effectiveTheme)
+  const isDark = effectiveTheme === 'dark'
 
   return (
     <ConfigProvider
@@ -94,23 +121,7 @@ const App: React.FC = () => {
         },
       }}>
       <AntApp>
-        <BrowserRouter>
-          <MainLayout>
-            <Routes>
-              <Route path="/" element={<Navigate to="/connection" replace />} />
-              <Route path="/connection" element={<ConnectionPage />} />
-              <Route path="/workbench" element={<WorkbenchPage />} />
-              <Route path="/sql-editor" element={<Navigate to="/workbench" replace />} />
-              <Route path="/migration" element={<MigrationPage />} />
-              <Route path="/sync" element={<SyncPage />} />
-              <Route path="/task-center" element={<TaskCenterPage />} />
-              <Route path="/structure-compare" element={<StructureComparePage />} />
-              <Route path="/data-tracker" element={<DataTrackerPage />} />
-              <Route path="/slow-query" element={<SlowQueryPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Routes>
-          </MainLayout>
-        </BrowserRouter>
+        <AppContent />
       </AntApp>
     </ConfigProvider>
   )

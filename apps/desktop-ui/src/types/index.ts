@@ -496,6 +496,7 @@ export type EditabilityReason =
   | 'aggregate'           // 聚合查询
   | 'view'                // 视图查询
   | 'no_primary_key'      // 表无主键
+  | 'missing_primary_key_columns' // SELECT 结果未包含完整主键
   | 'metadata_error'      // 元数据获取失败
 
 export interface EditabilityStatus {
@@ -503,5 +504,6 @@ export interface EditabilityStatus {
   reason?: EditabilityReason
   tableName?: string
   primaryKeys?: string[]
+  missingPrimaryKeys?: string[]
   columns?: ColumnInfo[]
 }

@@ -11,6 +11,7 @@ KERNEL_JAR="$KERNEL_DIR/launcher/build/libs/launcher-1.0.0-SNAPSHOT-all.jar"
 KERNEL_PORT=18080
 KERNEL_PID_FILE="$PROJECT_DIR/.kernel.pid"
 UI_PID_FILE="$PROJECT_DIR/.ui.pid"
+KERNEL_TOKEN_FILE="$PROJECT_DIR/.kernel-token"
 
 # 颜色
 GREEN='\033[0;32m'
@@ -21,6 +22,29 @@ NC='\033[0m'
 log()  { echo -e "${GREEN}[EasyDB]${NC} $1"; }
 warn() { echo -e "${YELLOW}[EasyDB]${NC} $1"; }
 err()  { echo -e "${RED}[EasyDB]${NC} $1"; }
+
+ensure_kernel_token() {
+    if [ -n "$EASYDB_KERNEL_TOKEN" ]; then
+        echo "$EASYDB_KERNEL_TOKEN"
+        return
+    fi
+
+    if [ -f "$KERNEL_TOKEN_FILE" ]; then
+        cat "$KERNEL_TOKEN_FILE"
+        return
+    fi
+
+    local token
+    if command -v openssl >/dev/null 2>&1; then
+        token=$(openssl rand -hex 32)
+    else
+        token=$(uuidgen | tr -d '-')
+    fi
+
+    umask 077
+    echo "$token" > "$KERNEL_TOKEN_FILE"
+    echo "$token"
+}
 
 resolve_path() {
     local path="$1"
@@ -89,7 +113,9 @@ embed_local_jre() {
     rm -rf "$target_jre"
     mkdir -p "$target_jre"
     cp -R "$jre_home"/. "$target_jre/"
-    chmod +x "$target_jre/bin/java"
+    # Tauri updates resources in-place on subsequent package builds. Some JDK
+    # files are installed read-only, so make the staged copy owner-writable.
+    chmod -R u+rwX "$target_jre"
     log "✅ JRE 已复制到 resources/jre ($java_version, $(du -sh "$target_jre" | cut -f1))"
 }
 
@@ -133,6 +159,12 @@ do_package() {
 
     # 4. 构建 Tauri 应用
     log "🏗️  构建 Tauri 应用（首次可能需要 5-10 分钟）..."
+    # tauri-build preserves source permissions in target/release/resources.
+    # Repair a cache left by an earlier build before it tries to overwrite it.
+    local tauri_resource_cache="$UI_DIR/src-tauri/target/release/resources"
+    if [ -d "$tauri_resource_cache" ]; then
+        chmod -R u+rwX "$tauri_resource_cache"
+    fi
     cd "$UI_DIR" && npm run tauri build
     if [ $? -eq 0 ]; then
         log "✅ 打包完成！"
@@ -163,8 +195,11 @@ start_kernel() {
         do_build
     fi
 
+    local kernel_token
+    kernel_token=$(ensure_kernel_token)
+
     log "🚀 启动内核 (port $KERNEL_PORT)..."
-    cd "$KERNEL_DIR" && nohup java -jar "$KERNEL_JAR" > "$PROJECT_DIR/.kernel.log" 2>&1 &
+    cd "$KERNEL_DIR" && EASYDB_KERNEL_TOKEN="$kernel_token" nohup java -jar "$KERNEL_JAR" > "$PROJECT_DIR/.kernel.log" 2>&1 &
     echo $! > "$KERNEL_PID_FILE"
     sleep 2
 
@@ -182,8 +217,11 @@ start_ui() {
         return
     fi
 
+    local kernel_token
+    kernel_token=$(ensure_kernel_token)
+
     log "🌐 启动前端..."
-    cd "$UI_DIR" && nohup npm run dev > "$PROJECT_DIR/.ui.log" 2>&1 &
+    cd "$UI_DIR" && VITE_EASYDB_KERNEL_TOKEN="$kernel_token" nohup npm run dev > "$PROJECT_DIR/.ui.log" 2>&1 &
     echo $! > "$UI_PID_FILE"
     sleep 3
     log "✅ 前端已启动 → http://localhost:5173"

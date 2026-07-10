@@ -331,7 +331,7 @@ export const DataTrackerPage: React.FC = () => {
       message.success('追踪已启动')
 
       // 开启 SSE 接收轻量通知（只有计数，不再收完整事件）
-      const es = trackerApi.createEventSource(result.sessionId)
+      const es = await trackerApi.createEventSource(result.sessionId)
       es.onmessage = (e) => {
         try {
           const tick: SseTick = JSON.parse(e.data)

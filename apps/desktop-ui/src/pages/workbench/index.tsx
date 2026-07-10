@@ -36,7 +36,7 @@ import { useSqlEditorStore } from '@/stores/sqlEditorStore'
 import { useCommandStore } from '@/stores/commandStore'
 import { metadataApi, connectionApi, scriptApi, setReconnectCallback } from '@/services/api'
 import { handleApiError, toast } from '@/utils/notification'
-import { exportTableData } from '@/utils/exportUtils'
+import { confirmDataExport } from '@/components/confirmDataExport'
 import { EmptyState } from '@/components/EmptyState'
 import { EditableDataTable } from '@/components/EditableDataTable'
 import { CreateDatabaseModal } from '@/components/CreateDatabaseModal'
@@ -179,7 +179,7 @@ const CategoryListView: React.FC<{
           </Text>
           <Space size={8} style={{ marginTop: 6 }} wrap>
             <Text type="secondary" style={{ fontSize: 12 }}>{database}</Text>
-            <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+            <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
               {categoryObjects.length} 个对象
             </Tag>
           </Space>
@@ -269,6 +269,10 @@ export const WorkbenchPage: React.FC = () => {
 
   // --- Store（持久化状态，路由切换不丢失）---
   const openConnections = useWorkbenchStore((s) => s.openConnections)
+  const openConnectionDbTypes = useMemo(
+    () => new Map(openConnections.map((connection) => [connection.id, connection.dbType])),
+    [openConnections]
+  )
   const addOpenConnection = useWorkbenchStore((s) => s.addOpenConnection)
   const removeOpenConnection = useWorkbenchStore((s) => s.removeOpenConnection)
 
@@ -1324,12 +1328,28 @@ export const WorkbenchPage: React.FC = () => {
         metadataApi.previewRows(connId, dbName, tableName) as Promise<Record<string, unknown>[]>,
       ])
       const colNames = (columns || []).map(c => c.name)
-      exportTableData(tableName, colNames, rows, format)
-      toast.success('导出成功')
+      if (format === 'sql') {
+        const dbType = openConnectionDbTypes.get(connId)
+        if (!dbType) {
+          toast.warning('无法识别当前连接的数据库类型')
+          return
+        }
+        confirmDataExport({
+          columns: colNames,
+          rows,
+          format,
+          filenameBase: tableName,
+          tableName,
+          dbType,
+          loadedOnly: true,
+        })
+      } else {
+        confirmDataExport({ columns: colNames, rows, format, filenameBase: tableName, tableName, loadedOnly: true })
+      }
     } catch (e) {
       handleApiError(e, '导出数据失败')
     }
-  }, [])
+  }, [openConnectionDbTypes])
 
   // --- 右键菜单 ---
   const getContextMenuItems = useCallback((nodeKey: string): MenuProps['items'] => {
@@ -1739,14 +1759,14 @@ export const WorkbenchPage: React.FC = () => {
             </Dropdown>
           </div>
           <Space size={8} wrap style={{ marginTop: 12 }}>
-            <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+            <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
               连接 {openConnections.length}
             </Tag>
-            <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+            <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
               脚本 {savedScripts.length}
             </Tag>
             {activeConnectionName && (
-              <Tag bordered={false} color="processing" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+              <Tag variant="filled" color="processing" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                 当前: {activeConnectionName}
               </Tag>
             )}
@@ -2170,10 +2190,10 @@ export const WorkbenchPage: React.FC = () => {
                             />
                             <Space size={8} wrap style={{ marginTop: 10 }}>
                               <Text strong style={{ fontSize: 18, color: token.colorText }}>{t.tableName}</Text>
-                              <Tag bordered={false} color={t.objectType === 'view' ? 'processing' : 'default'} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                              <Tag variant="filled" color={t.objectType === 'view' ? 'processing' : 'default'} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 {t.objectType === 'view' ? '视图' : '表'}
                               </Tag>
-                              <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                              <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 {t.connectionName}
                               </Tag>
                             </Space>
@@ -2234,9 +2254,21 @@ export const WorkbenchPage: React.FC = () => {
                                   {t.previewRows.length > 0 && (
                                     <Dropdown menu={{
                                       items: [
-                                        { key: 'csv', label: '导出为 CSV', onClick: () => exportTableData(t.tableName, t.columns.map((c: ColumnInfo) => c.name), t.previewRows, 'csv') },
-                                        { key: 'json', label: '导出为 JSON', onClick: () => exportTableData(t.tableName, t.columns.map((c: ColumnInfo) => c.name), t.previewRows, 'json') },
-                                        { key: 'sql', label: '导出为 SQL INSERT', onClick: () => exportTableData(t.tableName, t.columns.map((c: ColumnInfo) => c.name), t.previewRows, 'sql') },
+                                        { key: 'csv', label: '导出为 CSV', onClick: () => confirmDataExport({ columns: t.columns.map((c: ColumnInfo) => c.name), rows: t.previewRows, format: 'csv', filenameBase: t.tableName, tableName: t.tableName, loadedOnly: t.hasMoreRows }) },
+                                        { key: 'json', label: '导出为 JSON', onClick: () => confirmDataExport({ columns: t.columns.map((c: ColumnInfo) => c.name), rows: t.previewRows, format: 'json', filenameBase: t.tableName, tableName: t.tableName, loadedOnly: t.hasMoreRows }) },
+                                        ...(openConnectionDbTypes.get(t.connectionId) ? [{
+                                          key: 'sql',
+                                          label: '导出为 SQL INSERT',
+                                          onClick: () => confirmDataExport({
+                                            columns: t.columns.map((c: ColumnInfo) => c.name),
+                                            rows: t.previewRows,
+                                            format: 'sql',
+                                            filenameBase: t.tableName,
+                                            tableName: t.tableName,
+                                            dbType: openConnectionDbTypes.get(t.connectionId)!,
+                                            loadedOnly: t.hasMoreRows,
+                                          }),
+                                        }] : []),
                                       ],
                                     }}>
                                       <Button size="small" icon={<DownloadOutlined />} style={quietButtonStyle}>导出</Button>
@@ -2247,6 +2279,7 @@ export const WorkbenchPage: React.FC = () => {
                               <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                                 <EditableDataTable
                                   connectionId={t.connectionId}
+                                  dbType={openConnectionDbTypes.get(t.connectionId)}
                                   database={t.database}
                                   tableName={t.tableName}
                                   columns={t.columns}
@@ -2388,13 +2421,13 @@ export const WorkbenchPage: React.FC = () => {
                               {activeTab.database}
                             </Text>
                             <Space size={8} wrap style={{ marginTop: 10 }}>
-                              <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                              <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 {activeTab.connectionName}
                               </Tag>
-                              <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                              <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 对象 {dbObjects.length}
                               </Tag>
-                              <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                              <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 表空间 {formatBytes(totalTableBytes)}
                               </Tag>
                             </Space>
