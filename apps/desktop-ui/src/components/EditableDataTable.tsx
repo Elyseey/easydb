@@ -236,6 +236,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
 
   // 多行选择
   const [selectedRowKeys, setSelectedRowKeys] = useState<number[]>([])
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
 
   // 批量改列 Modal
   const [batchEditOpen, setBatchEditOpen] = useState(false)
@@ -1316,33 +1317,41 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
               </>
             )}
             {/* 常驻操作 */}
-            <Dropdown menu={{
-              items: [
-                {
-                  key: 'csv',
-                  label: hasMore ? '导出当前已加载为 CSV' : '导出为 CSV',
-                  onClick: () => confirmDataExport({
-                    columns: exportColumnNames,
-                    rows: dataSource,
-                    format: 'csv',
-                    filenameBase: tableName,
-                    loadedOnly: Boolean(hasMore),
-                  }),
-                },
-                {
-                  key: 'json',
-                  label: hasMore ? '导出当前已加载为 JSON' : '导出为 JSON',
-                  onClick: () => confirmDataExport({
-                    columns: exportColumnNames,
-                    rows: dataSource,
-                    format: 'json',
-                    filenameBase: tableName,
-                    loadedOnly: Boolean(hasMore),
-                  }),
-                },
-              ],
-            }}>
-              <Tooltip title={hasChanges ? '导出最近一次查询结果，不包含未保存修改' : '导出当前查询结果'} placement="bottom">
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: 'csv',
+                    label: hasMore ? '导出当前已加载为 CSV' : '导出为 CSV',
+                    onClick: () => confirmDataExport({
+                      columns: exportColumnNames,
+                      rows: dataSource,
+                      format: 'csv',
+                      filenameBase: tableName,
+                      loadedOnly: Boolean(hasMore),
+                    }),
+                  },
+                  {
+                    key: 'json',
+                    label: hasMore ? '导出当前已加载为 JSON' : '导出为 JSON',
+                    onClick: () => confirmDataExport({
+                      columns: exportColumnNames,
+                      rows: dataSource,
+                      format: 'json',
+                      filenameBase: tableName,
+                      loadedOnly: Boolean(hasMore),
+                    }),
+                  },
+                ],
+              }}
+              trigger={['click']}
+              onOpenChange={setExportMenuOpen}
+            >
+              <Tooltip
+                title={hasChanges ? '导出最近一次查询结果，不包含未保存修改' : '导出当前查询结果'}
+                placement="bottom"
+                open={exportMenuOpen ? false : undefined}
+              >
                 <Button size="small" type="text" icon={<DownloadOutlined />} />
               </Tooltip>
             </Dropdown>

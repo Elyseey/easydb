@@ -90,6 +90,7 @@ requestAnimationFrame(() => {
 - [ ] TypeScript 无 any 类型
 - [ ] 无 console.log
 - [ ] 无硬编码颜色值
+- [ ] Tooltip 包裹 Dropdown 触发器时，菜单是否使用 click 触发，并在菜单打开期间隐藏 Tooltip，避免浮层遮挡菜单项？
 
 ### 涉及 `<Table virtual>` 的 PR
 

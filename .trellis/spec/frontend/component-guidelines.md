@@ -55,6 +55,40 @@ For input flows, prefer a controlled `<Modal>` over `Modal.confirm` because conf
 
 ---
 
+## Ant Design Dropdown + Tooltip — Keep Overlays Mutually Exclusive
+
+Do not rely on Ant Design's default hover trigger when a `Dropdown` trigger contains a `Tooltip`. Both overlays can remain open at the same time, and Tooltip's default popup layer is above Dropdown, so the help text can cover the first menu item and make it impossible to click.
+
+Use click to open the menu and hide the Tooltip while the menu is open:
+
+```tsx
+const [menuOpen, setMenuOpen] = useState(false)
+
+<Dropdown
+  trigger={['click']}
+  onOpenChange={setMenuOpen}
+  menu={{ items }}
+>
+  <Tooltip
+    title="导出当前查询结果"
+    open={menuOpen ? false : undefined}
+  >
+    <Button icon={<DownloadOutlined />} />
+  </Tooltip>
+</Dropdown>
+```
+
+The interaction contract is:
+
+- Hovering the closed trigger may show the Tooltip.
+- Clicking the trigger must close the Tooltip and show only the Dropdown.
+- Every visible menu item must remain clickable.
+- Closing the menu restores normal uncontrolled Tooltip behavior.
+
+Add a component regression test that opens the Tooltip first, clicks the trigger, verifies `ant-tooltip-open` is removed while the Dropdown is visible, and clicks a menu item.
+
+---
+
 ## Ant Design Virtual Table — Column Resize Performance
 
 When adding column resize to `<Table virtual>`, do not update React state on every `mousemove`.
