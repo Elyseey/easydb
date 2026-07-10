@@ -745,6 +745,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
                   if (editability?.editable && editability.tableName && editability.columns) {
                     return (
                       <EditableDataTable
+                        key={`${r.executedAt}-editable`}
                         connectionId={r.connectionId!}
                         dbType={connections.find((connection) => connection.id === r.connectionId)?.dbType}
                         database={r.database!}
@@ -764,6 +765,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
                   // 不可编辑或预览模式：渲染 SqlResultPanel
                   return (
                     <SqlResultPanel
+                      key={`${r.executedAt}-readonly`}
                       result={r}
                       dbType={connections.find((connection) => connection.id === r.connectionId)?.dbType}
                       displayLabel={displayLabel}

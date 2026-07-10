@@ -14,3 +14,17 @@ Object.defineProperty(window, 'matchMedia', {
     dispatchEvent: () => false,
   }),
 })
+
+Object.defineProperty(globalThis, 'ResizeObserver', {
+  writable: true,
+  value: class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  },
+})
+
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+  writable: true,
+  value: () => {},
+})

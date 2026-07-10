@@ -580,6 +580,7 @@ export const SqlEditorPage: React.FC = () => {
                         label: displayLabel,
                         children: (
                           <SqlResultPanel
+                            key={`${r.executedAt}-readonly`}
                             result={r}
                             dbType={connections.find((connection) => connection.id === r.connectionId)?.dbType}
                             displayLabel={displayLabel}

@@ -89,6 +89,100 @@ Add a component regression test that opens the Tooltip first, clicks the trigger
 
 ---
 
+## Ant Design Menu Submenus — Restore the Portaled Popup Surface
+
+The global glass override intentionally makes `.ant-menu` transparent so navigation menus can inherit their panel surface. This assumption does not hold for popup submenus: Ant Design portals them outside the custom context-menu container, so a nested menu can render directly over a result grid with the grid text visible through it.
+
+Any standalone custom `<Menu>` that uses nested `children` must give the submenu popup its own surface through the Ant Design semantic `classNames.popup` / `styles.popup` API:
+
+```tsx
+<Menu
+  items={items}
+  classNames={{ popup: { root: 'result-context-menu-popup' } }}
+  styles={{
+    popup: {
+      root: {
+        zIndex: token.zIndexPopupBase + 2,
+        background: 'var(--glass-popup)',
+        border: '1px solid var(--glass-border)',
+        boxShadow: 'var(--glass-shadow-lg)',
+        backdropFilter: 'var(--glass-blur-heavy)',
+      },
+    },
+  }}
+/>
+```
+
+Do not fix this by removing the global transparent menu rule or by applying a broad `.ant-menu` popup override; both approaches can change sidebar and inline navigation surfaces. Keep the override scoped to the popup owned by the custom menu.
+
+Add a regression test that opens a real nested submenu and verifies the portaled popup has an opaque `--glass-popup` background and a z-index above the root context menu.
+
+---
+
+## SQL Result Grids — Row Selection and Scoped Export
+
+`SqlResultPanel` and `EditableDataTable` must expose the same selection/export contract even though one is read-only and the other supports editing.
+
+### Signatures
+
+```ts
+useResultRowSelection(rowCount: number): {
+  selectedRowKeys: number[]
+  setSelectedRowKeys(keys: readonly React.Key[]): void
+  clearSelection(): void
+  selectForContextMenu(rowIndex: number): void
+}
+
+confirmDataExport({
+  columns,
+  rows: selectedRows,
+  scope: 'selected',
+  loadedOnly: result.preview && result.hasMore,
+})
+```
+
+### Contracts
+
+- Keep selection as lightweight row indices; do not copy wide row objects into selection state.
+- Export selected rows in current grid order, not checkbox click order.
+- Right-clicking an unselected row replaces the selection with that row.
+- Right-clicking a selected row preserves the full multi-selection.
+- Toolbar actions must distinguish `导出全部` from `导出所选 N 行`.
+- New query execution clears selection by remounting the result grid with `key={result.executedAt}`.
+- Appending more rows to the same result preserves selection because `executedAt` is unchanged.
+- Selected export never auto-loads missing rows; `loadedOnly` must disclose that selection is limited to fetched rows.
+- SQL INSERT actions are available only when the target table and `dbType` are known.
+- Editable grids export the last queried data and explicitly disclose that unsaved changes are excluded.
+
+### Right-click Matrix
+
+| Current selection | Right-click target | Effective scope |
+|---|---|---|
+| Empty | Any row | That row |
+| Rows 1, 3 | Row 3 | Rows 1, 3 |
+| Rows 1, 3 | Row 2 | Row 2 only |
+
+### Tests Required
+
+- Pure selection test: preserve selected target, replace unselected target, remove invalid keys, and sort keys by grid order.
+- Read-only grid test: checkbox-select multiple rows and assert `confirmDataExport.rows` contains only those rows.
+- Editable grid test: selected export coexists with full export and passes `scope: 'selected'`.
+- Context-menu test: right-clicking an unselected row shows `导出此行` and updates the visible selected count.
+
+### Wrong vs Correct
+
+```tsx
+// ❌ Wrong: each result grid invents its own scope rules and exports every row.
+onContextMenu={() => confirmDataExport({ rows: result.rows, format: 'csv' })}
+
+// ✅ Correct: both grids share selection semantics and pass only the selected rows.
+const { selectedRowKeys, selectForContextMenu } = useResultRowSelection(rows.length)
+const selectedRows = rowsForSelection(rows, selectedRowKeys)
+onContextMenu={(rowIndex) => selectForContextMenu(rowIndex)}
+```
+
+---
+
 ## Ant Design Virtual Table — Column Resize Performance
 
 When adding column resize to `<Table virtual>`, do not update React state on every `mousemove`.

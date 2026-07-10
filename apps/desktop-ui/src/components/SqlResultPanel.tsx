@@ -1,11 +1,16 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Button, Dropdown, Modal, Space, Table, Tag, Tooltip, Typography, theme } from 'antd'
+import type { MenuProps } from 'antd'
 import { CopyOutlined, DownloadOutlined, EditOutlined, StopOutlined } from '@ant-design/icons'
 import type { SqlResult, EditabilityReason, DbType } from '@/types'
 import { confirmDataExport } from '@/components/confirmDataExport'
+import { SelectedRowsActions } from '@/components/SelectedRowsActions'
+import { ResultContextMenu, type ResultContextMenuPosition } from '@/components/ResultContextMenu'
 import { getEditabilityReasonText, resolveInsertTargetTableName } from '@/utils/editabilityAnalyzer'
 import { rowsToSqlInsert } from '@/utils/exportUtils'
 import { handleApiError, toast } from '@/utils/notification'
+import { rowsForSelection, useResultRowSelection } from '@/hooks/useResultRowSelection'
+import { useSelectedRowsExportActions } from '@/hooks/useSelectedRowsExportActions'
 import {
   formatSqlCell,
   isSqlCellTruncated,
@@ -62,6 +67,7 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
   const [tableScrollY, setTableScrollY] = useState(Math.max(220, tableHeight - 24))
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
   const [columnOrder, setColumnOrder] = useState<string[]>([])
+  const [contextMenu, setContextMenu] = useState<ResultContextMenuPosition | null>(null)
   const dragColumnRef = useRef<string | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const toolbarRef = useRef<HTMLDivElement | null>(null)
@@ -70,6 +76,17 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
   const scrollTopRef = useRef(0)
   const autoLoadLockRef = useRef(false)
   const isLoadingMore = currentLoadKey === loadMoreKey
+  const resultRows = useMemo(() => result.rows ?? [], [result.rows])
+  const {
+    selectedRowKeys,
+    setSelectedRowKeys,
+    clearSelection,
+    selectForContextMenu,
+  } = useResultRowSelection(resultRows.length)
+  const selectedRows = useMemo(
+    () => rowsForSelection(resultRows, selectedRowKeys),
+    [resultRows, selectedRowKeys],
+  )
   const insertTargetTableName = useMemo(
     () => resolveInsertTargetTableName(result.sql),
     [result.sql]
@@ -84,6 +101,14 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
         : result.preview && result.hasMore
           ? '复制当前已加载数据为 INSERT（仍有未加载数据）'
           : '复制当前查询结果为 INSERT'
+  const selectedExportActions = useSelectedRowsExportActions({
+    columns: result.columns ?? [],
+    rows: selectedRows,
+    filenameBase: displayLabel,
+    tableName: insertTargetTableName ?? undefined,
+    dbType,
+    hasUnloadedRows: Boolean(result.preview && result.hasMore),
+  })
 
   const handleCopyAsInsert = useCallback(async () => {
     if (!insertTargetTableName || !dbType || !result.rows?.length) return
@@ -173,11 +198,51 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
       900,
       orderedColumns.reduce(
         (sum, column) => sum + (columnWidths[column] ?? DEFAULT_RESULT_COLUMN_WIDTH),
-        0
+        36
       )
     ),
     [columnWidths, orderedColumns]
   )
+
+  const selectedContextMenuItems = useMemo<MenuProps['items']>(() => {
+    const count = selectedRowKeys.length
+    if (count === 0) return []
+    const scopeLabel = count === 1 ? '导出此行' : `导出所选 ${count} 行`
+    return [
+      {
+        key: 'export-selected',
+        icon: <DownloadOutlined />,
+        label: scopeLabel,
+        children: [
+          { key: 'export-selected-csv', label: 'CSV', onClick: () => selectedExportActions.exportSelected('csv') },
+          { key: 'export-selected-json', label: 'JSON', onClick: () => selectedExportActions.exportSelected('json') },
+          ...(selectedExportActions.canUseSql
+            ? [{ key: 'export-selected-sql', label: 'SQL INSERT', onClick: () => selectedExportActions.exportSelected('sql') }]
+            : []),
+        ],
+      },
+      ...(selectedExportActions.canUseSql
+        ? [{
+            key: 'copy-selected-insert',
+            icon: <CopyOutlined />,
+            label: count === 1 ? '复制此行为 INSERT' : `复制所选 ${count} 行为 INSERT`,
+            onClick: selectedExportActions.copySelectedInsert,
+          }]
+        : []),
+      { type: 'divider' },
+      { key: 'clear-selection', label: '清除选择', onClick: clearSelection },
+    ]
+  }, [clearSelection, selectedExportActions, selectedRowKeys.length])
+
+  const handleContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const row = (event.target as HTMLElement | null)?.closest('.ant-table-row[data-row-key]')
+    if (!(row instanceof HTMLElement)) return
+    const rowIndex = Number(row.dataset.rowKey)
+    if (!Number.isFinite(rowIndex)) return
+    event.preventDefault()
+    selectForContextMenu(rowIndex)
+    setContextMenu({ x: event.clientX, y: event.clientY })
+  }, [selectForContextMenu])
 
   const maybeLoadMore = useMemo(() => {
     return () => {
@@ -337,7 +402,18 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
 
   return (
     <div ref={containerRef} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <div ref={toolbarRef} style={{ display: 'flex', justifyContent: 'flex-end', padding: '2px 0 4px', gap: 8, flexShrink: 0 }}>
+      <div
+        ref={toolbarRef}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          flexWrap: 'wrap',
+          padding: '2px 0 4px',
+          gap: 8,
+          flexShrink: 0,
+        }}
+      >
         <Space size={8} style={{ flex: 1, flexWrap: 'wrap' }}>
           {result.type === 'query' && (
             editabilityReason ? (
@@ -359,12 +435,20 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
             {typeof result.totalRows === 'number' ? ` · 共 ${result.totalRows} 条` : ''}
           </Text>
         </Space>
+        <SelectedRowsActions
+          selectedCount={selectedRowKeys.length}
+          canUseSql={selectedExportActions.canUseSql}
+          onExport={selectedExportActions.exportSelected}
+          onCopyInsert={selectedExportActions.copySelectedInsert}
+          onClear={clearSelection}
+        />
         <Dropdown
+          trigger={['click']}
           menu={{
             items: [
               {
                 key: 'csv',
-                label: result.preview ? '导出当前已加载为 CSV' : '导出为 CSV',
+                label: result.preview ? '导出全部已加载为 CSV' : '导出全部为 CSV',
                 onClick: () => confirmDataExport({
                   columns: result.columns ?? [],
                   rows: result.rows ?? [],
@@ -375,7 +459,7 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
               },
               {
                 key: 'json',
-                label: result.preview ? '导出当前已加载为 JSON' : '导出为 JSON',
+                label: result.preview ? '导出全部已加载为 JSON' : '导出全部为 JSON',
                 onClick: () => confirmDataExport({
                   columns: result.columns ?? [],
                   rows: result.rows ?? [],
@@ -390,7 +474,7 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
           <Typography.Link>
             <Space size={4}>
               <DownloadOutlined />
-              导出
+              导出全部
             </Space>
           </Typography.Link>
         </Dropdown>
@@ -402,12 +486,16 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
             disabled={copyInsertDisabled}
             onClick={handleCopyAsInsert}
           >
-            复制 INSERT
+            复制全部 INSERT
           </Button>
         </Tooltip>
       </div>
 
-      <div ref={tableWrapperRef} style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+      <div
+        ref={tableWrapperRef}
+        style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}
+        onContextMenu={handleContextMenu}
+      >
         <Table
           bordered
           virtual
@@ -419,8 +507,22 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
           size="small"
           scroll={{ x: tableScrollX, y: tableScrollY }}
           rowClassName={(_, index) => index % 2 === 0 ? 'table-row-light' : 'table-row-dark'}
+          rowSelection={{
+            type: 'checkbox',
+            selectedRowKeys,
+            onChange: setSelectedRowKeys,
+            columnWidth: 36,
+          }}
         />
       </div>
+
+      {contextMenu && (
+        <ResultContextMenu
+          position={contextMenu}
+          items={selectedContextMenuItems}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
 
       <Modal
         open={Boolean(cellPreview)}

@@ -91,6 +91,8 @@ requestAnimationFrame(() => {
 - [ ] 无 console.log
 - [ ] 无硬编码颜色值
 - [ ] Tooltip 包裹 Dropdown 触发器时，菜单是否使用 click 触发，并在菜单打开期间隐藏 Tooltip，避免浮层遮挡菜单项？
+- [ ] 自定义 Ant Design `Menu` 包含嵌套子菜单时，Portal 浮层是否有独立的 `--glass-popup` 背景和高于根菜单的层级？
+- [ ] 查询结果的只读/可编辑网格是否共享行选择、右键范围和“全部/所选”导出语义？
 
 ### 涉及 `<Table virtual>` 的 PR
 
