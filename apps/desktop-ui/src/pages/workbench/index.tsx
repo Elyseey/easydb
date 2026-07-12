@@ -1393,7 +1393,7 @@ export const WorkbenchPage: React.FC = () => {
         },
         { type: 'divider' },
       ]
-      if (cap.metadata.schemaManagement) {
+      if (cap.metadata.schemaAlterCharset) {
         items.unshift({
           key: 'edit-db',
           icon: <EditOutlined />,

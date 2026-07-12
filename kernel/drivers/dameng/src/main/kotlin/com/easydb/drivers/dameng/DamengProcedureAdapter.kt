@@ -18,8 +18,8 @@ class DamengProcedureAdapter : ProcedureAdapter {
         type: String
     ): ProcedureInspectResult {
         val conn = session.getJdbcConnection()
-        val schema = database.trim().uppercase()
-        val objectName = name.trim().uppercase()
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(name)
 
         // 1. 参数列表：通过 ALL_ARGUMENTS（DM8 兼容 Oracle）
         val params = mutableListOf<ProcedureParam>()
@@ -147,8 +147,8 @@ class DamengProcedureAdapter : ProcedureAdapter {
      * DM CALL 语句：CALL "SCHEMA"."PROC"(?, ?, ?)
      */
     override fun buildCallSql(database: String, name: String, paramCount: Int): String {
-        val schema = database.trim().uppercase()
-        val procName = name.trim().uppercase()
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val procName = DamengIdentifierPolicy.catalogName(name)
         val placeholders = (1..paramCount).joinToString(", ") { "?" }
         return "CALL ${dialect.quoteIdentifier(schema)}.${dialect.quoteIdentifier(procName)}($placeholders)"
     }
@@ -157,8 +157,8 @@ class DamengProcedureAdapter : ProcedureAdapter {
      * DM 函数调用：SELECT "SCHEMA"."FUNC"(?, ?) AS result FROM dual
      */
     override fun buildFunctionCallSql(database: String, name: String, paramCount: Int): String {
-        val schema = database.trim().uppercase()
-        val funcName = name.trim().uppercase()
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val funcName = DamengIdentifierPolicy.catalogName(name)
         val placeholders = (1..paramCount).joinToString(", ") { "?" }
         return "SELECT ${dialect.quoteIdentifier(schema)}.${dialect.quoteIdentifier(funcName)}($placeholders) AS result FROM dual"
     }

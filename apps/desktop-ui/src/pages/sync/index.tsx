@@ -38,6 +38,7 @@ import { syncApi, metadataApi, connectionApi } from '@/services/api'
 import { toast, handleApiError } from '@/utils/notification'
 import { useNavigate } from 'react-router-dom'
 import type { ConnectionConfig } from '@/types'
+import { supportsDatabaseTaskPair, supportsDatabaseTaskRole } from '@/utils/databaseTaskPairs'
 
 const { Title, Text } = Typography
 
@@ -79,6 +80,22 @@ export const SyncPage: React.FC = () => {
   const handleConnectionSelect = async (connId: string, type: 'source' | 'target') => {
     const conn = connections.find((c) => c.id === connId)
     if (!conn) return
+    const role = type === 'source' ? 'source' : 'target'
+    if (!supportsDatabaseTaskRole('sync', conn.dbType, role)) {
+      toast.error('数据同步当前仅支持 MySQL → MySQL')
+      return
+    }
+
+    const counterpartId = type === 'source' ? targetId : sourceId
+    const counterpart = connections.find((c) => c.id === counterpartId)
+    if (counterpart) {
+      const sourceType = type === 'source' ? conn.dbType : counterpart.dbType
+      const targetType = type === 'target' ? conn.dbType : counterpart.dbType
+      if (!supportsDatabaseTaskPair('sync', sourceType, targetType)) {
+        toast.error('数据同步当前仅支持 MySQL → MySQL')
+        return
+      }
+    }
 
     if (conn.status !== 'connected') {
       try {
@@ -102,7 +119,7 @@ export const SyncPage: React.FC = () => {
   }
 
   // 格式化连接下拉项
-  const connOptions = connections.map((c) => ({
+  const toConnOptions = (items: ConnectionConfig[]) => items.map((c) => ({
     value: c.id,
     label: (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -113,6 +130,12 @@ export const SyncPage: React.FC = () => {
       </div>
     )
   }))
+  const sourceConnOptions = toConnOptions(
+    connections.filter((c) => supportsDatabaseTaskRole('sync', c.dbType, 'source'))
+  )
+  const targetConnOptions = toConnOptions(
+    connections.filter((c) => supportsDatabaseTaskRole('sync', c.dbType, 'target'))
+  )
 
   // 监听源连接以加载数据库
   useEffect(() => {
@@ -220,7 +243,7 @@ export const SyncPage: React.FC = () => {
                   <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>选择源连接实例</Text>
                   <Select
                     value={sourceId} onChange={(v) => handleConnectionSelect(v, 'source')}
-                    options={connOptions} placeholder="选择源连接"
+                    options={sourceConnOptions} placeholder="选择源连接"
                     style={{ width: '100%' }}
                     size="large"
                     listHeight={320}
@@ -278,7 +301,7 @@ export const SyncPage: React.FC = () => {
                   <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>选择目标连接实例</Text>
                   <Select
                     value={targetId} onChange={(v) => handleConnectionSelect(v, 'target')}
-                    options={connOptions} placeholder="选择目标连接"
+                    options={targetConnOptions} placeholder="选择目标连接"
                     style={{ width: '100%' }}
                     size="large"
                     listHeight={320}

@@ -10,6 +10,7 @@ import com.easydb.common.RoutineInfo
 import com.easydb.common.TableDefinition
 import com.easydb.common.TableInfo
 import com.easydb.common.TriggerInfo
+import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Types
 
@@ -21,36 +22,28 @@ class DamengMetadataAdapter : MetadataAdapter {
         val conn = session.getJdbcConnection()
         val schemas = linkedSetOf<String>()
 
-        try {
+        DamengCatalogPolicy.mergeNames(schemas) {
             conn.metaData.schemas.use { rs ->
+                val names = mutableListOf<String?>()
                 while (rs.next()) {
-                    schemas.add(rs.getString("TABLE_SCHEM"))
+                    names.add(rs.getString("TABLE_SCHEM"))
                 }
+                names
             }
-        } catch (_: Exception) {
-            // Some Dameng deployments expose fewer schemas through JDBC metadata.
         }
 
-        conn.createStatement().use { stmt ->
-            stmt.executeQuery(
-                """
-                SELECT NAME
-                FROM (
-                    SELECT USER AS NAME FROM DUAL
-                    UNION
-                    SELECT USERNAME AS NAME FROM ALL_USERS
-                    UNION
-                    SELECT OWNER AS NAME
-                    FROM ALL_OBJECTS
-                    WHERE OBJECT_TYPE IN ('TABLE', 'VIEW')
-                )
-                ORDER BY NAME
-                """.trimIndent()
-            ).use { rs ->
-                while (rs.next()) {
-                    schemas.add(rs.getString("NAME"))
-                }
-            }
+        DamengCatalogPolicy.mergeNames(schemas) {
+            loadSchemaNames(conn, "SELECT USER AS NAME FROM DUAL", "NAME")
+        }
+        DamengCatalogPolicy.mergeNames(schemas) {
+            loadSchemaNames(conn, "SELECT USERNAME FROM ALL_USERS", "USERNAME")
+        }
+        DamengCatalogPolicy.mergeNames(schemas) {
+            loadSchemaNames(
+                conn,
+                "SELECT DISTINCT OWNER FROM ALL_OBJECTS WHERE OBJECT_TYPE IN ('TABLE', 'VIEW')",
+                "OWNER"
+            )
         }
 
         return schemas
@@ -60,7 +53,7 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun listTables(session: DatabaseSession, database: String): List<TableInfo> {
-        val schema = normalizeName(database)
+        val schema = DamengIdentifierPolicy.catalogName(database)
         val result = mutableListOf<TableInfo>()
         val conn = session.getJdbcConnection()
 
@@ -125,8 +118,41 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun listRoutines(session: DatabaseSession, database: String): List<RoutineInfo> {
-        val schema = normalizeName(database)
+        val schema = DamengIdentifierPolicy.catalogName(database)
         val conn = session.getJdbcConnection()
+        return DamengCatalogPolicy.visibleFirst(
+            visibleLoader = { listRoutinesFromVisibleObjects(conn, schema) },
+            fallbackLoader = { listRoutinesFromSystemCatalog(conn, schema) }
+        )
+    }
+
+    private fun listRoutinesFromVisibleObjects(conn: Connection, schema: String): List<RoutineInfo> {
+        val result = mutableListOf<RoutineInfo>()
+        conn.prepareStatement(
+            """
+            SELECT OBJECT_NAME, OBJECT_TYPE
+            FROM ALL_OBJECTS
+            WHERE OWNER = ?
+              AND OBJECT_TYPE IN ('PROCEDURE', 'FUNCTION')
+            ORDER BY OBJECT_NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    result.add(
+                        RoutineInfo(
+                            name = rs.getString("OBJECT_NAME"),
+                            type = rs.getString("OBJECT_TYPE")
+                        )
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    private fun listRoutinesFromSystemCatalog(conn: Connection, schema: String): List<RoutineInfo> {
         val result = mutableListOf<RoutineInfo>()
         conn.prepareStatement(
             """
@@ -156,8 +182,34 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun listTriggers(session: DatabaseSession, database: String): List<TriggerInfo> {
-        val schema = normalizeName(database)
+        val schema = DamengIdentifierPolicy.catalogName(database)
         val conn = session.getJdbcConnection()
+        return DamengCatalogPolicy.visibleFirst(
+            visibleLoader = { listTriggersFromVisibleObjects(conn, schema) },
+            fallbackLoader = { listTriggersFromSystemCatalog(conn, schema) }
+        )
+    }
+
+    private fun listTriggersFromVisibleObjects(conn: Connection, schema: String): List<TriggerInfo> {
+        val result = mutableListOf<TriggerInfo>()
+        conn.prepareStatement(
+            """
+            SELECT OBJECT_NAME AS TRIGGER_NAME
+            FROM ALL_OBJECTS
+            WHERE OWNER = ?
+              AND OBJECT_TYPE = 'TRIGGER'
+            ORDER BY OBJECT_NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) result.add(TriggerInfo(name = rs.getString("TRIGGER_NAME")))
+            }
+        }
+        return result
+    }
+
+    private fun listTriggersFromSystemCatalog(conn: Connection, schema: String): List<TriggerInfo> {
         val result = mutableListOf<TriggerInfo>()
         conn.prepareStatement(
             """
@@ -185,8 +237,8 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun getObjectDdl(session: DatabaseSession, database: String, name: String, objectType: String): String {
-        val schema = normalizeName(database)
-        val objectName = normalizeName(name)
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(name)
         val dmType = when (objectType.uppercase()) {
             "PROCEDURE" -> "PROCEDURE"
             "FUNCTION" -> "FUNCTION"
@@ -201,8 +253,8 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun getTableDefinition(session: DatabaseSession, database: String, table: String): TableDefinition {
-        val schema = normalizeName(database)
-        val objectName = normalizeName(table)
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
         val tableInfo = findTableInfo(session, schema, objectName)
             ?: TableInfo(name = objectName, schema = schema, type = "table", engine = "DM")
 
@@ -219,8 +271,8 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun getTableInfo(session: DatabaseSession, database: String, table: String): TableInfo {
-        val schema = normalizeName(database)
-        val objectName = normalizeName(table)
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
         return findTableInfo(session, schema, objectName)
             ?: TableInfo(name = objectName, schema = schema, type = "table", engine = "DM")
     }
@@ -284,8 +336,8 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun getIndexes(session: DatabaseSession, database: String, table: String): List<IndexInfo> {
-        val schema = normalizeName(database)
-        val objectName = normalizeName(table)
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
         val conn = session.getJdbcConnection()
         val primaryIndexNames = mutableSetOf<String>()
         val indexMeta = linkedMapOf<String, IndexMeta>()
@@ -416,8 +468,8 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun getDdl(session: DatabaseSession, database: String, table: String): String {
-        val schema = normalizeName(database)
-        val objectName = normalizeName(table)
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
         val ddl = resolveDdl(session, schema, objectName).first
         return appendCommentsToDdl(session, schema, objectName, ddl)
     }
@@ -436,7 +488,7 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun createDatabase(session: DatabaseSession, name: String, charset: String, collation: String) {
-        val schema = normalizeName(name)
+        val schema = DamengIdentifierPolicy.newUnquotedName(name)
         require(schema.isNotBlank()) { "Schema 名称不能为空" }
         val conn = session.getJdbcConnection()
         conn.createStatement().use { stmt ->
@@ -445,7 +497,7 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun dropDatabase(session: DatabaseSession, name: String) {
-        val schema = normalizeName(name)
+        val schema = DamengIdentifierPolicy.catalogName(name)
         val conn = session.getJdbcConnection()
         conn.createStatement().use { stmt ->
             stmt.execute("DROP SCHEMA ${dialect.quoteIdentifier(schema)} CASCADE")
@@ -453,8 +505,8 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     override fun renameTable(session: DatabaseSession, database: String, oldName: String, newName: String) {
-        val schema = normalizeName(database)
-        val oldObjectName = normalizeName(oldName)
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val oldObjectName = DamengIdentifierPolicy.catalogName(oldName)
         val newObjectName = newName.trim()
         require(schema.isNotBlank()) { "Schema 名称不能为空" }
         require(oldObjectName.isNotBlank()) { "原表名不能为空" }
@@ -469,8 +521,8 @@ class DamengMetadataAdapter : MetadataAdapter {
     override fun listCharsets(session: DatabaseSession): List<CharsetInfo> = emptyList()
 
     override fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> {
-        val schema = normalizeName(database)
-        val objectName = normalizeName(table)
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
         val primaryColumns = getPrimaryColumns(session, schema, objectName)
 
         return try {
@@ -728,10 +780,24 @@ class DamengMetadataAdapter : MetadataAdapter {
     }
 
     private fun quoteQualified(schema: String, name: String): String {
-        return "${dialect.quoteIdentifier(normalizeName(schema))}.${dialect.quoteIdentifier(normalizeName(name))}"
+        return "${dialect.quoteIdentifier(DamengIdentifierPolicy.catalogName(schema))}.${dialect.quoteIdentifier(DamengIdentifierPolicy.catalogName(name))}"
     }
 
-    private fun normalizeName(value: String): String = value.trim().uppercase()
+    private fun loadSchemaNames(
+        conn: Connection,
+        sql: String,
+        column: String
+    ): List<String?> {
+        return conn.createStatement().use { stmt ->
+            stmt.executeQuery(sql).use { rs ->
+                val names = mutableListOf<String?>()
+                while (rs.next()) {
+                    names.add(rs.getString(column))
+                }
+                names
+            }
+        }
+    }
 
     private fun isBinaryColumn(columnType: Int): Boolean {
         return columnType in setOf(

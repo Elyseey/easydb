@@ -15,6 +15,7 @@ class DamengDatabaseAdapter : DatabaseAdapter {
         supportsTransactions = true,
         supportsSsh = true,
         supportsSsl = false,
+        supportsAlterDatabaseCharset = false,
         supportsViews = true,
         supportsStoredProcedures = true,
         supportsTriggers = true

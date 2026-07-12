@@ -35,6 +35,7 @@ import { useConnectionStore } from '@/stores/connectionStore'
 import { useSqlEditorStore } from '@/stores/sqlEditorStore'
 import { connectionApi, metadataApi, compareApi } from '@/services/api'
 import { handleApiError, toast } from '@/utils/notification'
+import { supportsDatabaseTaskPair, supportsDatabaseTaskRole } from '@/utils/databaseTaskPairs'
 
 const { Sider, Content } = Layout
 const { Text, Title } = Typography
@@ -100,6 +101,22 @@ export const StructureComparePage: React.FC = () => {
   const handleConnectionSelect = async (connId: string, type: 'source' | 'target') => {
     const conn = connections.find((c) => c.id === connId)
     if (!conn) return
+    const role = type === 'source' ? 'source' : 'target'
+    if (!supportsDatabaseTaskRole('structureCompare', conn.dbType, role)) {
+      toast.error('结构对比当前仅支持 MySQL → MySQL')
+      return
+    }
+
+    const counterpartId = type === 'source' ? targetConnId : sourceConnId
+    const counterpart = connections.find((c) => c.id === counterpartId)
+    if (counterpart) {
+      const sourceType = type === 'source' ? conn.dbType : counterpart.dbType
+      const targetType = type === 'target' ? conn.dbType : counterpart.dbType
+      if (!supportsDatabaseTaskPair('structureCompare', sourceType, targetType)) {
+        toast.error('结构对比当前仅支持 MySQL → MySQL')
+        return
+      }
+    }
 
     if (conn.status !== 'connected') {
       try {
@@ -121,7 +138,7 @@ export const StructureComparePage: React.FC = () => {
     }
   }
 
-  const connOptions = connections.map((c) => ({
+  const toConnOptions = (items: ConnectionConfig[]) => items.map((c) => ({
     value: c.id,
     label: (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -132,6 +149,12 @@ export const StructureComparePage: React.FC = () => {
       </div>
     )
   }))
+  const sourceConnOptions = toConnOptions(
+    connections.filter((c) => supportsDatabaseTaskRole('structureCompare', c.dbType, 'source'))
+  )
+  const targetConnOptions = toConnOptions(
+    connections.filter((c) => supportsDatabaseTaskRole('structureCompare', c.dbType, 'target'))
+  )
 
   // 加载连接列表
   useEffect(() => {
@@ -337,7 +360,7 @@ export const StructureComparePage: React.FC = () => {
             <Select
               style={{ width: 180 }} placeholder="选择源连接"
               value={sourceConnId} onChange={(v) => handleConnectionSelect(v, 'source')}
-              options={connOptions} listHeight={320} variant="borderless"
+              options={sourceConnOptions} listHeight={320} variant="borderless"
             />
             <Divider type="vertical" />
             <Select
@@ -362,7 +385,7 @@ export const StructureComparePage: React.FC = () => {
             <Select
               style={{ width: 180 }} placeholder="选择目标连接"
               value={targetConnId} onChange={(v) => handleConnectionSelect(v, 'target')}
-              options={connOptions} listHeight={320} variant="borderless"
+              options={targetConnOptions} listHeight={320} variant="borderless"
             />
             <Divider type="vertical" />
             <Select

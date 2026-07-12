@@ -100,6 +100,7 @@ data class DatabaseCapabilities(
     val supportsTransactions: Boolean = true,
     val supportsSsh: Boolean = true,
     val supportsSsl: Boolean = true,
+    val supportsAlterDatabaseCharset: Boolean = false,
     val supportsViews: Boolean = true,
     val supportsStoredProcedures: Boolean = false,
     val supportsTriggers: Boolean = false

@@ -275,12 +275,20 @@ fun Route.metadataRoutes() {
     post("/{connectionId}/alter-database") {
         val session = getSessionOrFail(call, connMgr) ?: return@post
         try {
+            val adapter = adapterFor(session)
+            if (!adapter.capabilities().supportsAlterDatabaseCharset) {
+                call.fail(
+                    "UNSUPPORTED_DB_FEATURE",
+                    "当前数据库类型（${session.config.dbType}）不支持运行时修改数据库字符集或排序规则"
+                )
+                return@post
+            }
             val body = call.receive<kotlinx.serialization.json.JsonObject>()
             val name = (body["name"] as? kotlinx.serialization.json.JsonPrimitive)?.content
                 ?: return@post call.fail("INVALID_REQUEST", "缺少 name 参数")
             val charset = (body["charset"] as? kotlinx.serialization.json.JsonPrimitive)?.content
             val collation = (body["collation"] as? kotlinx.serialization.json.JsonPrimitive)?.content
-            val dialect = adapterFor(session).dialectAdapter()
+            val dialect = adapter.dialectAdapter()
             val sql = buildString {
                 append("ALTER DATABASE ${dialect.quoteIdentifier(name)}")
                 if (!charset.isNullOrBlank()) append(" CHARACTER SET $charset")

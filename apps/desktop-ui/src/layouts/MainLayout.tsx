@@ -37,23 +37,30 @@ import { useCommandStore } from '@/stores/commandStore'
 import { useThemeStore } from '@/stores/themeStore'
 import { ConnectionStatusTag } from '@/components/StatusTag'
 import { CommandPalette } from '@/components/CommandPalette'
-import { getDbCapabilities } from '@/utils/dbCapabilities'
+import { supportsDatabaseNavigation } from '@/utils/databaseNavigation'
+import type { DatabaseNavigationCapability } from '@/utils/databaseNavigation'
 
 const { Sider, Content, Header } = Layout
 const { Text } = Typography
 
-type CapabilityCheck = (cap: ReturnType<typeof getDbCapabilities>) => boolean
+interface NavigationItem {
+  key: string
+  commandId: string
+  icon: React.ReactNode
+  label: string
+  capability?: DatabaseNavigationCapability
+}
 
-const allMenuItems: Array<{ key: string; icon: React.ReactNode; label: string; check?: CapabilityCheck }> = [
-  { key: '/connection', icon: <ApiOutlined />, label: '连接管理' },
-  { key: '/workbench', icon: <DatabaseOutlined />, label: '工作台' },
-  { key: '/migration', icon: <SwapOutlined />, label: '数据迁移', check: (c) => c.tasks.migration },
-  { key: '/sync', icon: <SyncOutlined />, label: '数据同步', check: (c) => c.tasks.sync },
-  { key: '/structure-compare', icon: <DiffOutlined />, label: '结构对比', check: (c) => c.tasks.structureCompare },
-  { key: '/task-center', icon: <UnorderedListOutlined />, label: '任务中心' },
-  { key: '/data-tracker', icon: <ThunderboltOutlined />, label: '数据追踪', check: (c) => c.diagnostics.dataTracker },
-  { key: '/slow-query',   icon: <SearchOutlined />,      label: '慢查询分析', check: (c) => c.diagnostics.slowQuery },
-  { key: '/settings', icon: <SettingOutlined />, label: '设置' },
+const allMenuItems: NavigationItem[] = [
+  { key: '/connection', commandId: 'nav-conn', icon: <ApiOutlined />, label: '连接管理' },
+  { key: '/workbench', commandId: 'nav-wb', icon: <DatabaseOutlined />, label: '工作台' },
+  { key: '/migration', commandId: 'nav-mig', icon: <SwapOutlined />, label: '数据迁移', capability: 'migration' },
+  { key: '/sync', commandId: 'nav-sync', icon: <SyncOutlined />, label: '数据同步', capability: 'sync' },
+  { key: '/structure-compare', commandId: 'nav-comp', icon: <DiffOutlined />, label: '结构对比', capability: 'structureCompare' },
+  { key: '/task-center', commandId: 'nav-task', icon: <UnorderedListOutlined />, label: '任务中心' },
+  { key: '/data-tracker', commandId: 'nav-tracker', icon: <ThunderboltOutlined />, label: '数据追踪', capability: 'dataTracker' },
+  { key: '/slow-query', commandId: 'nav-slow-query', icon: <SearchOutlined />, label: '慢查询分析', capability: 'slowQuery' },
+  { key: '/settings', commandId: 'nav-sett', icon: <SettingOutlined />, label: '设置' },
 ]
 
 const pageTitle: Record<string, string> = {
@@ -89,22 +96,24 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
   const currentTitle = pageTitle[location.pathname] ?? ''
 
-  const capabilities = getDbCapabilities(activeDbType)
-  const menuItems = allMenuItems
-    .filter(item => !item.check || item.check(capabilities))
+  const availableNavigationItems = allMenuItems.filter(
+    item => !item.capability || supportsDatabaseNavigation(activeDbType, item.capability)
+  )
+  const menuItems = availableNavigationItems
     .map(({ key, icon, label }) => ({ key, icon, label }))
 
   useEffect(() => {
+    const navigationCommands = allMenuItems
+      .filter(item => !item.capability || supportsDatabaseNavigation(activeDbType, item.capability))
+      .map(item => ({
+        id: item.commandId,
+        title: `前往 ${item.label}`,
+        category: 'Navigation',
+        icon: item.icon,
+        action: () => navigate(item.key),
+      }))
     const defaultCommands = [
-      { id: 'nav-conn', title: '前往 连接管理', category: 'Navigation', icon: <ApiOutlined />, action: () => navigate('/connection') },
-      { id: 'nav-wb', title: '前往 工作台', category: 'Navigation', icon: <DatabaseOutlined />, action: () => navigate('/workbench') },
-      { id: 'nav-mig', title: '前往 数据迁移', category: 'Navigation', icon: <SwapOutlined />, action: () => navigate('/migration') },
-      { id: 'nav-sync', title: '前往 数据同步', category: 'Navigation', icon: <SyncOutlined />, action: () => navigate('/sync') },
-      { id: 'nav-comp', title: '前往 结构对比', category: 'Navigation', icon: <DiffOutlined />, action: () => navigate('/structure-compare') },
-      { id: 'nav-task', title: '前往 任务中心', category: 'Navigation', icon: <UnorderedListOutlined />, action: () => navigate('/task-center') },
-      { id: 'nav-tracker', title: '前往 数据追踪', category: 'Navigation', icon: <ThunderboltOutlined />, action: () => navigate('/data-tracker') },
-      { id: 'nav-slow-query', title: '前往 慢查询分析', category: 'Navigation', icon: <SearchOutlined />, action: () => navigate('/slow-query') },
-      { id: 'nav-sett', title: '前往 设置', category: 'Navigation', icon: <SettingOutlined />, action: () => navigate('/settings') },
+      ...navigationCommands,
       { id: 'theme-toggle', title: '切换 深色/浅色 主题', category: 'Preferences', icon: <BgColorsOutlined />, action: () => setThemeMode(themeMode === 'dark' ? 'light' : 'dark') },
       { id: 'run-sql', title: '执行选中的 SQL (如果可用)', category: 'Editor', icon: <PlayCircleOutlined />, shortcut: ['Cmd', 'Enter'], action: () => {
           document.dispatchEvent(new CustomEvent('easydb-run-sql'))
@@ -116,7 +125,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     return () => {
       defaultCommands.forEach(c => unregisterCommand(c.id))
     }
-  }, [navigate, themeMode, setThemeMode, registerCommand, unregisterCommand])
+  }, [activeDbType, navigate, themeMode, setThemeMode, registerCommand, unregisterCommand])
 
   // 面包屑项
   const breadcrumbItems = [

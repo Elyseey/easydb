@@ -446,6 +446,137 @@ const tables = await fetchTables(connectionId, database)
 return buildSuggestions(tables, templates)
 ```
 
+### Database Namespace Management — Split Capabilities and Guard the API
+
+#### 1. Scope / Trigger
+
+Apply this contract whenever a workbench action creates, deletes, or alters a database/schema namespace or its charset/collation.
+
+#### 2. Signatures
+
+```ts
+interface MetadataCapability {
+  schemaCreation: boolean
+  schemaManagement: boolean
+  schemaAlterCharset: boolean
+}
+```
+
+```kotlin
+data class DatabaseCapabilities(
+    val supportsAlterDatabaseCharset: Boolean = false,
+)
+```
+
+#### 3. Contracts
+
+- Namespace creation, destructive deletion, and runtime charset alteration are separate capabilities; one boolean must not expose all three actions.
+- MySQL may set `schemaAlterCharset = true` and `supportsAlterDatabaseCharset = true`.
+- Dameng keeps Schema creation/deletion enabled but charset alteration disabled. Official DM8 documentation states `CHARSET/UNICODE_FLAG` cannot be changed after database creation.
+- The frontend hides unsupported actions, and the backend independently rejects direct API calls with `UNSUPPORTED_DB_FEATURE` before parsing or generating dialect SQL.
+- Dialect support decisions must cite the checked official document in the task PRD or research notes.
+
+#### 4. Validation & Error Matrix
+
+- Capability false in UI -> action is absent, while other Schema actions remain available.
+- Capability false in API -> `UNSUPPORTED_DB_FEATURE`; execute no SQL.
+- Missing connection/session -> existing `NOT_CONNECTED` behavior.
+- MySQL with valid charset/collation -> preserve the existing `ALTER DATABASE` behavior.
+
+#### 5. Good / Base / Bad Cases
+
+- Good: Dameng shows `新建 Schema` and `删除 Schema`, but no charset editor.
+- Base: MySQL continues to show create, edit charset/collation, and delete actions.
+- Bad: `schemaManagement = true` exposes a MySQL `ALTER DATABASE ... CHARACTER SET` action for every database type.
+
+#### 6. Tests Required
+
+- Frontend capability test: MySQL alteration true; Dameng creation/deletion true and alteration false.
+- Backend adapter test: Dameng `supportsAlterDatabaseCharset` is false.
+- Route regression test or compile-checked guard: unsupported adapters return before SQL construction/execution.
+- Security scan for database tests: no embedded credentials, decrypted-secret logging, or real network addresses.
+- Default unit tests must not open JDBC connections or mutate any database.
+
+#### 7. Wrong vs Correct
+
+```tsx
+// ❌ Wrong: deletion support accidentally exposes charset editing.
+if (cap.metadata.schemaManagement) showEditDatabase()
+
+// ✅ Correct: each action checks its own capability.
+if (cap.metadata.schemaAlterCharset) showEditDatabase()
+if (cap.metadata.schemaManagement) showDropSchema()
+```
+
+```kotlin
+// ❌ Wrong: build MySQL SQL before checking the active adapter.
+stmt.execute("ALTER DATABASE ... CHARACTER SET ...")
+
+// ✅ Correct: reject unsupported database types before SQL construction.
+if (!adapter.capabilities().supportsAlterDatabaseCharset) {
+    return call.fail("UNSUPPORTED_DB_FEATURE", "当前数据库不支持运行时修改字符集")
+}
+```
+
+### Database Task Navigation — One Capability Source and Exact Pairs
+
+#### 1. Scope / Trigger
+
+Apply this contract whenever migration, synchronization, structure comparison, or diagnostic features are exposed through navigation, command palette actions, or connection selectors.
+
+#### 2. Signatures
+
+```ts
+supportsDatabaseNavigation(dbType, capability): boolean
+supportsDatabaseTaskPair(feature, sourceDbType, targetDbType): boolean
+supportsDatabaseTaskRole(feature, dbType, role): boolean
+```
+
+#### 3. Contracts
+
+- Sidebar items and command-palette navigation must use the same database capability decision.
+- Pair features must use the shared frontend pair registry; do not copy supported-pair arrays into individual pages.
+- Connection selectors filter by source/target role before selection, then selection handlers validate the exact pair again.
+- Coarse capabilities control whether a feature is discoverable; exact `(sourceDbType, targetDbType)` support controls whether it can run.
+- Changing the active database type must unregister stale commands and register only commands allowed by the new capability set.
+
+#### 4. Validation & Error Matrix
+
+- Unsupported role -> omit the connection option and reject programmatic selection with a clear message.
+- Individually supported roles but unsupported pair -> reject before opening a connection or loading metadata.
+- Dameng context -> migration remains discoverable because MySQL to Dameng exists; sync, compare, tracker, and slow-query navigation are absent.
+- MySQL context -> preserve all currently supported navigation.
+
+#### 5. Good / Base / Bad Cases
+
+- Good: the shared registry allows MySQL to Dameng migration while excluding Dameng from both sync roles.
+- Base: MySQL to MySQL remains available for migration, sync, and structure comparison.
+- Bad: the sidebar hides sync for Dameng while the command palette or sync connection selector still exposes it.
+
+#### 6. Tests Required
+
+- Unit tests for every registered pair and role, including reverse-direction rejection.
+- Navigation tests for MySQL and Dameng capability outcomes.
+- Frontend build/type-check after changing pair or navigation capability types.
+- When adding a new pair, update the shared registry tests and verify the backend pair registry supports the same direction.
+
+#### 7. Wrong vs Correct
+
+```ts
+// ❌ Wrong: each entry point invents its own support rules.
+const options = connections
+registerCommand({ id: 'nav-sync', action: openSync })
+
+// ✅ Correct: discovery and exact execution share capability sources.
+const options = connections.filter((connection) =>
+  supportsDatabaseTaskRole('sync', connection.dbType, 'source')
+)
+const commands = items.filter((item) =>
+  supportsDatabaseNavigation(activeDbType, item.capability)
+)
+if (!supportsDatabaseTaskPair('sync', source.dbType, target.dbType)) return
+```
+
 ### Workbench KeepAlive — SQL Result Virtual Table Restore
 
 SQL result panes can remain mounted while hidden, but Ant Design virtual tables must be explicitly refreshed when the pane becomes active again. A hidden pane uses `display: none`, so `rc-virtual-list` can keep a stale visible range. The symptom is that query result rows look blank after switching away and back, and the rows only reappear after the user scrolls.

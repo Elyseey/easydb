@@ -22,6 +22,7 @@ class MysqlDatabaseAdapter : DatabaseAdapter {
         supportsTransactions = true,
         supportsSsh = true,
         supportsSsl = true,
+        supportsAlterDatabaseCharset = true,
         supportsViews = true,
         supportsStoredProcedures = true,
         supportsTriggers = true

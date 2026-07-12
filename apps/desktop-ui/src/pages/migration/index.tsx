@@ -37,19 +37,14 @@ import { useConnectionStore } from '@/stores/connectionStore'
 import { migrationApi, metadataApi, connectionApi } from '@/services/api'
 import { toast, handleApiError } from '@/utils/notification'
 import { useNavigate } from 'react-router-dom'
-import { getDbCapabilities } from '@/utils/dbCapabilities'
-import type { ConnectionConfig, DbType } from '@/types'
+import { supportsDatabaseTaskPair, supportsDatabaseTaskRole } from '@/utils/databaseTaskPairs'
+import type { ConnectionConfig } from '@/types'
 
 const { Title, Text } = Typography
 
-const supportedMigrationPairs: Array<{ source: DbType; target: DbType }> = [
-  { source: 'mysql', target: 'mysql' },
-  { source: 'mysql', target: 'dameng' },
-]
-
 const supportsMigrationPair = (source?: ConnectionConfig, target?: ConnectionConfig) => {
   if (!source || !target) return false
-  return supportedMigrationPairs.some((pair) => pair.source === source.dbType && pair.target === target.dbType)
+  return supportsDatabaseTaskPair('migration', source.dbType, target.dbType)
 }
 
 export const MigrationPage: React.FC = () => {
@@ -84,8 +79,6 @@ export const MigrationPage: React.FC = () => {
   const targetConn = useMemo(() => connections.find((c) => c.id === targetId), [connections, targetId])
   const isMysqlToDameng = sourceConn?.dbType === 'mysql' && targetConn?.dbType === 'dameng'
   const currentPairSupported = supportsMigrationPair(sourceConn, targetConn)
-  const sourceDbTypes = new Set(supportedMigrationPairs.map((pair) => pair.source))
-  const targetDbTypes = new Set(supportedMigrationPairs.map((pair) => pair.target))
 
   const visibleSourceObjects = useMemo(() => {
     if (!isMysqlToDameng) return sourceObjects
@@ -151,12 +144,12 @@ export const MigrationPage: React.FC = () => {
     )
   }))
   const sourceConnOptions = toConnOptions(
-    connections.filter((c) => sourceDbTypes.has(c.dbType) && getDbCapabilities(c.dbType).tasks.migration)
+    connections.filter((c) => supportsDatabaseTaskRole('migration', c.dbType, 'source'))
   )
   const targetConnOptions = toConnOptions(
     connections.filter((c) => {
-      if (!targetDbTypes.has(c.dbType)) return false
-      if (!sourceConn) return getDbCapabilities(c.dbType).tasks.migration
+      if (!supportsDatabaseTaskRole('migration', c.dbType, 'target')) return false
+      if (!sourceConn) return true
       return supportsMigrationPair(sourceConn, c)
     })
   )
