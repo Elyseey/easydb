@@ -69,8 +69,10 @@ export const SettingsPage: React.FC = () => {
 
   const sqlHistoryEnabled          = useAppSettingsStore((s) => s.sqlHistoryEnabled)
   const sqlHistoryFilterByDatabase = useAppSettingsStore((s) => s.sqlHistoryFilterByDatabase)
+  const sqlTemplatesEnabled        = useAppSettingsStore((s) => s.sqlTemplatesEnabled)
   const setSqlHistoryEnabled          = useAppSettingsStore((s) => s.setSqlHistoryEnabled)
   const setSqlHistoryFilterByDatabase = useAppSettingsStore((s) => s.setSqlHistoryFilterByDatabase)
+  const setSqlTemplatesEnabled        = useAppSettingsStore((s) => s.setSqlTemplatesEnabled)
 
   // 存储管理状态
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null)
@@ -287,6 +289,20 @@ export const SettingsPage: React.FC = () => {
                 avatar={<Avatar size="large" icon={<AppstoreOutlined />} style={{ backgroundColor: token.colorErrorBg, color: token.colorError }}/>}
                 title={<Text strong>语法动态高亮</Text>}
                 description="激活复杂的 SQL 语法着色以及关键字识别"
+              />
+            </List.Item>
+
+            <List.Item actions={[
+              <Switch
+                aria-label="启用常用 SQL 模板"
+                checked={sqlTemplatesEnabled}
+                onChange={setSqlTemplatesEnabled}
+              />
+            ]}>
+              <List.Item.Meta
+                avatar={<Avatar size="large" icon={<FileTextOutlined />} style={{ backgroundColor: token.colorPrimaryBg, color: token.colorPrimary }} />}
+                title={<Text strong>常用 SQL 模板</Text>}
+                description="输入 sel、selw、ins、upd 等缩写并按 Tab，快速展开带占位符的 SQL 语句"
               />
             </List.Item>
 

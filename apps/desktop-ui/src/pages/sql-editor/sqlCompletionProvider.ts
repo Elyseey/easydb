@@ -1,5 +1,7 @@
 import type { languages, editor, Position } from 'monaco-editor'
+import type { DbType } from '@/types'
 import { metadataApi } from '@/services/api'
+import { getSqlTemplates } from './sqlTemplates'
 
 // ─── SQL 关键字 ─────────────────────────────────────────────
 const SQL_KEYWORDS = [
@@ -115,13 +117,19 @@ function extractReferencedTables(text: string): string[] {
   return [...new Set(tables)]
 }
 
+function isSqlTemplateContext(model: editor.ITextModel, lineNumber: number, wordStartColumn: number): boolean {
+  const textBeforeWord = model.getLineContent(lineNumber).slice(0, wordStartColumn - 1)
+  return textBeforeWord.length === 0 || /[\s;(]$/.test(textBeforeWord)
+}
+
 /**
  * 创建 Monaco CompletionItemProvider
  */
 export function createSqlCompletionProvider(
   connectionId: string,
   database: string,
-  monacoInstance: typeof import('monaco-editor')
+  monacoInstance: typeof import('monaco-editor'),
+  options: { dbType?: DbType; templatesEnabled?: boolean } = {},
 ): languages.CompletionItemProvider {
   return {
     triggerCharacters: ['.', ' '],
@@ -140,6 +148,29 @@ export function createSqlCompletionProvider(
 
       const suggestions: languages.CompletionItem[] = []
 
+      const availableTemplates = options.dbType && isSqlTemplateContext(model, position.lineNumber, word.startColumn)
+        ? getSqlTemplates(options.dbType, options.templatesEnabled ?? false)
+        : []
+      const exactTemplate = availableTemplates.find(
+        (template) => template.prefix === word.word.toLowerCase(),
+      )
+      if (exactTemplate) {
+        return {
+          suggestions: [{
+            label: exactTemplate.prefix,
+            kind: monacoInstance.languages.CompletionItemKind.Snippet,
+            insertText: exactTemplate.body,
+            insertTextRules: monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            detail: `SQL 模板 · ${exactTemplate.label}`,
+            documentation: exactTemplate.description,
+            filterText: exactTemplate.prefix,
+            sortText: `0_${exactTemplate.prefix}`,
+            preselect: true,
+            range,
+          }],
+        }
+      }
+
       // ─── 1. 表名.字段 补全 ──────────────────────────────────
       const tablePrefix = getTablePrefix(model, position)
       if (tablePrefix) {
@@ -156,7 +187,24 @@ export function createSqlCompletionProvider(
         return { suggestions }
       }
 
-      // ─── 2. SQL 关键字 ─────────────────────────────────────
+      // ─── 2. 常用 SQL 模板 ─────────────────────────────────
+      if (options.dbType) {
+        for (const template of availableTemplates) {
+          suggestions.push({
+            label: template.prefix,
+            kind: monacoInstance.languages.CompletionItemKind.Snippet,
+            insertText: template.body,
+            insertTextRules: monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            detail: `SQL 模板 · ${template.label}`,
+            documentation: template.description,
+            filterText: template.prefix,
+            sortText: `0_${template.prefix}`,
+            range,
+          })
+        }
+      }
+
+      // ─── 3. SQL 关键字 ─────────────────────────────────────
       for (const kw of SQL_KEYWORDS) {
         suggestions.push({
           label: kw,
@@ -167,7 +215,7 @@ export function createSqlCompletionProvider(
         })
       }
 
-      // ─── 3. SQL 函数 ──────────────────────────────────────
+      // ─── 4. SQL 函数 ──────────────────────────────────────
       for (const fn of SQL_FUNCTIONS) {
         suggestions.push({
           label: fn,
@@ -178,7 +226,7 @@ export function createSqlCompletionProvider(
         })
       }
 
-      // ─── 4. 表名补全 ──────────────────────────────────────
+      // ─── 5. 表名补全 ──────────────────────────────────────
       const tables = await ensureTablesLoaded(connectionId, database)
       for (const table of tables) {
         suggestions.push({
@@ -190,7 +238,7 @@ export function createSqlCompletionProvider(
         })
       }
 
-      // ─── 5. 上下文中引用的表的字段（无需 "表名." 前缀） ────
+      // ─── 6. 上下文中引用的表的字段（无需 "表名." 前缀） ────
       const fullText = model.getValue()
       const referencedTables = extractReferencedTables(fullText)
       for (const tName of referencedTables) {

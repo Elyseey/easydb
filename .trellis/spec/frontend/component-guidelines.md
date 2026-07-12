@@ -326,6 +326,126 @@ useEffect(() => {
 
 Keep SQL text and result state in the tab store or mounted SQL pane, isolate the Monaco model by tab identity, and mount/focus/layout Monaco only for the active SQL pane. Do not keep multiple hidden Monaco editor DOM instances alive just to preserve SQL tab state.
 
+### SQL Editor Text Transformations — Dialect-Aware and Undoable
+
+#### 1. Scope / Trigger
+
+Apply this contract whenever a Monaco action formats, compacts, normalizes, or otherwise replaces user SQL text.
+
+#### 2. Signatures
+
+```ts
+beautifySql(sql: string, dbType: DbType): Promise<string>
+compactSql(sql: string, dbType: DbType): string
+```
+
+#### 3. Contracts
+
+- Resolve formatter/tokenizer behavior from the active connection `dbType`; never use MySQL rules as the generic fallback.
+- If Monaco has a non-empty selection, replace only that range; otherwise replace the full model range.
+- Apply the result with `editor.executeEdits(...)` between undo stops so one undo restores the original SQL.
+- For async transforms, capture `model.getVersionId()` before work starts and refuse to apply if the model or version changed while awaiting the result.
+- Keep SQL local unless the feature explicitly declares a server/AI boundary.
+- A compactor may collapse whitespace only in normal SQL lexical regions. It must preserve quoted strings/identifiers, comments, PostgreSQL dollar-quoted blocks, and Oracle/Dameng `q'...'` text.
+
+#### 4. Validation & Error Matrix
+
+- Empty selection/document -> no-op.
+- Missing active connection or `dbType` -> keep text unchanged and show a clear error.
+- Unclosed quote/comment/text block -> reject the transform and keep text unchanged.
+- Formatter parse error or unsupported dialect syntax -> keep text unchanged and surface the parser message.
+- Model version changed during an async transform -> discard the stale result and ask the user to retry.
+
+#### 5. Good / Base / Bad Cases
+
+- Good: PostgreSQL `payload #>> '{user,name}'` remains an operator expression while external whitespace is compacted.
+- Base: MySQL `SELECT  1 # note\n FROM dual` keeps `# note` as a line comment and retains the terminating newline.
+- Bad: A generic regex treats every `#` as a MySQL comment or runs `sql.replace(/\s+/g, ' ')`, corrupting PostgreSQL operators and whitespace inside literals.
+
+#### 6. Tests Required
+
+- Unit tests for every supported `DbType` formatter mapping.
+- Lexer tests for single/double/backtick/bracket quotes, line/block comments, PostgreSQL dollar quotes, Oracle/Dameng q-quotes, and malformed input.
+- Regression test distinguishing MySQL `#` comments from PostgreSQL `#>` / `#>>` operators.
+- Monaco E2E coverage for selection-first behavior, full-document fallback, direct replacement, and one-step undo.
+
+#### 7. Wrong vs Correct
+
+```ts
+// ❌ Wrong: destroys literal content and confuses dialect-specific tokens.
+const compact = sql.replace(/\s+/g, ' ').trim()
+
+// ✅ Correct: pass dbType into a lexer that collapses whitespace only in normal SQL regions.
+const compact = compactSql(sql, activeConnection.dbType)
+
+editor.pushUndoStop()
+editor.executeEdits('easydb-sql-compact', [{ range, text: compact }])
+editor.pushUndoStop()
+```
+
+### SQL Editor Common Templates — Immediate, Optional, and Dialect-Aware
+
+#### 1. Scope / Trigger
+
+Apply this contract whenever Monaco expands a SQL abbreviation or offers a built-in SQL snippet.
+
+#### 2. Signatures
+
+```ts
+getSqlTemplates(dbType: DbType | undefined, enabled: boolean): SqlTemplate[]
+
+registerSqlCompletionProvider(monaco, connectionId, database, {
+  dbType,
+  templatesEnabled,
+})
+```
+
+#### 3. Contracts
+
+- The `常用 SQL 模板` setting defaults to enabled, persists locally, and takes effect without reloading the page.
+- Disabling templates removes only template suggestions; keyword, table, and column completion must continue working.
+- Filter templates by the active connection `dbType`. A generic template must not contain database-specific quoting or syntax.
+- Enable Monaco `tabCompletion: 'on'` while templates are enabled and set it to `'off'` while disabled. Monaco 0.55 does not reliably expand custom completion-provider snippets with `'onlySnippets'`.
+- When the current token exactly matches a template abbreviation, return that template immediately before any asynchronous metadata request. This prevents Tab from inserting indentation or selecting a later suggestion while table metadata is loading.
+- Offer templates only at a statement boundary: line start or after whitespace, `;`, or `(`. Do not offer them in qualified identifiers such as `users.sel`.
+- Use Monaco snippet insertion rules and numbered tab stops. Update and delete templates must include an explicit `WHERE` placeholder.
+
+#### 4. Validation & Error Matrix
+
+- Templates disabled -> return no snippets; keep normal completion active.
+- Missing `dbType` -> return no snippets until the connection dialect is known.
+- Exact abbreviation -> return only the matching snippet synchronously.
+- Qualified/member context -> return no template suggestions.
+- Write template without an explicit `WHERE` placeholder -> invalid template; registry tests must fail.
+
+#### 5. Good / Base / Bad Cases
+
+- Good: typing `selw` and pressing Tab immediately expands a `SELECT ... FROM ... WHERE ...` snippet and focuses the table placeholder.
+- Base: disabling templates leaves SQL keyword and metadata completion unchanged.
+- Bad: exact abbreviation completion waits for table metadata, or relies on `tabCompletion: 'onlySnippets'` for a custom provider.
+
+#### 6. Tests Required
+
+- Unit tests for template registry uniqueness, dialect filtering, write-template safety, and enabled/disabled behavior.
+- Provider tests for exact-match fast path, statement-boundary filtering, snippet insertion flags, and preservation of normal completion.
+- Store tests for default-on behavior and local persistence.
+- Monaco E2E coverage for Tab expansion, tab-stop navigation, immediate disabling, and settings persistence after reload.
+
+#### 7. Wrong vs Correct
+
+```ts
+// ❌ Wrong: Tab completion races with an asynchronous metadata request.
+const tables = await fetchTables(connectionId, database)
+return buildSuggestions(tables, getSqlTemplates(dbType, enabled))
+
+// ✅ Correct: exact abbreviations never wait for metadata.
+const exactTemplate = templates.find((template) => template.abbreviation === word)
+if (exactTemplate) return { suggestions: [toCompletionItem(exactTemplate)] }
+
+const tables = await fetchTables(connectionId, database)
+return buildSuggestions(tables, templates)
+```
+
 ### Workbench KeepAlive — SQL Result Virtual Table Restore
 
 SQL result panes can remain mounted while hidden, but Ant Design virtual tables must be explicitly refreshed when the pane becomes active again. A hidden pane uses `display: none`, so `rc-virtual-list` can keep a stale visible range. The symptom is that query result rows look blank after switching away and back, and the rows only reappear after the user scrolls.

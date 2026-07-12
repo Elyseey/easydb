@@ -12,6 +12,8 @@ Read this guide when any change:
 - [ ] Adds a new database driver
 - [ ] Reads metadata, DDL, table lists, columns, indexes, routines, or triggers
 - [ ] Executes SQL on behalf of the user
+- [ ] Formats, compacts, tokenizes, or rewrites SQL text in the frontend
+- [ ] Generates SQL snippets or templates in the frontend
 - [ ] Uses migration, sync, compare, export, backup, restore, tracker, or slow-query
 - [ ] Adds frontend UI for a database feature
 
@@ -24,6 +26,8 @@ Read this guide when any change:
 - [ ] Pair features must resolve adapters by `(sourceDbType, targetDbType)`
 - [ ] Frontend feature entry points must check database capabilities before showing actions
 - [ ] MySQL-only features must be explicitly guarded and return unsupported for other database types
+- [ ] Client-side SQL text transforms must select lexical/formatting rules by `dbType`; for example, MySQL `#` comments must not consume PostgreSQL `#>` / `#>>` JSON operators. Follow the executable contract in `frontend/component-guidelines.md`.
+- [ ] Client-side SQL templates must be filtered by `dbType`; generic templates must not hardcode database-specific quoting or syntax. Follow the executable contract in `frontend/component-guidelines.md`.
 
 ## Correct Routing Pattern
 

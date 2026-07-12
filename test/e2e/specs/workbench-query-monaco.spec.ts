@@ -33,7 +33,7 @@ test('workbench can open a second query tab after selecting database without Mon
     }
   })
 
-  await page.route('http://localhost:18080/api/**', async (route) => {
+  await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
     const path = url.pathname
 
@@ -117,6 +117,85 @@ test('workbench can open a second query tab after selecting database without Mon
   await page.locator('.ant-select').nth(1).click()
   await page.getByTitle('easydb_test').click()
   await page.locator('.monaco-editor').waitFor({ state: 'visible' })
+
+  const editorSurface = page.locator('.monaco-editor').first()
+  await editorSurface.click({ position: { x: 80, y: 24 } })
+  await page.keyboard.insertText('selw')
+  await page.keyboard.press('Tab')
+  await page.keyboard.press('Tab')
+  await page.keyboard.insertText('users')
+  await page.keyboard.press('Tab')
+  await page.keyboard.insertText('enabled = 1')
+  await expect.poll(async () => page.evaluate(async () => {
+    const { useSqlEditorStore } = await import('/src/stores/sqlEditorStore.ts')
+    const state = useSqlEditorStore.getState()
+    return (state.tabs.find((tab) => tab.key === state.activeTabKey)?.sql ?? '').replace(/\r\n/g, '\n')
+  })).toBe('SELECT\n  *\nFROM\n  users\nWHERE\n  enabled = 1;')
+
+  await page.evaluate(async () => {
+    const { useAppSettingsStore } = await import('/src/stores/appSettingsStore.ts')
+    useAppSettingsStore.getState().setSqlTemplatesEnabled(false)
+    await new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()))
+    })
+  })
+  await editorSurface.click({ position: { x: 80, y: 24 } })
+  await page.keyboard.press('Control+a')
+  await page.keyboard.insertText('selw')
+  await page.keyboard.press('Tab')
+  await expect.poll(async () => page.evaluate(async () => {
+    const { useSqlEditorStore } = await import('/src/stores/sqlEditorStore.ts')
+    const state = useSqlEditorStore.getState()
+    return (state.tabs.find((tab) => tab.key === state.activeTabKey)?.sql ?? '').trim()
+  })).toBe('selw')
+
+  await page.evaluate(async () => {
+    const { useAppSettingsStore } = await import('/src/stores/appSettingsStore.ts')
+    useAppSettingsStore.getState().setSqlTemplatesEnabled(true)
+    await new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()))
+    })
+  })
+  await editorSurface.click({ position: { x: 80, y: 24 } })
+  await page.keyboard.press('Control+a')
+  await page.keyboard.insertText('select   id, name\nfrom   users\nwhere enabled = 1')
+  await page.getByRole('button', { name: /格式/ }).click()
+  await page.getByText('美化 SQL', { exact: true }).last().click()
+  await expect.poll(async () => page.evaluate(async () => {
+    const { useSqlEditorStore } = await import('/src/stores/sqlEditorStore.ts')
+    const state = useSqlEditorStore.getState()
+    return state.tabs.find((tab) => tab.key === state.activeTabKey)?.sql ?? ''
+  })).toContain('\nFROM')
+
+  await page.getByRole('button', { name: /格式/ }).click()
+  await page.getByText('压缩 SQL', { exact: true }).last().click()
+  await expect.poll(async () => page.evaluate(async () => {
+    const { useSqlEditorStore } = await import('/src/stores/sqlEditorStore.ts')
+    const state = useSqlEditorStore.getState()
+    return state.tabs.find((tab) => tab.key === state.activeTabKey)?.sql ?? ''
+  })).toBe('SELECT id, name FROM users WHERE enabled = 1')
+
+  await editorSurface.click({ position: { x: 80, y: 24 } })
+  await page.keyboard.press('Control+z')
+  await expect.poll(async () => page.evaluate(async () => {
+    const { useSqlEditorStore } = await import('/src/stores/sqlEditorStore.ts')
+    const state = useSqlEditorStore.getState()
+    return state.tabs.find((tab) => tab.key === state.activeTabKey)?.sql ?? ''
+  })).toContain('\nFROM')
+
+  await editorSurface.click({ position: { x: 80, y: 24 } })
+  await page.keyboard.press('Control+a')
+  await page.keyboard.insertText('select   1;\nselect   2;')
+  await page.keyboard.press('Control+Home')
+  await page.keyboard.press('Shift+End')
+  await page.getByRole('button', { name: /格式/ }).click()
+  await page.getByText('美化 SQL', { exact: true }).last().click()
+  await expect.poll(async () => page.evaluate(async () => {
+    const { useSqlEditorStore } = await import('/src/stores/sqlEditorStore.ts')
+    const state = useSqlEditorStore.getState()
+    return (state.tabs.find((tab) => tab.key === state.activeTabKey)?.sql ?? '').replace(/\r\n/g, '\n')
+  })).toBe('SELECT\n  1;\nselect   2;')
+
   await page.evaluate(async ({ rows }) => {
     const { useSqlEditorStore } = await import('/src/stores/sqlEditorStore.ts')
     const state = useSqlEditorStore.getState()
@@ -158,4 +237,15 @@ test('workbench can open a second query tab after selecting database without Mon
 
   const matchingErrors = browserErrors.filter((message) => monacoErrorPattern.test(message))
   expect(matchingErrors).toEqual([])
+
+  await page.goto('/settings')
+  await page.getByRole('tab', { name: /代码编辑器/ }).click()
+  const templateSwitch = page.getByRole('switch', { name: '启用常用 SQL 模板' })
+  await expect(templateSwitch).toBeChecked()
+  await templateSwitch.click()
+  await expect(templateSwitch).not.toBeChecked()
+
+  await page.reload()
+  await page.getByRole('tab', { name: /代码编辑器/ }).click()
+  await expect(page.getByRole('switch', { name: '启用常用 SQL 模板' })).not.toBeChecked()
 })

@@ -1,6 +1,15 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
-import { Layout, Button, Space, Typography, Tabs, Select, Spin, theme, Tooltip } from 'antd'
-import { PlayCircleOutlined, ClearOutlined, StarOutlined, FolderOpenOutlined, HistoryOutlined } from '@ant-design/icons'
+import { Layout, Button, Space, Typography, Tabs, Select, Spin, theme, Tooltip, Dropdown } from 'antd'
+import {
+  PlayCircleOutlined,
+  ClearOutlined,
+  StarOutlined,
+  FolderOpenOutlined,
+  HistoryOutlined,
+  FormatPainterOutlined,
+  CompressOutlined,
+  DownOutlined,
+} from '@ant-design/icons'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
 import type { SqlResult, EditabilityStatus, TableInfo } from '@/types'
@@ -29,6 +38,7 @@ import {
   sqlUpdateResultText,
 } from '../pages/sql-editor/queryPreview'
 import { EmptyState } from '@/components/EmptyState'
+import { beautifySql, compactSql } from '@/utils/sqlTransform'
 
 const { Content } = Layout
 const { Text } = Typography
@@ -147,9 +157,11 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
   // Advanced tools state
   const sqlHistoryEnabled          = useAppSettingsStore((s) => s.sqlHistoryEnabled)
   const sqlHistoryFilterByDatabase = useAppSettingsStore((s) => s.sqlHistoryFilterByDatabase)
+  const sqlTemplatesEnabled        = useAppSettingsStore((s) => s.sqlTemplatesEnabled)
   const [saveModalOpen, setSaveModalOpen] = useState(false)
   const [listModalOpen, setListModalOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [sqlFormatMenuOpen, setSqlFormatMenuOpen] = useState(false)
   
   const [executing, setExecuting] = useState(false)
   const [loadingMoreKey, setLoadingMoreKey] = useState<string | null>(null)
@@ -207,6 +219,15 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
     }
   }, [queryId, storeUpdateTab, activeEditorTab])
 
+  const activeConnectionDbType = useMemo(
+    () => connections.find((connection) => connection.id === activeEditorTab?.connectionId)?.dbType,
+    [connections, activeEditorTab?.connectionId],
+  )
+  const sqlCompletionOptions = useMemo(() => ({
+    dbType: activeConnectionDbType,
+    templatesEnabled: sqlTemplatesEnabled,
+  }), [activeConnectionDbType, sqlTemplatesEnabled])
+
   // Fetch DBs whenever connection changes within this tab
   useEffect(() => {
     if (!activeEditorTab?.connectionId) { setDatabases([]); return }
@@ -240,7 +261,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = monacoRef.current.languages.registerCompletionItemProvider(
         'sql',
-        createSqlCompletionProvider(activeEditorTab.connectionId, db, monacoRef.current)
+        createSqlCompletionProvider(activeEditorTab.connectionId, db, monacoRef.current, sqlCompletionOptions)
       )
     }
   }
@@ -289,6 +310,72 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
     return handleOpenObjectAtPosition(undefined, true)
   }, [handleOpenObjectAtPosition])
 
+  const handleSqlTransform = useCallback(async (mode: 'beautify' | 'compact') => {
+    const editorInstance = editorRef.current
+    const model = editorInstance?.getModel()
+    const currentTab = activeEditorTabRef.current
+    if (!editorInstance || !model || !currentTab) return
+
+    const selection = editorInstance.getSelection()
+    const hasSelection = Boolean(selection && !selection.isEmpty())
+    const targetRange = hasSelection && selection ? selection : model.getFullModelRange()
+    const source = model.getValueInRange(targetRange)
+    const sourceVersion = model.getVersionId()
+    if (!source.trim()) return
+
+    try {
+      const connection = useConnectionStore.getState().connections.find(
+        (candidate) => candidate.id === currentTab.connectionId,
+      )
+      if (!connection) {
+        toast.error(`SQL ${mode === 'beautify' ? '美化' : '压缩'}失败：无法确定当前数据库类型`)
+        return
+      }
+
+      let transformed: string
+      if (mode === 'beautify') {
+        transformed = await beautifySql(source, connection.dbType)
+      } else {
+        transformed = compactSql(source, connection.dbType)
+      }
+
+      if (editorInstance.getModel() !== model || model.getVersionId() !== sourceVersion) {
+        toast.warning('SQL 内容已发生变化，请重新执行格式处理')
+        return
+      }
+
+      if (transformed === source) {
+        toast.info(mode === 'beautify' ? '当前 SQL 已是美化格式' : '当前 SQL 已是紧凑格式')
+        editorInstance.focus()
+        return
+      }
+
+      const startOffset = model.getOffsetAt(targetRange.getStartPosition())
+      editorInstance.pushUndoStop()
+      editorInstance.executeEdits(`easydb-sql-${mode}`, [{
+        range: targetRange,
+        text: transformed,
+        forceMoveMarkers: true,
+      }])
+      editorInstance.pushUndoStop()
+
+      if (hasSelection) {
+        const endPosition = model.getPositionAt(startOffset + transformed.length)
+        editorInstance.setSelection({
+          startLineNumber: targetRange.startLineNumber,
+          startColumn: targetRange.startColumn,
+          endLineNumber: endPosition.lineNumber,
+          endColumn: endPosition.column,
+        })
+      }
+
+      storeUpdateTab(queryId, { sql: model.getValue() })
+      editorInstance.focus()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'SQL 处理失败')
+    }
+  }, [queryId, storeUpdateTab])
+
   const handleEditorMount: OnMount = (editorInstance, monaco) => {
     editorRef.current = editorInstance
     monacoRef.current = monaco
@@ -304,6 +391,21 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
       contextMenuGroupId: 'navigation',
       contextMenuOrder: 1.5,
       run: () => handleOpenObjectAtCursor(),
+    })
+    editorInstance.addAction({
+      id: 'beautify-sql',
+      label: '美化 SQL',
+      keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
+      contextMenuGroupId: 'modification',
+      contextMenuOrder: 1.1,
+      run: () => handleSqlTransform('beautify'),
+    })
+    editorInstance.addAction({
+      id: 'compact-sql',
+      label: '压缩 SQL',
+      contextMenuGroupId: 'modification',
+      contextMenuOrder: 1.2,
+      run: () => handleSqlTransform('compact'),
     })
     editorInstance.onMouseDown((event) => {
       const mouseEvent = event.event as unknown as {
@@ -321,7 +423,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = monaco.languages.registerCompletionItemProvider(
         'sql',
-        createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monaco)
+        createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monaco, sqlCompletionOptions)
       )
     }
     if (active) {
@@ -338,13 +440,13 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = monacoRef.current.languages.registerCompletionItemProvider(
         'sql',
-        createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monacoRef.current)
+        createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monacoRef.current, sqlCompletionOptions)
       )
     }
     return () => {
       completionDisposableRef.current?.dispose()
     }
-  }, [activeEditorTab?.connectionId, activeEditorTab?.database])
+  }, [activeEditorTab?.connectionId, activeEditorTab?.database, sqlCompletionOptions])
 
   useEffect(() => {
     return () => {
@@ -603,6 +705,39 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
           />
         </Space>
         <Space>
+          <Dropdown
+            trigger={['click']}
+            onOpenChange={setSqlFormatMenuOpen}
+            menu={{
+              items: [
+                {
+                  key: 'beautify',
+                  icon: <FormatPainterOutlined />,
+                  label: '美化 SQL',
+                  onClick: () => { void handleSqlTransform('beautify') },
+                },
+                {
+                  key: 'compact',
+                  icon: <CompressOutlined />,
+                  label: '压缩 SQL',
+                  onClick: () => { void handleSqlTransform('compact') },
+                },
+              ],
+            }}
+          >
+            <Tooltip
+              title="美化或压缩当前选区；未选择时处理全文"
+              open={sqlFormatMenuOpen ? false : undefined}
+            >
+              <Button
+                size="small"
+                icon={<FormatPainterOutlined />}
+                disabled={!activeEditorTab.sql.trim()}
+              >
+                格式 <DownOutlined style={{ fontSize: 10 }} />
+              </Button>
+            </Tooltip>
+          </Dropdown>
           {showAdvancedTools && (
             <>
               <Button size="small" icon={<FolderOpenOutlined />} onClick={() => setListModalOpen(true)}>
@@ -669,6 +804,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
               tabSize: 2,
               suggestOnTriggerCharacters: true,
               quickSuggestions: true,
+              tabCompletion: sqlTemplatesEnabled ? 'on' : 'off',
               folding: true,
               renderLineHighlight: 'line',
               selectionHighlight: true,
