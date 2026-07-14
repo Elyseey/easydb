@@ -224,10 +224,10 @@ When a resizable column contains single-line ellipsis content, the cell's inner 
 
 Inline query-tab rename must account for the event order of Ant Design Tabs and the desktop WebView.
 
-- Start rename from double-click on the SQL query label or from the tab context menu.
+- Start rename from double-click anywhere on the SQL query tab root or from the tab context menu. Exclude the close button and the active rename input.
 - Do not use `autoFocus` on an input mounted by a double-click handler. The remaining tab click/focus work can immediately blur the input and close rename mode. Mount the input first, then focus and select it in `requestAnimationFrame`.
 - Apply `userSelect: 'none'` to the non-editing query label so the browser does not briefly select the label text on the second click.
-- Prevent the native WebView context menu at the Tabs root, not only on the inner label. Resolve the clicked tab with `closest('.ant-tabs-tab')` and its `data-node-key`, so tab padding, the close icon, and the rename input follow the same custom-menu behavior.
+- Own double-click and native WebView context-menu handling at the Tabs root, not only on the inner label. Resolve the clicked tab with `closest('.ant-tabs-tab')` and its `data-node-key`, so the icon, text, tab padding, close icon, and rename input follow one interaction boundary.
 - Enter commits, Escape cancels, and blur commits. Empty normalized names keep the previous title.
 - Keep `WorkbenchTab.label` and the matching `EditorTab.title` synchronized when a query is renamed.
 
