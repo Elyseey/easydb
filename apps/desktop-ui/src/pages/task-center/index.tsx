@@ -17,16 +17,17 @@
 import React, { useEffect, useState, useCallback } from 'react'
 import {
   Layout, Table, Typography, Space, Select, Button, Progress, Input,
-  theme, Descriptions, Card, Tag, Collapse,
+  theme, Descriptions, Card, Tag, Collapse, Tooltip,
 } from 'antd'
 import {
   UnorderedListOutlined, ReloadOutlined,
   ClockCircleOutlined, StopOutlined, SearchOutlined,
   DownloadOutlined, CheckCircleOutlined, WarningOutlined, CloseCircleOutlined,
-  DeleteOutlined, ClearOutlined,
+  DeleteOutlined, ClearOutlined, CloseOutlined, DatabaseOutlined,
+  DownOutlined, BarChartOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import type { TaskInfo, TaskLog } from '@/types'
+import type { TaskEndpointSnapshot, TaskInfo, TaskLog, TaskStatus } from '@/types'
 import { useTaskStore } from '@/stores/taskStore'
 import { taskApi } from '@/services/api'
 import { TaskStatusTag } from '@/components/StatusTag'
@@ -45,6 +46,64 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   export: '导出',
   import: '导入',
 }
+
+const DB_TYPE_LABELS: Record<string, string> = {
+  mysql: 'MySQL',
+  dameng: '达梦',
+  postgresql: 'PostgreSQL',
+  oracle: 'Oracle',
+  sqlserver: 'SQL Server',
+  sqlite: 'SQLite',
+}
+
+const endpointText = (endpoint: TaskEndpointSnapshot) =>
+  `${endpoint.connectionName} · ${DB_TYPE_LABELS[endpoint.dbType] ?? endpoint.dbType} · ${endpoint.host}:${endpoint.port} / ${endpoint.database}`
+
+const connectionIdentity = (endpoint: TaskEndpointSnapshot) =>
+  endpoint.connectionName.trim() || endpoint.host
+
+const progressStatus = (status: TaskStatus) => {
+  if (status === 'failed' || status === 'cancelled') return 'exception' as const
+  if (status === 'completed') return 'success' as const
+  if (status === 'running') return 'active' as const
+  return 'normal' as const
+}
+
+const TaskPath: React.FC<{ task: TaskInfo }> = ({ task }) => {
+  if (!task.sourceEndpoint || !task.targetEndpoint) {
+    return <Tooltip title={task.name}><Text ellipsis>{task.name}</Text></Tooltip>
+  }
+
+  const sourceText = endpointText(task.sourceEndpoint)
+  const targetText = endpointText(task.targetEndpoint)
+  const databasePath = `${task.sourceEndpoint.database} → ${task.targetEndpoint.database}`
+  const connectionPath = `${connectionIdentity(task.sourceEndpoint)} → ${connectionIdentity(task.targetEndpoint)}`
+  return (
+    <Tooltip
+      placement="topLeft"
+      title={<><div>源端：{sourceText}</div><div>目标端：{targetText}</div></>}
+    >
+      <div style={{ minWidth: 0 }}>
+        <Text strong ellipsis style={{ display: 'block', fontSize: 13 }}>{databasePath}</Text>
+        <Text type="secondary" ellipsis style={{ display: 'block', fontSize: 11, marginTop: 2 }}>{connectionPath}</Text>
+      </div>
+    </Tooltip>
+  )
+}
+
+const EndpointCard: React.FC<{ label: string; endpoint: TaskEndpointSnapshot }> = ({ label, endpoint }) => (
+  <Card
+    size="small"
+    title={<Space size={6}><DatabaseOutlined /><span>{label}</span></Space>}
+    styles={{ body: { padding: '10px 12px' } }}
+  >
+    <Text strong style={{ display: 'block' }}>{endpoint.connectionName}</Text>
+    <Text type="secondary" style={{ display: 'block', fontSize: 12 }}>
+      {DB_TYPE_LABELS[endpoint.dbType] ?? endpoint.dbType} · {endpoint.host}:{endpoint.port}
+    </Text>
+    <Text code style={{ display: 'block', marginTop: 6 }}>{endpoint.database}</Text>
+  </Card>
+)
 
 export const TaskCenterPage: React.FC = () => {
   const { token } = theme.useToken()
@@ -100,7 +159,12 @@ export const TaskCenterPage: React.FC = () => {
 
   // 搜索 + 类型过滤
   const filteredTasks = tasks.filter((t) => {
-    const matchSearch = !searchText || t.name.toLowerCase().includes(searchText.toLowerCase())
+    const searchableText = [
+      t.name,
+      t.sourceEndpoint && endpointText(t.sourceEndpoint),
+      t.targetEndpoint && endpointText(t.targetEndpoint),
+    ].filter(Boolean).join(' ').toLowerCase()
+    const matchSearch = !searchText || searchableText.includes(searchText.toLowerCase())
     const matchType = !typeFilter || t.type === typeFilter
     return matchSearch && matchType
   })
@@ -139,7 +203,7 @@ export const TaskCenterPage: React.FC = () => {
       onOk: async () => {
         await taskApi.delete(task.id)
         toast.success('任务已删除')
-        if (selectedTaskId === task.id) setSelectedTask('')
+        if (selectedTaskId === task.id) setSelectedTask(null)
         loadTasks()
       },
     })
@@ -153,7 +217,7 @@ export const TaskCenterPage: React.FC = () => {
       onOk: async () => {
         const res = await taskApi.clearCompleted() as { cleared: number }
         toast.success(`已清空 ${res.cleared} 条任务`)
-        setSelectedTask('')
+        setSelectedTask(null)
         loadTasks()
       },
     })
@@ -174,7 +238,10 @@ export const TaskCenterPage: React.FC = () => {
   const selectedLogs = selectedTaskId ? (taskLogs[selectedTaskId] ?? []) : []
 
   const columns: ColumnsType<TaskInfo> = [
-    { title: '任务名称', dataIndex: 'name', key: 'name', ellipsis: true },
+    {
+      title: '任务名称', key: 'path', width: 330,
+      render: (_, task) => <TaskPath task={task} />,
+    },
     {
       title: '类型', dataIndex: 'type', key: 'type', width: 80,
       render: (t: string) => <Tag>{TASK_TYPE_LABELS[t] ?? t}</Tag>,
@@ -185,7 +252,7 @@ export const TaskCenterPage: React.FC = () => {
     },
     {
       title: '进度', dataIndex: 'progress', key: 'progress', width: 120,
-      render: (p: number) => <Progress percent={p} size="small" />,
+      render: (p: number, task) => <Progress percent={p} size="small" status={progressStatus(task.status)} />,
     },
     {
       title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 150,
@@ -303,7 +370,7 @@ export const TaskCenterPage: React.FC = () => {
         {/* 右侧详情侧边栏 */}
         {selectedTask && (
           <Sider
-            width={400}
+            width={440}
             style={{
               background: 'var(--glass-panel)',
               backdropFilter: 'var(--glass-blur-sm)',
@@ -314,16 +381,37 @@ export const TaskCenterPage: React.FC = () => {
               overflow: 'auto',
             }}
           >
-            <Space direction="vertical" size={16} style={{ width: '100%' }}>
-              <div style={{ borderBottom: '1px solid var(--glass-border)', paddingBottom: 16 }}>
-                <Text strong style={{ fontSize: 16, display: 'block', marginBottom: 4 }}>{selectedTask.name}</Text>
-                <Text type="secondary" style={{ fontSize: 13 }}>ID: {selectedTask.id}</Text>
+            <Space orientation="vertical" size={16} style={{ width: '100%' }}>
+              <div style={{ borderBottom: '1px solid var(--glass-border)', paddingBottom: 16, display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                <div style={{ minWidth: 0 }}>
+                  <Text strong ellipsis style={{ fontSize: 16, display: 'block', marginBottom: 4 }}>{selectedTask.name}</Text>
+                  <Text type="secondary" ellipsis style={{ fontSize: 12, display: 'block' }}>ID: {selectedTask.id}</Text>
+                </div>
+                <Tooltip title="关闭详情">
+                  <Button
+                    type="text"
+                    size="small"
+                    aria-label="关闭任务详情"
+                    icon={<CloseOutlined />}
+                    onClick={() => setSelectedTask(null)}
+                  />
+                </Tooltip>
               </div>
 
-              <Descriptions column={1} size="small" labelStyle={{ color: token.colorTextSecondary }}>
+              {selectedTask.sourceEndpoint && selectedTask.targetEndpoint && (
+                <div>
+                  <EndpointCard label="源端" endpoint={selectedTask.sourceEndpoint} />
+                  <div style={{ display: 'flex', justifyContent: 'center', padding: '6px 0' }}>
+                    <DownOutlined style={{ color: token.colorPrimary }} />
+                  </div>
+                  <EndpointCard label="目标端" endpoint={selectedTask.targetEndpoint} />
+                </div>
+              )}
+
+              <Descriptions column={1} size="small" styles={{ label: { color: token.colorTextSecondary } }}>
                 <Descriptions.Item label="类型">{TASK_TYPE_LABELS[selectedTask.type] ?? selectedTask.type}</Descriptions.Item>
                 <Descriptions.Item label="状态"><TaskStatusTag status={selectedTask.status} /></Descriptions.Item>
-                <Descriptions.Item label="进度"><Progress percent={selectedTask.progress} size="small" style={{ marginBottom: 0 }} /></Descriptions.Item>
+                <Descriptions.Item label="进度"><Progress percent={selectedTask.progress} size="small" status={progressStatus(selectedTask.status)} style={{ marginBottom: 0 }} /></Descriptions.Item>
                 {(selectedTask.successCount != null || selectedTask.failureCount != null) && (
                   <Descriptions.Item label="表统计">
                     共 {(selectedTask.successCount ?? 0) + (selectedTask.failureCount ?? 0)} 张
@@ -392,7 +480,7 @@ export const TaskCenterPage: React.FC = () => {
                 return (
                   <Card size="small" title={
                     <Space>
-                      <span>📊 数据验证</span>
+                      <span><BarChartOutlined style={{ marginRight: 6 }} />数据验证</span>
                       <Space size={12} style={{ fontSize: 12, fontWeight: 'normal' }}>
                         <span><CheckCircleOutlined style={{ color: token.colorSuccess }} /> {matchCount}</span>
                         {mismatchCount > 0 && <span><WarningOutlined style={{ color: token.colorWarning }} /> {mismatchCount}</span>}

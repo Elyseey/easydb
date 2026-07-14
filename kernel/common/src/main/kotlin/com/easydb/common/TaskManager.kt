@@ -51,14 +51,23 @@ class TaskManager(
     }
 
     /** 创建新任务 */
-    fun createTask(name: String, type: String): TaskInfo {
+    fun createTask(
+        name: String,
+        type: String,
+        sourceEndpoint: TaskEndpointSnapshot? = null,
+        targetEndpoint: TaskEndpointSnapshot? = null
+    ): TaskInfo {
+        val createdAt = LocalDateTime.now().format(timeFormatter)
         val task = TaskInfo(
             id = UUID.randomUUID().toString(),
             name = name,
             type = type,
             status = "pending",
             progress = 0,
-            startedAt = LocalDateTime.now().format(timeFormatter)
+            createdAt = createdAt,
+            startedAt = createdAt,
+            sourceEndpoint = sourceEndpoint,
+            targetEndpoint = targetEndpoint
         )
         tasks[task.id] = task
         cancelFlags[task.id] = AtomicBoolean(false)
@@ -544,6 +553,16 @@ class TaskManager(
 // ─── 序列化模型 ──────────────────────────────────────────────
 
 @Serializable
+data class TaskEndpointSnapshot(
+    val connectionId: String,
+    val connectionName: String,
+    val dbType: String,
+    val host: String,
+    val port: Int,
+    val database: String
+)
+
+@Serializable
 data class TaskInfo(
     val id: String,
     val name: String,
@@ -551,6 +570,7 @@ data class TaskInfo(
     val status: String = "pending",  // pending | running | completed | failed | cancelled
     val progress: Int = 0,
     val progressMessage: String? = null,
+    val createdAt: String? = null,
     val startedAt: String? = null,
     val duration: Long? = null,
     val errorMessage: String? = null,
@@ -558,6 +578,8 @@ data class TaskInfo(
     val failureCount: Int? = null,
     val skippedCount: Int? = null,
     val verification: List<TableVerifyResult>? = null,
+    val sourceEndpoint: TaskEndpointSnapshot? = null,
+    val targetEndpoint: TaskEndpointSnapshot? = null,
     val payload: Map<String, String>? = null
 )
 

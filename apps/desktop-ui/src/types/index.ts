@@ -144,6 +144,15 @@ export interface TableVerifyResult {
   errorMessage?: string
 }
 
+export interface TaskEndpointSnapshot {
+  connectionId: string
+  connectionName: string
+  dbType: DbType
+  host: string
+  port: number
+  database: string
+}
+
 // 任务信息
 export interface TaskInfo {
   id: string
@@ -161,6 +170,9 @@ export interface TaskInfo {
   errorMessage?: string
   progressMessage?: string
   verification?: TableVerifyResult[]
+  sourceEndpoint?: TaskEndpointSnapshot
+  targetEndpoint?: TaskEndpointSnapshot
+  payload?: Record<string, string>
 }
 
 // 任务步骤

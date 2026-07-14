@@ -35,6 +35,15 @@ import java.util.UUID
 /** 专用任务协程域：替代 GlobalScope，支持统一生命周期治理 */
 private val taskScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
+private fun ConnectionConfig.toTaskEndpoint(database: String) = TaskEndpointSnapshot(
+    connectionId = id,
+    connectionName = name,
+    dbType = dbType,
+    host = host,
+    port = port,
+    database = database
+)
+
 // ─── 连接管理路由 ──────────────────────────────────────────
 fun Route.connectionRoutes() {
     val store = ServiceRegistry.connectionStore
@@ -813,7 +822,9 @@ fun Route.migrationRoutes() {
 
         val task = taskMgr.createTask(
             name = "迁移 ${config.sourceDatabase} → ${config.targetDatabase}",
-            type = "migration"
+            type = "migration",
+            sourceEndpoint = sourceSession.config.toTaskEndpoint(config.sourceDatabase),
+            targetEndpoint = targetSession.config.toTaskEndpoint(config.targetDatabase)
         )
         val reporter = taskMgr.createReporter(task.id)
 
@@ -898,7 +909,9 @@ fun Route.syncRoutes() {
 
         val task = taskMgr.createTask(
             name = "同步 ${config.sourceDatabase} → ${config.targetDatabase}",
-            type = "sync"
+            type = "sync",
+            sourceEndpoint = sourceSession.config.toTaskEndpoint(config.sourceDatabase),
+            targetEndpoint = targetSession.config.toTaskEndpoint(config.targetDatabase)
         )
         val reporter = taskMgr.createReporter(task.id)
 
