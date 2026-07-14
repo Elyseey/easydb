@@ -220,6 +220,24 @@ Use this pattern for SQL result grids and editable data tables. Live-resizing th
 
 When a resizable column contains single-line ellipsis content, the cell's inner content must follow the column width. Do not hardcode inner `maxWidth` values such as `maxWidth: 300`; use `width: '100%'`, `overflow: 'hidden'`, `textOverflow: 'ellipsis'`, and `whiteSpace: 'nowrap'`. For manually truncated previews, compute the preview length from the current column width. Never use `whiteSpace: 'normal'` or dynamic row heights in virtual tables for long text display; use a click-to-view modal for full content instead.
 
+## Workbench Query Tab Rename — Defer Focus and Own the Full Tab Surface
+
+Inline query-tab rename must account for the event order of Ant Design Tabs and the desktop WebView.
+
+- Start rename from double-click on the SQL query label or from the tab context menu.
+- Do not use `autoFocus` on an input mounted by a double-click handler. The remaining tab click/focus work can immediately blur the input and close rename mode. Mount the input first, then focus and select it in `requestAnimationFrame`.
+- Apply `userSelect: 'none'` to the non-editing query label so the browser does not briefly select the label text on the second click.
+- Prevent the native WebView context menu at the Tabs root, not only on the inner label. Resolve the clicked tab with `closest('.ant-tabs-tab')` and its `data-node-key`, so tab padding, the close icon, and the rename input follow the same custom-menu behavior.
+- Enter commits, Escape cancels, and blur commits. Empty normalized names keep the previous title.
+- Keep `WorkbenchTab.label` and the matching `EditorTab.title` synchronized when a query is renamed.
+
+Required regression coverage:
+
+- Title normalization rejects whitespace-only names and enforces the length limit.
+- Context-menu target resolution returns the tab key for nested elements such as the close icon, not only the text label.
+
+---
+
 ## Workbench Tab Switching — Virtual Table Mount Cost
 
 Workbench object tabs cache table preview rows in state, but switching the active top-level tab still unmounts the old detail pane and mounts the new one. For large table previews, the tab switch path must avoid unnecessary data cloning and layout work.
