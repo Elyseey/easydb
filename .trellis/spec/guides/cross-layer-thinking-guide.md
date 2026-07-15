@@ -353,6 +353,20 @@ const querySummary = sqlQueryRowsSummary(currentBatch)
 
 ---
 
+### Mistake 12: Query Pane Switches Connection but Object Jump Uses the Outer Tab
+
+**Scenario**: A SQL query tab is created while a Dameng connection is active, then the user switches that query pane to MySQL and opens a MySQL table from the editor. The object detail tab still uses the outer workbench tab's original Dameng connection.
+
+**Root Cause Chain**:
+1. `EditorTab` owns the live query connection and database.
+2. `SqlQueryTabState` separately keeps the connection captured when the workbench tab was created.
+3. The object-jump callback carried only database/object name and inferred connection identity from the stale outer state.
+4. A valid MySQL database name was therefore sent to Dameng and surfaced as an invalid Schema error.
+
+**Rule**: Any cross-component action on a database object must carry the full identity that produced it: at minimum `connectionId + database/schema + object name + object type`. Synchronize duplicate display state, but never use asynchronously synchronized state as the authoritative identity for the action itself. See `frontend/component-guidelines.md#query-object-detail-jump--carry-connection-identity`.
+
+---
+
 ## Checklist for Cross-Layer Features（更新版）
 
 Before implementation:
@@ -368,6 +382,7 @@ Before implementation:
 - [ ] **跨层结果字段是否区分“已知 0”和“未知/不适用”（不要把 nullable affectedRows 合并成 0）**
 - [ ] **SQL 更新结果文案是否统一走 nullable-aware helper，而不是直接拼接 affectedRows**
 - [ ] **SQL 查询结果区摘要是否显示行数/结果集数，而不是把 batch length 显示成“条语句”**
+- [ ] **数据库对象跨组件跳转是否携带 connectionId，而不是从 active tab 等另一份状态推断**
 
 After implementation:
 - [ ] Tested with edge cases (null, empty, invalid)
@@ -382,3 +397,4 @@ After implementation:
 - [ ] **DDL/TRUNCATE 等行数不可知语句的前端文案是否只显示执行成功，不显示误导性 0 行**
 - [ ] **CREATE/COMMENT/ALTER 等 affectedRows=null 的消息日志是否没有出现“影响 null 行”**
 - [ ] **单条 SELECT 返回多行时，结果区摘要是否展示已加载/总行数，不误导为 1 条数据**
+- [ ] **查询页签切换数据库连接后，对象详情/DDL/编辑/导出入口是否仍使用当前查询连接**

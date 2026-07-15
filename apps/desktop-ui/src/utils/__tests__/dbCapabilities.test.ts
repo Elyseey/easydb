@@ -13,4 +13,13 @@ describe('database metadata capabilities', () => {
     expect(metadata.schemaManagement).toBe(true)
     expect(metadata.schemaAlterCharset).toBe(false)
   })
+
+  it('offers Dameng logical backup, restore, export and SQL file import', () => {
+    const workbench = getDbCapabilities('dameng').workbench
+
+    expect(workbench.exportData).toBe(true)
+    expect(workbench.importSql).toBe(true)
+    expect(workbench.backup).toBe(true)
+    expect(workbench.restore).toBe(true)
+  })
 })

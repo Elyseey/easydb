@@ -87,4 +87,43 @@ describe('EditableDataTable export menu', () => {
       rows: [{ id: 1 }, { id: 2 }],
     }))
   })
+
+  it('remeasures the virtual table after query rows change', async () => {
+    const handleResize = vi.fn()
+    window.addEventListener('resize', handleResize)
+    const columns = [{
+      name: 'id',
+      type: 'INT',
+      nullable: false,
+      isPrimaryKey: true,
+      isAutoIncrement: false,
+    }]
+
+    const { rerender } = render(
+      <EditableDataTable
+        connectionId="connection-1"
+        database="database-1"
+        tableName="users"
+        columns={columns}
+        dataSource={[]}
+        onRefresh={() => {}}
+      />,
+    )
+    await waitFor(() => expect(handleResize).toHaveBeenCalled())
+    handleResize.mockClear()
+
+    rerender(
+      <EditableDataTable
+        connectionId="connection-1"
+        database="database-1"
+        tableName="users"
+        columns={columns}
+        dataSource={[{ id: 1 }, { id: 2 }]}
+        onRefresh={() => {}}
+      />,
+    )
+
+    await waitFor(() => expect(handleResize).toHaveBeenCalled())
+    window.removeEventListener('resize', handleResize)
+  })
 })

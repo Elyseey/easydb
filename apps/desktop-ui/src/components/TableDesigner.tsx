@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { Input, Button, Tabs, Table, Select, Checkbox, Space, Typography, Tooltip, theme, Modal } from 'antd'
 import { PlusOutlined, DeleteOutlined, ArrowUpOutlined, ArrowDownOutlined, SaveOutlined } from '@ant-design/icons'
-import { metadataApi } from '@/services/api'
+import { metadataApi, sqlApi } from '@/services/api'
 import { handleApiError, toast } from '@/utils/notification'
 import type { DbType } from '@/types'
 
@@ -101,6 +101,12 @@ interface IndexRow {
   _original?: string // 编辑模式下原始索引名
 }
 
+export interface TableDesignerSaveResult {
+  tableName: string
+  previousTableName?: string
+  renamed: boolean
+}
+
 interface TableDesignerProps {
   connectionId: string
   connectionName: string
@@ -110,7 +116,7 @@ interface TableDesignerProps {
   /** Avoid full table definition loads for drivers where DDL lookup is expensive. */
   lightweightStructureLoad?: boolean
   dbType?: DbType
-  onSuccess: () => void
+  onSuccess: (result: TableDesignerSaveResult) => void
   onCancel: () => void
 }
 
@@ -143,10 +149,12 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
   const originalColumnsRef = useRef<ColumnRow[]>([])
   const originalIndexesRef = useRef<IndexRow[]>([])
   const originalCommentRef = useRef('')
+  const originalTableNameRef = useRef(editTableName || '')
 
   // 编辑模式：加载现有表结构
   useEffect(() => {
     if (!isEditMode || !editTableName) return
+    originalTableNameRef.current = editTableName
     setLoading(true)
     const loadStructure = lightweightStructureLoad
       ? Promise.all([
@@ -289,12 +297,13 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
     return def
   }
 
-  const damengColumnTarget = (columnName: string) => `${qi(tableName)}.${qi(columnName)}`
+  const damengColumnTarget = (targetTableName: string, columnName: string) => `${qi(targetTableName)}.${qi(columnName)}`
 
   // 生成 ALTER TABLE SQL（编辑模式）
   const generateAlterSql = useCallback(() => {
     const stmts: string[] = []
-    const t = qi(tableName)
+    const targetTableName = originalTableNameRef.current
+    const t = qi(targetTableName)
 
     // 1. 删除的列
     for (const orig of originalColumnsRef.current) {
@@ -330,7 +339,7 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
           stmts.push(`ALTER TABLE ${t} MODIFY ${colDef(col)};`)
         }
         if (commentChanged) {
-          stmts.push(`COMMENT ON COLUMN ${damengColumnTarget(col.name)} IS '${escapeSqlString(col.comment)}';`)
+          stmts.push(`COMMENT ON COLUMN ${damengColumnTarget(targetTableName, col.name)} IS '${escapeSqlString(col.comment)}';`)
         }
       }
     }
@@ -389,7 +398,19 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
 
     return stmts.join('\n')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tableName, tableComment, columns, indexes])
+  }, [tableComment, columns, indexes])
+
+  const generateRenamePreviewSql = useCallback(() => {
+    if (!isEditMode) return ''
+    const originalTableName = originalTableNameRef.current
+    const nextTableName = tableName.trim()
+    if (!nextTableName || nextTableName === originalTableName) return ''
+
+    return isDameng
+      ? `ALTER TABLE ${qi(database)}.${qi(originalTableName)} RENAME TO ${qi(nextTableName)};`
+      : `RENAME TABLE ${qi(database)}.${qi(originalTableName)} TO ${qi(database)}.${qi(nextTableName)};`
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [database, isEditMode, tableName])
 
   // 构建请求体（新建模式）
   const buildTableDef = useCallback(() => ({
@@ -409,7 +430,8 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
   useEffect(() => {
     if (activeTab !== 'ddl') return
     if (isEditMode) {
-      const sql = generateAlterSql()
+      if (!tableName.trim()) { setDdlPreview('-- 请先输入表名'); return }
+      const sql = [generateAlterSql(), generateRenamePreviewSql()].filter(Boolean).join('\n')
       setDdlPreview(sql || '-- 无变更')
       return
     }
@@ -422,34 +444,60 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
       } catch { setDdlPreview('-- 生成预览失败') }
     }, 300)
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [activeTab, tableName, tableComment, columns, indexes, connectionId, database, buildTableDef, isEditMode, generateAlterSql])
+  }, [activeTab, tableName, tableComment, columns, indexes, connectionId, database, buildTableDef, isEditMode, generateAlterSql, generateRenamePreviewSql])
 
   // 保存
   const handleSave = async () => {
-    if (!tableName.trim()) { toast.error('请输入表名'); return }
+    const nextTableName = tableName.trim()
+    if (!nextTableName) { toast.error('请输入表名'); return }
     if (columns.filter(c => c.name.trim()).length === 0) { toast.error('请至少添加一个字段'); return }
+    let completedStructuralStatements = 0
+    let totalStructuralStatements = 0
+    let renameAttempted = false
     setSaving(true)
     try {
       if (isEditMode) {
+        const originalTableName = originalTableNameRef.current
         const sql = generateAlterSql()
-        if (!sql.trim()) { toast.warning('无变更'); setSaving(false); return }
+        const renamed = nextTableName !== originalTableName
+        if (!sql.trim() && !renamed) { toast.warning('无变更'); return }
         // 通过 SQL 执行接口执行 ALTER TABLE
-        const { sqlApi } = await import('@/services/api')
         const statements = sql.split('\n').map(stmt => stmt.trim()).filter(Boolean)
+        totalStructuralStatements = statements.length
         for (const statement of statements) {
           await sqlApi.execute(connectionId, database, statement)
+          completedStructuralStatements += 1
         }
-        toast.success(`表「${tableName}」已更新`)
-        onSuccess()
+        if (renamed) {
+          renameAttempted = true
+          await metadataApi.renameTable(connectionId, database, originalTableName, nextTableName)
+        }
+        toast.success(renamed ? `表已更新并重命名为「${nextTableName}」` : `表「${nextTableName}」已更新`)
+        onSuccess({ tableName: nextTableName, previousTableName: originalTableName, renamed })
       } else {
         const res = await metadataApi.createTable(connectionId, database, buildTableDef()) as { success: boolean }
         if (res.success) {
-          toast.success(`表「${tableName}」创建成功`)
-          onSuccess()
+          toast.success(`表「${nextTableName}」创建成功`)
+          onSuccess({ tableName: nextTableName, renamed: false })
         }
       }
     } catch (e) {
-      handleApiError(e, isEditMode ? '修改表失败' : '创建表失败')
+      if (isEditMode && completedStructuralStatements > 0) {
+        const allStructureChangesApplied = completedStructuralStatements === totalStructuralStatements
+        toast.warning(
+          allStructureChangesApplied
+            ? '表结构修改已生效，但后续操作失败；请重试重命名或重新打开设计页确认状态'
+            : `部分修改已生效（${completedStructuralStatements}/${totalStructuralStatements} 条），请重新打开设计页确认实际结构`,
+        )
+      }
+      handleApiError(
+        e,
+        isEditMode
+          ? (renameAttempted
+              ? (totalStructuralStatements > 0 ? '表结构修改已生效，但重命名失败' : '重命名表失败')
+              : '修改表失败')
+          : '创建表失败',
+      )
     } finally {
       setSaving(false)
     }
@@ -600,7 +648,6 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
           placeholder="表名" value={tableName} style={{ width: 200 }}
           onChange={e => setTableName(e.target.value)}
           status={!tableName.trim() ? 'warning' : undefined}
-          disabled={isEditMode}
         />
         <Input
           placeholder="表备注（可选）" value={tableComment} style={{ width: 200 }}

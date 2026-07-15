@@ -39,6 +39,7 @@ import { toast, handleApiError } from '@/utils/notification'
 import { useNavigate } from 'react-router-dom'
 import { supportsDatabaseTaskPair, supportsDatabaseTaskRole } from '@/utils/databaseTaskPairs'
 import type { ConnectionConfig } from '@/types'
+import { groupConnectionsByDatabaseType } from './connectionGroups'
 
 const { Title, Text } = Typography
 
@@ -78,12 +79,14 @@ export const MigrationPage: React.FC = () => {
   const sourceConn = useMemo(() => connections.find((c) => c.id === sourceId), [connections, sourceId])
   const targetConn = useMemo(() => connections.find((c) => c.id === targetId), [connections, targetId])
   const isMysqlToDameng = sourceConn?.dbType === 'mysql' && targetConn?.dbType === 'dameng'
+  const isDamengSource = sourceConn?.dbType === 'dameng'
+  const isTableOnlyMigration = isMysqlToDameng || isDamengSource
   const currentPairSupported = supportsMigrationPair(sourceConn, targetConn)
 
   const visibleSourceObjects = useMemo(() => {
-    if (!isMysqlToDameng) return sourceObjects
+    if (!isTableOnlyMigration) return sourceObjects
     return sourceObjects.filter((object) => object.type === 'table')
-  }, [sourceObjects, isMysqlToDameng])
+  }, [sourceObjects, isTableOnlyMigration])
   const selectedVisibleTables = useMemo(() => {
     const allowedNames = new Set(visibleSourceObjects.map((object) => object.name))
     return selectedTables.filter((key) => allowedNames.has(String(key)))
@@ -123,7 +126,7 @@ export const MigrationPage: React.FC = () => {
       }
     } else {
       if (sourceConn && !supportsMigrationPair(sourceConn, conn)) {
-        toast.error('当前仅支持 MySQL → MySQL、MySQL → 达梦迁移')
+        toast.error('当前仅支持 MySQL 与达梦之间已注册的迁移组合')
         return
       }
       setTargetId(connId)
@@ -143,10 +146,16 @@ export const MigrationPage: React.FC = () => {
       </div>
     )
   }))
-  const sourceConnOptions = toConnOptions(
+  const toConnOptionGroups = (items: ConnectionConfig[]) => (
+    groupConnectionsByDatabaseType(items).map((group) => ({
+      label: group.label,
+      options: toConnOptions(group.connections),
+    }))
+  )
+  const sourceConnOptions = toConnOptionGroups(
     connections.filter((c) => supportsDatabaseTaskRole('migration', c.dbType, 'source'))
   )
-  const targetConnOptions = toConnOptions(
+  const targetConnOptions = toConnOptionGroups(
     connections.filter((c) => {
       if (!supportsDatabaseTaskRole('migration', c.dbType, 'target')) return false
       if (!sourceConn) return true
@@ -353,9 +362,9 @@ export const MigrationPage: React.FC = () => {
                <Title level={5} style={{ margin: 0 }}><TableOutlined style={{ marginRight: 8 }}/>选择要迁移的表对象</Title>
                <Text type="secondary">已选择 {selectedVisibleTables.length} / {visibleSourceObjects.length} 个对象</Text>
             </div>
-            {isMysqlToDameng && sourceObjects.length !== visibleSourceObjects.length && (
+            {isTableOnlyMigration && sourceObjects.length !== visibleSourceObjects.length && (
               <Alert
-                message="MySQL → 达梦当前仅迁移表结构和表数据，视图、过程、函数、触发器已从列表中过滤"
+                message={`${isDamengSource ? '达梦源' : 'MySQL → 达梦'}当前仅迁移表结构和表数据，视图、过程、函数、触发器已从列表中过滤`}
                 type="info"
                 showIcon
                 style={{ marginBottom: 12 }}
@@ -411,13 +420,14 @@ export const MigrationPage: React.FC = () => {
             </Radio.Group>
           </div>
           <Alert
-            message={!currentPairSupported && sourceConn && targetConn ? '当前仅支持 MySQL → MySQL、MySQL → 达梦迁移'
+            message={!currentPairSupported && sourceConn && targetConn ? '当前仅支持 MySQL 与达梦之间已注册的迁移组合'
               : isMysqlToDameng ? 'MySQL → 达梦当前支持表结构和表数据迁移，同名目标表会被覆盖'
+              : isDamengSource ? `达梦 → ${targetConn?.dbType === 'mysql' ? 'MySQL' : '达梦'}支持表结构和表数据迁移，并严格保留源端标识符大小写`
               : mode === 'data_only' && selectedVisibleTables.some(k => {
               const obj = sourceObjects.find(o => o.name === k)
               return obj && obj.type !== 'table'
             }) ? '仅数据模式下，视图/存储过程/函数/触发器将被自动跳过' : '警告：目标库中同名对象将被覆盖，请三思而后行。'}
-            type={isMysqlToDameng || mode === 'data_only' ? 'info' : 'warning'}
+            type={isTableOnlyMigration || mode === 'data_only' ? 'info' : 'warning'}
             showIcon
             style={{ padding: '4px 12px', border: 'none' }}
           />

@@ -59,7 +59,7 @@ const MYSQL: DbCapabilities = {
 const DAMENG: DbCapabilities = {
   metadata: { schemas: true, schemaCreation: true, schemaManagement: true, schemaAlterCharset: false, tables: true, views: true, procedures: true, functions: true, triggers: true, ddl: true },
   sql: { execute: true, paginatedPreview: true, explain: false },
-  workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, importSql: false, exportData: false, backup: false, restore: false },
+  workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, importSql: true, exportData: true, backup: true, restore: true },
   tasks: { migration: true, sync: false, structureCompare: false },
   diagnostics: { dataTracker: false, slowQuery: false },
 }

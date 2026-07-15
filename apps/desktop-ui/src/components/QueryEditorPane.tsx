@@ -8,6 +8,7 @@ import {
   HistoryOutlined,
   FormatPainterOutlined,
   CompressOutlined,
+  FileTextOutlined,
   DownOutlined,
 } from '@ant-design/icons'
 import Editor, { type OnMount } from '@monaco-editor/react'
@@ -39,15 +40,14 @@ import {
 } from '../pages/sql-editor/queryPreview'
 import { EmptyState } from '@/components/EmptyState'
 import { beautifySql, compactSql } from '@/utils/sqlTransform'
+import { getSqlTemplates, insertSqlTemplate, type SqlTemplate } from '@/pages/sql-editor/sqlTemplates'
+import {
+  buildOpenObjectDetailRequest,
+  type OpenObjectDetailRequest,
+} from '@/utils/openObjectDetail'
 
 const { Content } = Layout
 const { Text } = Typography
-
-export type OpenObjectDetailRequest = {
-  database: string
-  name: string
-  objectType: 'table' | 'view' | 'procedure' | 'function' | 'trigger'
-}
 
 interface QueryEditorPaneProps {
   queryId: string
@@ -56,6 +56,8 @@ interface QueryEditorPaneProps {
   showAdvancedTools?: boolean
   /** 打开工作台对象详情页。 */
   onOpenObjectDetail?: (request: OpenObjectDetailRequest) => void
+  /** 将查询页签内部的连接上下文同步到工作台页签。 */
+  onContextChange?: (context: { queryId: string; connectionId?: string; database?: string }) => void
 }
 
 const SQL_KEYWORDS = new Set([
@@ -139,7 +141,13 @@ function findObjectByName(objects: TableInfo[], objectName: string): TableInfo |
     objects.find((obj) => obj.name.toLowerCase() === objectName.toLowerCase())
 }
 
-const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, active = true, showAdvancedTools = true, onOpenObjectDetail }) => {
+const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({
+  queryId,
+  active = true,
+  showAdvancedTools = true,
+  onOpenObjectDetail,
+  onContextChange,
+}) => {
   const { token } = theme.useToken()
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null)
@@ -153,6 +161,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
   const storeUpdateTab = useSqlEditorStore((s) => s.updateTab)
   const activeEditorTabRef = useRef<typeof activeEditorTab>(activeEditorTab)
   const onOpenObjectDetailRef = useRef(onOpenObjectDetail)
+  const onContextChangeRef = useRef(onContextChange)
 
   // Advanced tools state
   const sqlHistoryEnabled          = useAppSettingsStore((s) => s.sqlHistoryEnabled)
@@ -175,7 +184,16 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
   useEffect(() => {
     activeEditorTabRef.current = activeEditorTab
     onOpenObjectDetailRef.current = onOpenObjectDetail
-  }, [activeEditorTab, onOpenObjectDetail])
+    onContextChangeRef.current = onContextChange
+  }, [activeEditorTab, onContextChange, onOpenObjectDetail])
+
+  useEffect(() => {
+    onContextChangeRef.current?.({
+      queryId,
+      connectionId: activeEditorTab?.connectionId,
+      database: activeEditorTab?.database,
+    })
+  }, [activeEditorTab?.connectionId, activeEditorTab?.database, queryId])
 
   useEffect(() => {
     if (!active) return
@@ -227,6 +245,10 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
     dbType: activeConnectionDbType,
     templatesEnabled: sqlTemplatesEnabled,
   }), [activeConnectionDbType, sqlTemplatesEnabled])
+  const availableSqlTemplates = useMemo(
+    () => activeConnectionDbType ? getSqlTemplates(activeConnectionDbType, sqlTemplatesEnabled) : [],
+    [activeConnectionDbType, sqlTemplatesEnabled],
+  )
 
   // Fetch DBs whenever connection changes within this tab
   useEffect(() => {
@@ -291,16 +313,15 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
     try {
       const objects = await metadataApi.objects(currentTab.connectionId, resolved.database) as TableInfo[]
       const object = findObjectByName(objects, resolved.objectName)
-      if (!object || !['table', 'view', 'procedure', 'function', 'trigger'].includes(object.type)) {
+      const request = object
+        ? buildOpenObjectDetailRequest(currentTab.connectionId, resolved.database, object)
+        : null
+      if (!request) {
         if (showWarnings) toast.warning(`未找到对象「${resolved.objectName}」`)
         return
       }
 
-      onOpenObjectDetailRef.current?.({
-        database: resolved.database,
-        name: object.name,
-        objectType: object.type,
-      })
+      onOpenObjectDetailRef.current?.(request)
     } catch (error) {
       handleApiError(error, '打开对象详情失败')
     }
@@ -375,6 +396,18 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
       toast.error(error instanceof Error ? error.message : 'SQL 处理失败')
     }
   }, [queryId, storeUpdateTab])
+
+  const handleInsertSqlTemplate = useCallback((template: SqlTemplate) => {
+    const editorInstance = editorRef.current
+    const model = editorInstance?.getModel()
+    if (!editorInstance || !model || !sqlTemplatesEnabled) return
+
+    if (!insertSqlTemplate(editorInstance, template)) {
+      toast.error('SQL 模板插入失败，请重新打开查询页后重试')
+      return
+    }
+    storeUpdateTab(queryId, { sql: model.getValue() })
+  }, [queryId, sqlTemplatesEnabled, storeUpdateTab])
 
   const handleEditorMount: OnMount = (editorInstance, monaco) => {
     editorRef.current = editorInstance
@@ -711,30 +744,49 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({ queryId, act
             menu={{
               items: [
                 {
+                  key: 'templates',
+                  icon: <FileTextOutlined />,
+                  label: sqlTemplatesEnabled ? '常用 SQL 模板' : '常用 SQL 模板（设置中已关闭）',
+                  disabled: availableSqlTemplates.length === 0,
+                  children: availableSqlTemplates.map((template) => ({
+                    key: `template-${template.id}`,
+                    danger: template.risk === 'write',
+                    label: (
+                      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, minWidth: 176 }}>
+                        <span>{template.label}</span>
+                        <Text code style={{ fontSize: 11 }}>{template.prefix}</Text>
+                      </span>
+                    ),
+                    onClick: () => handleInsertSqlTemplate(template),
+                  })),
+                },
+                { type: 'divider' },
+                {
                   key: 'beautify',
                   icon: <FormatPainterOutlined />,
                   label: '美化 SQL',
+                  disabled: !activeEditorTab.sql.trim(),
                   onClick: () => { void handleSqlTransform('beautify') },
                 },
                 {
                   key: 'compact',
                   icon: <CompressOutlined />,
                   label: '压缩 SQL',
+                  disabled: !activeEditorTab.sql.trim(),
                   onClick: () => { void handleSqlTransform('compact') },
                 },
               ],
             }}
           >
             <Tooltip
-              title="美化或压缩当前选区；未选择时处理全文"
+              title="插入常用模板，或美化、压缩当前 SQL"
               open={sqlFormatMenuOpen ? false : undefined}
             >
               <Button
                 size="small"
                 icon={<FormatPainterOutlined />}
-                disabled={!activeEditorTab.sql.trim()}
               >
-                格式 <DownOutlined style={{ fontSize: 10 }} />
+                SQL 工具 <DownOutlined style={{ fontSize: 10 }} />
               </Button>
             </Tooltip>
           </Dropdown>

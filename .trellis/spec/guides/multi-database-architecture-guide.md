@@ -28,6 +28,7 @@ Read this guide when any change:
 - [ ] MySQL-only features must be explicitly guarded and return unsupported for other database types
 - [ ] Before adding or rejecting dialect-specific SQL, verify the syntax against the matching official documentation under `docs/`; do not infer support only from MySQL or Oracle compatibility.
 - [ ] Database integration tests must not embed credentials or real network addresses, print decrypted secrets, contact external databases by default, or swallow failures as successful tests.
+- [ ] Real-database tests must use a separate opt-in task/source set and a second authorization boundary for mutations. Follow the executable contract in `backend/database-integration-testing.md`.
 - [ ] Preserve identifier text returned by database catalogs/JDBC metadata. Do not uppercase or lowercase an existing schema, table, view, routine, function, trigger, column, or index name before a lookup or quoted reference.
 - [ ] Treat metadata catalog sources as independently fallible. A permission error from one source must not discard names already returned by JDBC metadata or another visible-object view.
 - [ ] Client-side SQL text transforms must select lexical/formatting rules by `dbType`; for example, MySQL `#` comments must not consume PostgreSQL `#>` / `#>>` JSON operators. Follow the executable contract in `frontend/component-guidelines.md`.

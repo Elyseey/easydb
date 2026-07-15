@@ -8,6 +8,7 @@ class DamengDatabaseAdapter : DatabaseAdapter {
     private val metadataAdapter = DamengMetadataAdapter()
     private val dialectAdapter = DamengDialectAdapter()
     private val procedureAdapter = DamengProcedureAdapter()
+    private val logicalBackupAdapter = DamengLogicalBackupAdapter()
 
     override fun dbType(): DbType = DbType.DAMENG
 
@@ -18,7 +19,12 @@ class DamengDatabaseAdapter : DatabaseAdapter {
         supportsAlterDatabaseCharset = false,
         supportsViews = true,
         supportsStoredProcedures = true,
-        supportsTriggers = true
+        supportsTriggers = true,
+        supportsLogicalExport = true,
+        supportsSqlFileImport = true,
+        supportsLogicalBackup = true,
+        supportsLogicalRestore = true,
+        supportsOverwriteRestore = false
     )
 
     override fun connectionAdapter(): ConnectionAdapter = connectionAdapter
@@ -32,6 +38,8 @@ class DamengDatabaseAdapter : DatabaseAdapter {
     override fun migrationAdapter(): MigrationAdapter = unsupported("数据迁移")
 
     override fun procedureAdapter(): ProcedureAdapter = procedureAdapter
+
+    override fun logicalBackupAdapter(): LogicalBackupAdapter = logicalBackupAdapter
 
     private fun unsupported(feature: String): Nothing {
         throw UnsupportedOperationException("达梦暂不支持 $feature")

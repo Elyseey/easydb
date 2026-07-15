@@ -1,4 +1,5 @@
 import type { DbType } from '@/types'
+import type { editor } from 'monaco-editor'
 
 export type SqlTemplateRisk = 'read' | 'write'
 
@@ -149,4 +150,26 @@ export function isSqlTemplateAvailable(template: SqlTemplate, dbType: DbType): b
 export function getSqlTemplates(dbType: DbType, enabled: boolean): readonly SqlTemplate[] {
   if (!enabled) return []
   return BUILTIN_SQL_TEMPLATES.filter((template) => isSqlTemplateAvailable(template, dbType))
+}
+
+interface SqlSnippetController extends editor.IEditorContribution {
+  insert: (
+    template: string,
+    options?: { undoStopBefore?: boolean; undoStopAfter?: boolean },
+  ) => void
+}
+
+export function insertSqlTemplate(
+  editorInstance: editor.IStandaloneCodeEditor,
+  template: SqlTemplate,
+): boolean {
+  const snippetController = editorInstance.getContribution<SqlSnippetController>('snippetController2')
+  if (!snippetController) return false
+
+  editorInstance.focus()
+  snippetController.insert(template.body, {
+    undoStopBefore: true,
+    undoStopAfter: true,
+  })
+  return true
 }

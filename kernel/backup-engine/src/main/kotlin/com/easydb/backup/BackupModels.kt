@@ -11,7 +11,7 @@ data class BackupConfig(
     val includeRoutines: Boolean = true,
     val includeViews: Boolean = true,
     val includeTriggers: Boolean = true,
-    val compression: String = "gzip",       // none | gzip
+    val compression: String = "gzip",       // 当前仅支持 gzip
     val chunkSizeBytes: Long = 64L * 1024 * 1024,
     val outputPath: String? = null          // 自定义输出路径，为空使用默认 ~/.easydb/backups/
 )

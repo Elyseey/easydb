@@ -746,7 +746,8 @@ class DamengMetadataAdapter : MetadataAdapter {
 
         if (commentStatements.isEmpty()) return ddl
         return buildString {
-            append(ddl.trimEnd())
+            append(ddl.trimEnd().removeSuffix(";"))
+            append(';')
             appendLine()
             appendLine()
             append(commentStatements.joinToString("\n"))

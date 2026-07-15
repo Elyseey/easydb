@@ -24,9 +24,10 @@ import {
   SettingOutlined, SyncOutlined, CheckCircleOutlined, DownloadOutlined, DatabaseOutlined
 } from '@ant-design/icons'
 import { metadataApi, exportApi, taskApi } from '@/services/api'
-import type { ExportEstimateResult, TableInfo } from '@/types'
+import type { DbType, ExportEstimateResult, TableInfo } from '@/types'
 import { handleApiError, toast } from '@/utils/notification'
 import { formatDuration, getElapsedMs } from '@/utils/format'
+import { databaseNamespaceLabel } from '@/utils/databaseNamespace'
 
 function formatSize(bytes: number): string {
   if (!bytes) return '-'
@@ -41,6 +42,7 @@ interface ExportDatabaseModalProps {
   connectionId: string
   connectionName: string
   database: string
+  dbType: DbType
 }
 
 interface ExportTableItem {
@@ -93,12 +95,13 @@ const { Text } = Typography
 const LARGE_TABLE_THRESHOLD = 10 * 1024 * 1024
 
 export default function ExportDatabaseModal({
-  open, onClose, connectionId, connectionName, database
+  open, onClose, connectionId, connectionName, database, dbType
 }: ExportDatabaseModalProps) {
   const { token } = theme.useToken()
   const [form] = Form.useForm()
   const exportContent = Form.useWatch('exportContent', form) ?? 'STRUCTURE_AND_DATA'
   const exportFormat = Form.useWatch('exportFormat', form) ?? 'SQL_ZIP'
+  const namespaceLabel = databaseNamespaceLabel(dbType)
   
   // -- Step State --
   const [currentStep, setCurrentStep] = useState(0) // 0: Config, 1: Processing, 2: Finished
@@ -464,9 +467,9 @@ export default function ExportDatabaseModal({
     <Modal
       title={(
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <Text strong>导出数据库</Text>
+          <Text strong>导出{namespaceLabel}</Text>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            来源连接：{connectionName} · 数据库：{database}
+            来源连接：{connectionName} · {namespaceLabel}：{database}
           </Text>
         </div>
       )}

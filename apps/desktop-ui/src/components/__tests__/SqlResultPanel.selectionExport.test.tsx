@@ -62,4 +62,30 @@ describe('SqlResultPanel selected row export', () => {
       expect(screen.getByText('导出此行')).toBeInTheDocument()
     })
   })
+
+  it('remeasures the virtual table after result rows change', async () => {
+    const handleResize = vi.fn()
+    window.addEventListener('resize', handleResize)
+
+    const { rerender } = render(
+      <SqlResultPanel result={result} dbType="mysql" displayLabel="users" tableHeight={420} />
+    )
+    await waitFor(() => expect(handleResize).toHaveBeenCalled())
+    handleResize.mockClear()
+
+    rerender(
+      <SqlResultPanel
+        result={{
+          ...result,
+          rows: [...result.rows!, { id: 4, name: 'Dave' }],
+        }}
+        dbType="mysql"
+        displayLabel="users"
+        tableHeight={420}
+      />
+    )
+
+    await waitFor(() => expect(handleResize).toHaveBeenCalled())
+    window.removeEventListener('resize', handleResize)
+  })
 })

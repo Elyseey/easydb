@@ -12,6 +12,8 @@ const SUPPORTED_TASK_PAIRS: Record<PairTaskFeature, readonly DatabaseTaskPair[]>
   migration: [
     { source: 'mysql', target: 'mysql' },
     { source: 'mysql', target: 'dameng' },
+    { source: 'dameng', target: 'mysql' },
+    { source: 'dameng', target: 'dameng' },
   ],
   sync: [
     { source: 'mysql', target: 'mysql' },

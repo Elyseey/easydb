@@ -716,6 +716,10 @@ fun Route.sqlRoutes() {
 
         val config = session.config
         val dbAdapter = adapterRegistry.get(config.dbType)
+        if (!dbAdapter.capabilities().supportsSqlFileImport) {
+            call.fail("UNSUPPORTED_DB_FEATURE", "${dbAdapter.dbType().displayName} 暂不支持执行 SQL 文件")
+            return@post
+        }
         val task = taskMgr.createTask(
             name = "导入 ${req.database} ← ${(req.fileName ?: file.name)}",
             type = "import"

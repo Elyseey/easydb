@@ -183,6 +183,8 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   const selectedRowRef = useRef<number>(-1)
   const cellChangesRef = useRef<CellChange[]>([])
   const tableBodyRef = useRef<HTMLDivElement | null>(null)
+  const scrollTopRef = useRef(0)
+  const virtualRefreshFrameRef = useRef<number | null>(null)
   const autoLoadLockRef = useRef(false)
   const onDirtyChangeRef = useRef(onDirtyChange)
   // 强制触发 virtual-list 的 onHolderResize，让其重算 height 依赖并重新渲染可见行
@@ -544,39 +546,61 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     setTableScrollY(Math.max(220, wrapperHeight - headerHeight - 2))
   }, [])
 
+  const forceVirtualRefresh = useCallback(() => {
+    const scrollBody = tableBodyRef.current
+    if (scrollBody) scrollBody.scrollTop = scrollTopRef.current
+    window.dispatchEvent(new Event('resize'))
+    if (!scrollBody) return
+    scrollBody.scrollTop = scrollTopRef.current
+    scrollBody.dispatchEvent(new Event('scroll'))
+  }, [])
+
+  const scheduleVirtualRefresh = useCallback(() => {
+    if (virtualRefreshFrameRef.current !== null) {
+      window.cancelAnimationFrame(virtualRefreshFrameRef.current)
+    }
+    virtualRefreshFrameRef.current = window.requestAnimationFrame(() => {
+      updateMeasuredTableHeight()
+      virtualRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        virtualRefreshFrameRef.current = null
+        forceVirtualRefresh()
+      })
+    })
+  }, [forceVirtualRefresh, updateMeasuredTableHeight])
+
   useLayoutEffect(() => {
     const wrapperEl = tableWrapperRef.current
     if (!wrapperEl) return undefined
 
     // 暴露给行变更操作调用：dispatch resize 事件，触发 rc-virtual-list 内部的 onHolderResize
     // 使其重测容器 height 并重算 visible-range，确保新行在 Tabs 场景下即时显示
-    forceVirtualRefreshRef.current = () => {
-      window.dispatchEvent(new Event('resize'))
-    }
+    forceVirtualRefreshRef.current = scheduleVirtualRefresh
 
-    updateMeasuredTableHeight()
-    // mount 后再测一次：首次渲染时 .ant-table-thead 可能还不存在
-    requestAnimationFrame(updateMeasuredTableHeight)
+    scheduleVirtualRefresh()
 
     // 直接观测 wrapper（flex:1），toolbar 和 container 尺寸变化都会传导到 wrapper
-    const observer = new ResizeObserver(updateMeasuredTableHeight)
+    const observer = new ResizeObserver(scheduleVirtualRefresh)
     observer.observe(wrapperEl)
-    return () => observer.disconnect()
-  }, [updateMeasuredTableHeight])
+    return () => {
+      observer.disconnect()
+      forceVirtualRefreshRef.current = () => {}
+      if (virtualRefreshFrameRef.current !== null) {
+        window.cancelAnimationFrame(virtualRefreshFrameRef.current)
+        virtualRefreshFrameRef.current = null
+      }
+    }
+  }, [effectiveData.length, scheduleVirtualRefresh])
 
   useEffect(() => {
     if (!active) return
-    requestAnimationFrame(() => {
-      updateMeasuredTableHeight()
-      forceVirtualRefreshRef.current()
-    })
-  }, [active, updateMeasuredTableHeight])
+    scheduleVirtualRefresh()
+  }, [active, scheduleVirtualRefresh])
 
 
   // 监听表格滚动，触发加载更多
   useEffect(() => {
     const container = containerRef.current
-    if (!container || !hasMore) return undefined
+    if (!container) return undefined
 
     // 找到表格滚动容器
     const nextTableBody = (
@@ -587,7 +611,12 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     tableBodyRef.current = nextTableBody
     if (!nextTableBody) return undefined
 
-    const handleScroll = () => maybeLoadMore()
+    scheduleVirtualRefresh()
+
+    const handleScroll = () => {
+      scrollTopRef.current = nextTableBody.scrollTop
+      maybeLoadMore()
+    }
     nextTableBody.addEventListener('scroll', handleScroll, { passive: true })
     window.requestAnimationFrame(maybeLoadMore)
 
@@ -597,7 +626,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
         tableBodyRef.current = null
       }
     }
-  }, [hasMore, maybeLoadMore, tableScrollY])
+  }, [effectiveData.length, maybeLoadMore, scheduleVirtualRefresh, tableScrollY])
 
   const openEditorAtPosition = useCallback((
     rowIndex: number,

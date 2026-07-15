@@ -93,5 +93,17 @@ class DamengDialectAdapter : DialectAdapter {
         return "ALTER SESSION SET CURRENT_SCHEMA = ${quoteIdentifier(database)}"
     }
 
+    override fun buildCreateNamespaceSql(name: String, charset: String?, collation: String?): String =
+        "CREATE SCHEMA ${quoteIdentifier(name)}"
+
+    override fun normalizeNewNamespaceName(name: String): String =
+        DamengIdentifierPolicy.newUnquotedName(name)
+
+    override fun executeLogicalRestoreDdl(connection: java.sql.Connection, ddl: String, objectType: String) {
+        DamengRestoreDdl.statements(ddl, objectType).forEach { statement ->
+            connection.createStatement().use { it.execute(statement) }
+        }
+    }
+
     override val paginationStrategy: PaginationStrategy = PaginationStrategy.OFFSET_FETCH
 }

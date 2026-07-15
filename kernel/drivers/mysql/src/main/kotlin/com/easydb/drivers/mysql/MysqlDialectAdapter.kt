@@ -73,5 +73,42 @@ class MysqlDialectAdapter : DialectAdapter {
         return "USE `${database.replace("`", "``")}`"
     }
 
+    override fun formatExportStringLiteral(value: String): String {
+        val escaped = buildString(value.length + 16) {
+            value.forEach { ch ->
+                when (ch) {
+                    '\u0000' -> append("\\0")
+                    '\'' -> append("\\'")
+                    '"' -> append("\\\"")
+                    '\\' -> append("\\\\")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    '\u0008' -> append("\\b")
+                    '\u001A' -> append("\\Z")
+                    else -> append(ch)
+                }
+            }
+        }
+        return "'$escaped'"
+    }
+
+    override fun buildCreateNamespaceSql(name: String, charset: String?, collation: String?): String {
+        val charsetSql = charset?.takeIf { it.matches(Regex("[A-Za-z0-9_]+")) } ?: "utf8mb4"
+        val collationSql = collation?.takeIf { it.matches(Regex("[A-Za-z0-9_]+")) }
+            ?: "utf8mb4_general_ci"
+        return "CREATE DATABASE ${quoteIdentifier(name)} CHARACTER SET $charsetSql COLLATE $collationSql"
+    }
+
+    override fun beforeLogicalRestore(connection: java.sql.Connection) {
+        connection.createStatement().use { it.execute("SET FOREIGN_KEY_CHECKS=0") }
+        connection.createStatement().use { it.execute("SET UNIQUE_CHECKS=0") }
+    }
+
+    override fun afterLogicalRestore(connection: java.sql.Connection) {
+        connection.createStatement().use { it.execute("SET FOREIGN_KEY_CHECKS=1") }
+        connection.createStatement().use { it.execute("SET UNIQUE_CHECKS=1") }
+    }
+
     override val paginationStrategy: PaginationStrategy = PaginationStrategy.LIMIT_OFFSET
 }

@@ -14,6 +14,28 @@ import kotlin.test.assertTrue
 class MigrationAdapterRegistryTest {
 
     @Test
+    fun `resolves all supported mysql and dameng migration pairs exactly`() {
+        val mysqlMysql = FakeMigrationAdapter()
+        val mysqlDameng = FakeMigrationAdapter()
+        val damengMysql = FakeMigrationAdapter()
+        val damengDameng = FakeMigrationAdapter()
+        val registry = MigrationAdapterRegistry(
+            listOf(
+                RegisteredMigrationAdapter("mysql", "mysql", mysqlMysql),
+                RegisteredMigrationAdapter("mysql", "dameng", mysqlDameng),
+                RegisteredMigrationAdapter("dameng", "mysql", damengMysql),
+                RegisteredMigrationAdapter("dameng", "dameng", damengDameng)
+            )
+        )
+
+        assertSame(mysqlMysql, registry.get("mysql", "mysql"))
+        assertSame(mysqlDameng, registry.get("mysql", "dameng"))
+        assertSame(damengMysql, registry.get("dameng", "mysql"))
+        assertSame(damengDameng, registry.get("dm", "dameng"))
+        assertFailsWith<IllegalArgumentException> { registry.get("postgresql", "mysql") }
+    }
+
+    @Test
     fun `returns adapter by normalized source and target db types`() {
         val adapter = FakeMigrationAdapter()
         val registry = MigrationAdapterRegistry(

@@ -32,12 +32,29 @@ interface DatabaseAdapter {
     fun migrationAdapter(): MigrationAdapter
     fun procedureAdapter(): ProcedureAdapter  // 存储过程/函数适配器
 
+    /** 逻辑备份读取一致性由具体数据库驱动实现；不支持时返回 null。 */
+    fun logicalBackupAdapter(): LogicalBackupAdapter? = null
+
     /**
      * 慢查询分析适配器（可选）。
      * MySQL 返回 [MysqlSlowQueryAnalyzer] 实例，其他数据库先返回 null。
      * 调用方应先检查是否为 null 再决定是否展示功能入口。
      */
     fun slowQueryAnalyzer(): SlowQueryAnalyzer? = null
+}
+
+/**
+ * 为专用备份连接建立并释放数据库特定的一致读取上下文。
+ * 数据库专属事务 SQL 必须封装在驱动实现中，不能泄漏到通用备份服务。
+ */
+interface LogicalBackupAdapter {
+    fun begin(connection: java.sql.Connection): LogicalBackupContext
+    fun finish(connection: java.sql.Connection)
+
+    /** 配置驱动的流式结果集读取方式，避免通用服务识别具体数据库产品名。 */
+    fun configureStreamingStatement(statement: java.sql.Statement) {
+        statement.fetchSize = 1000
+    }
 }
 
 // ─── 连接适配器 ───────────────────────────────────────────
@@ -159,11 +176,40 @@ interface DialectAdapter {
         return "'${value.replace("'", "''")}'"
     }
 
+    /** 生成可写入导出 SQL 文件的字符串字面量。 */
+    fun formatExportStringLiteral(value: String): String = escapeValue(value)
+
+    /** 生成备份包中描述顶级 namespace 的创建语句。 */
+    fun buildCreateNamespaceSql(name: String, charset: String? = null, collation: String? = null): String =
+        throw UnsupportedOperationException("当前数据库方言不支持创建逻辑备份 namespace")
+
+    /**
+     * 将用户输入的全新 namespace 名称转换成驱动实际创建的名称。
+     * 已从 catalog 返回的对象名不得调用此方法。
+     */
+    fun normalizeNewNamespaceName(name: String): String = name.trim()
+
+    /** 仅替换 DDL 中被方言正确引用的源 namespace，避免裸文本误替换。 */
+    fun remapNamespaceInDdl(ddl: String, source: String, target: String): String =
+        ddl.replace(quoteIdentifier(source), quoteIdentifier(target))
+
+    /** 恢复前后需要切换的数据库专属约束状态；默认无需处理。 */
+    fun beforeLogicalRestore(connection: java.sql.Connection) = Unit
+    fun afterLogicalRestore(connection: java.sql.Connection) = Unit
+
+    /**
+     * 执行备份包中的一项 DDL。表/视图 DDL 可能包含多个方言专属语句，
+     * 具体驱动可在此安全拆分；过程、函数和触发器的内部语句不得由通用层拆分。
+     */
+    fun executeLogicalRestoreDdl(connection: java.sql.Connection, ddl: String, objectType: String) {
+        connection.createStatement().use { it.execute(ddl) }
+    }
+
     /**
      * 生成切换目标数据库/schema 的 SQL。
      *   MySQL → USE `db`
      *   PG    → SET search_path TO "schema"
-     *   DM    → 返回 null（连接串中指定 schema，无需切换）
+     *   DM / Oracle-like → ALTER SESSION SET CURRENT_SCHEMA = "schema"
      * 返回 null 表示该数据库不需要切换语句。
      */
     fun buildSwitchDatabaseSql(database: String): String?

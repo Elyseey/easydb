@@ -19,6 +19,7 @@ import {
   Layout, Tree, Tabs, Table, Typography, Input, Space, Button, Tag, Tooltip, Modal, Dropdown,
   theme, Breadcrumb,
 } from 'antd'
+import type { InputRef } from 'antd'
 import {
   DatabaseOutlined, ReloadOutlined, 
   CodeOutlined, StarOutlined,
@@ -45,12 +46,19 @@ import { ImportSqlDialog } from '@/components/ImportSqlDialog'
 import ExportDatabaseModal from '@/components/ExportDatabaseModal'
 import BackupDatabaseModal from '@/components/BackupDatabaseModal'
 import RestoreDatabaseModal from '@/components/RestoreDatabaseModal'
-import { TableDesigner } from '@/components/TableDesigner'
-import { QueryEditorPane, type OpenObjectDetailRequest } from '@/components/QueryEditorPane'
+import { TableDesigner, type TableDesignerSaveResult } from '@/components/TableDesigner'
+import { QueryEditorPane } from '@/components/QueryEditorPane'
 import { ShortcutsModal } from '@/components/ShortcutsModal'
 import { CallProcedurePanel, type CallProcedureTarget } from '@/components/CallProcedurePanel'
 import { formatHotkey } from '@/utils/osUtils'
 import { getDbCapabilities } from '@/utils/dbCapabilities'
+import { databaseNamespaceLabel } from '@/utils/databaseNamespace'
+import type { OpenObjectDetailRequest } from '@/utils/openObjectDetail'
+import {
+  MAX_QUERY_TAB_TITLE_LENGTH,
+  normalizeQueryTabTitle,
+  resolveWorkbenchTabKey,
+} from './queryTabTitle'
 
 const { Sider, Content } = Layout
 const { Text } = Typography
@@ -415,6 +423,17 @@ export const WorkbenchPage: React.FC = () => {
 
   // --- Tab 右键菜单 ---
   const [tabCtxMenu, setTabCtxMenu] = useState<{ x: number; y: number; tabKey: string } | null>(null)
+  const [renamingQueryTab, setRenamingQueryTab] = useState<{ tabKey: string; value: string } | null>(null)
+  const renameQueryTabInputRef = useRef<InputRef>(null)
+  const renamingQueryTabKey = renamingQueryTab?.tabKey
+
+  useEffect(() => {
+    if (!renamingQueryTabKey) return undefined
+    const frame = window.requestAnimationFrame(() => {
+      renameQueryTabInputRef.current?.focus({ cursor: 'all' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [renamingQueryTabKey])
 
   // --- 树节点右键菜单 ---
   const [treeCtxMenu, setTreeCtxMenu] = useState<{ x: number; y: number; nodeKey: string } | null>(null)
@@ -438,10 +457,10 @@ export const WorkbenchPage: React.FC = () => {
 
 
   // --- SQL 文件导入弹窗状态 ---
-  const [importSqlModal, setImportSqlModal] = useState<{ connectionId: string; connectionName: string; database?: string } | null>(null)
-  const [exportModal, setExportModal] = useState<{ connectionId: string; connectionName: string, database: string } | null>(null)
-  const [backupModal, setBackupModal] = useState<{ connectionId: string; connectionName: string; database: string } | null>(null)
-  const [restoreModal, setRestoreModal] = useState<{ connectionId: string; connectionName: string; database: string } | null>(null)
+  const [importSqlModal, setImportSqlModal] = useState<{ connectionId: string; connectionName: string; database?: string; dbType: ConnectionConfig['dbType'] } | null>(null)
+  const [exportModal, setExportModal] = useState<{ connectionId: string; connectionName: string; database: string; dbType: ConnectionConfig['dbType'] } | null>(null)
+  const [backupModal, setBackupModal] = useState<{ connectionId: string; connectionName: string; database: string; dbType: ConnectionConfig['dbType'] } | null>(null)
+  const [restoreModal, setRestoreModal] = useState<{ connectionId: string; connectionName: string; database: string; dbType: ConnectionConfig['dbType'] } | null>(null)
   const [renameTableTarget, setRenameTableTarget] = useState<{ connectionId: string; database: string; tableName: string } | null>(null)
   const [renameTableInput, setRenameTableInput] = useState('')
   const [renamingTable, setRenamingTable] = useState(false)
@@ -839,14 +858,50 @@ export const WorkbenchPage: React.FC = () => {
   }, [openTableTabs, batchUpdate, loadTabDataForTab])
 
   const handleOpenObjectDetailFromQuery = useCallback((request: OpenObjectDetailRequest) => {
-    const state = useWorkbenchStore.getState()
-    const tabKey = state.activeTableTabKey
-    const tab = tabKey ? state.openTableTabs[tabKey] : null
-    if (!tab || tab.type !== 'sql-query') return
+    const connection = connections.find((item) => item.id === request.connectionId)
+    if (!connection) {
+      toast.warning('无法识别对象所属连接，请重新选择连接后再试')
+      return
+    }
+
+    if (!openConnections.some((item) => item.id === connection.id)) {
+      addOpenConnection(connection.id, connection.name, connection.dbType)
+    }
 
     const defaultTab = (request.objectType === 'table' || request.objectType === 'view') ? 'data' : 'ddl'
-    openOrActivateTab(tab.connectionId, tab.connectionName, request.database, request.name, defaultTab, request.objectType)
-  }, [openOrActivateTab])
+    openOrActivateTab(connection.id, connection.name, request.database, request.name, defaultTab, request.objectType)
+  }, [addOpenConnection, connections, openConnections, openOrActivateTab])
+
+  const handleQueryContextChange = useCallback((context: {
+    queryId: string
+    connectionId?: string
+    database?: string
+  }) => {
+    const tabKey = `sql:${context.queryId}`
+    setOpenTableTabs((current) => {
+      const tab = current[tabKey]
+      if (!tab || tab.type !== 'sql-query') return current
+      const connection = context.connectionId
+        ? connections.find((item) => item.id === context.connectionId)
+        : undefined
+      const connectionId = context.connectionId ?? tab.connectionId
+      const connectionName = connection?.name ?? tab.connectionName
+      if (
+        tab.connectionId === connectionId &&
+        tab.connectionName === connectionName &&
+        tab.database === context.database
+      ) return current
+      return {
+        ...current,
+        [tabKey]: {
+          ...tab,
+          connectionId,
+          connectionName,
+          database: context.database,
+        },
+      }
+    })
+  }, [connections, setOpenTableTabs])
 
   // 打开或激活数据库概览 Tab
   const openOrActivateDbOverview = useCallback((connId: string, connName: string, dbName: string) => {
@@ -906,6 +961,7 @@ export const WorkbenchPage: React.FC = () => {
 
   // 关闭一个表 Tab
   const closeTableTab = useCallback((tabKey: string) => {
+    setRenamingQueryTab((current) => current?.tabKey === tabKey ? null : current)
     removePaneKeys([tabKey])
     setOpenTableTabs(prev => {
       const next = { ...prev }
@@ -918,6 +974,54 @@ export const WorkbenchPage: React.FC = () => {
       return next
     })
   }, [activeTableTabKey, removePaneKeys, setOpenTableTabs, setActiveTableTabKey])
+
+  const beginRenameQueryTab = useCallback((tabKey: string) => {
+    const tab = openTableTabs[tabKey]
+    if (tab?.type !== 'sql-query') return
+    setTabCtxMenu(null)
+    setActiveTableTabKey(tabKey)
+    setRenamingQueryTab({ tabKey, value: tab.label || '查询' })
+  }, [openTableTabs, setActiveTableTabKey])
+
+  const handleTabBarContextMenu = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault()
+    const tabKey = resolveWorkbenchTabKey(event.target)
+    if (!tabKey || !openTableTabs[tabKey]) return
+    event.stopPropagation()
+    setTabCtxMenu({ x: event.clientX, y: event.clientY, tabKey })
+  }, [openTableTabs])
+
+  const handleTabBarDoubleClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    const target = event.target
+    if (target instanceof Element && target.closest('.ant-tabs-tab-remove, input, textarea')) return
+
+    const tabKey = resolveWorkbenchTabKey(target)
+    if (!tabKey || openTableTabs[tabKey]?.type !== 'sql-query') return
+    event.preventDefault()
+    event.stopPropagation()
+    beginRenameQueryTab(tabKey)
+  }, [beginRenameQueryTab, openTableTabs])
+
+  const finishRenameQueryTab = useCallback((tabKey: string, value: string) => {
+    const title = normalizeQueryTabTitle(value)
+    if (title) {
+      const target = useWorkbenchStore.getState().openTableTabs[tabKey]
+      if (target?.type === 'sql-query') {
+        setOpenTableTabs((current) => ({
+          ...current,
+          [tabKey]: { ...target, label: title },
+        }))
+        useSqlEditorStore.getState().updateTab(target.queryId, { title })
+      }
+    }
+    setRenamingQueryTab(null)
+  }, [setOpenTableTabs])
+
+  useEffect(() => {
+    if (renamingQueryTab && !openTableTabs[renamingQueryTab.tabKey]) {
+      setRenamingQueryTab(null)
+    }
+  }, [openTableTabs, renamingQueryTab])
 
   // --- 添加连接到工作台 ---
   const [connectingId, setConnectingId] = useState<string | null>(null)
@@ -1383,7 +1487,9 @@ export const WorkbenchPage: React.FC = () => {
       const connId = parts[0]
       const dbName = parts.slice(1).join(':')
       const conn = openConnections.find((c) => c.id === connId)
-      const cap = getDbCapabilities(conn?.dbType ?? null)
+      const dbType = conn?.dbType ?? 'mysql'
+      const cap = getDbCapabilities(dbType)
+      const namespaceLabel = databaseNamespaceLabel(dbType)
       const items: MenuProps['items'] = [
         {
           key: 'refresh-db',
@@ -1405,24 +1511,24 @@ export const WorkbenchPage: React.FC = () => {
         items.push({
           key: 'backup-db',
           icon: <DatabaseOutlined />,
-          label: '备份数据库...',
-          onClick: () => setBackupModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName }),
+          label: `备份${namespaceLabel}...`,
+          onClick: () => setBackupModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName, dbType }),
         })
       }
       if (cap.workbench.restore) {
         items.push({
           key: 'restore-db',
           icon: <ReloadOutlined />,
-          label: '恢复数据库...',
-          onClick: () => setRestoreModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName }),
+          label: `恢复${namespaceLabel}...`,
+          onClick: () => setRestoreModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName, dbType }),
         })
       }
       if (cap.workbench.exportData) {
         items.push({
           key: 'export-db',
           icon: <ExportOutlined />,
-          label: '导出数据库...',
-          onClick: () => setExportModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName }),
+          label: `导出${namespaceLabel}...`,
+          onClick: () => setExportModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName, dbType }),
         })
       }
       if (cap.workbench.importSql) {
@@ -1430,7 +1536,7 @@ export const WorkbenchPage: React.FC = () => {
           key: 'import-sql',
           icon: <UploadOutlined />,
           label: '执行 SQL 文件',
-          onClick: () => setImportSqlModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName }),
+          onClick: () => setImportSqlModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName, dbType }),
         })
       }
       if (cap.metadata.schemaManagement) {
@@ -1439,25 +1545,25 @@ export const WorkbenchPage: React.FC = () => {
           {
             key: 'drop-db',
             icon: <DeleteOutlined />,
-            label: '删除数据库',
+            label: `删除${namespaceLabel}`,
             danger: true,
             onClick: () => {
               Modal.confirm({
-                title: `确认删除数据库「${dbName}」？`,
-                content: '此操作不可恢复，数据库中的所有数据将被永久删除。',
+                title: `确认删除${namespaceLabel}「${dbName}」？`,
+                content: `此操作不可恢复，${namespaceLabel} 中的所有数据将被永久删除。`,
                 okText: '删除',
                 okType: 'danger',
                 cancelText: '取消',
                 onOk: async () => {
                   try {
                     await metadataApi.dropDatabase(connId, dbName)
-                    toast.success(`数据库「${dbName}」已删除`)
+                    toast.success(`${namespaceLabel}「${dbName}」已删除`)
                     loadDatabases(connId)
                     if (selectedCtx?.connectionId === connId && selectedCtx?.database === dbName) {
                       setSelectedCtx({ connectionId: connId })
                     }
                   } catch (e) {
-                    handleApiError(e, '删除数据库失败')
+                    handleApiError(e, `删除${namespaceLabel}失败`)
                   }
                 },
               })
@@ -1975,6 +2081,8 @@ export const WorkbenchPage: React.FC = () => {
                     type="editable-card"
                     size="small"
                     hideAdd
+                    onContextMenu={handleTabBarContextMenu}
+                    onDoubleClick={handleTabBarDoubleClick}
                     activeKey={activeTableTabKey ?? undefined}
                     onChange={(key) => {
                       const tab = openTableTabs[key]
@@ -2041,16 +2149,41 @@ export const WorkbenchPage: React.FC = () => {
                         : tab.type === 'sql-query'
                           ? `SQL 查询`
                           : tab.database
+                      const isRenaming = tab.type === 'sql-query' && renamingQueryTab?.tabKey === key
                       return {
                         key,
-                        label: (
+                        label: isRenaming ? (
                           <span
-                            title={tabTitle}
-                            onContextMenu={(e) => {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              setTabCtxMenu({ x: e.clientX, y: e.clientY, tabKey: key })
-                            }}
+                            style={{ display: 'inline-flex', alignItems: 'center' }}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            {tabIcon}
+                            <Input
+                              ref={renameQueryTabInputRef}
+                              aria-label="查询页签名称"
+                              size="small"
+                              value={renamingQueryTab.value}
+                              maxLength={MAX_QUERY_TAB_TITLE_LENGTH}
+                              onChange={(event) => setRenamingQueryTab({ tabKey: key, value: event.target.value })}
+                              onBlur={() => finishRenameQueryTab(key, renamingQueryTab.value)}
+                              onKeyDown={(event) => {
+                                event.stopPropagation()
+                                if (event.key === 'Enter') {
+                                  event.preventDefault()
+                                  finishRenameQueryTab(key, renamingQueryTab.value)
+                                } else if (event.key === 'Escape') {
+                                  event.preventDefault()
+                                  setRenamingQueryTab(null)
+                                }
+                              }}
+                              style={{ width: 168, height: 24 }}
+                            />
+                          </span>
+                        ) : (
+                          <span
+                            title={tab.type === 'sql-query' ? `${tabLabel}（双击重命名）` : tabTitle}
+                            style={tab.type === 'sql-query' ? { userSelect: 'none' } : undefined}
                           >
                             {tabIcon}{tabLabel}
                           </span>
@@ -2078,6 +2211,9 @@ export const WorkbenchPage: React.FC = () => {
                         padding: '6px 0', minWidth: 140,
                       }}>
                         {[
+                          ...(openTableTabs[tabCtxMenu.tabKey]?.type === 'sql-query'
+                            ? [{ label: '重命名', onClick: () => beginRenameQueryTab(tabCtxMenu.tabKey) }]
+                            : []),
                           { label: '关闭', onClick: () => closeTableTab(tabCtxMenu.tabKey) },
                           { label: '关闭其他', onClick: () => {
                             removePaneKeys(tabKeys.filter((key) => key !== tabCtxMenu.tabKey))
@@ -2347,7 +2483,26 @@ export const WorkbenchPage: React.FC = () => {
                                 editTableName={t.tableName}
                                 lightweightStructureLoad={openConnections.find(c => c.id === t.connectionId)?.dbType === 'dameng'}
                                 dbType={openConnections.find(c => c.id === t.connectionId)?.dbType}
-                                onSuccess={() => {
+                                onSuccess={(result: TableDesignerSaveResult) => {
+                                  if (result.renamed && result.previousTableName) {
+                                    const renamedTab = applyRenamedTableState(
+                                      t.connectionId,
+                                      t.database,
+                                      result.previousTableName,
+                                      result.tableName,
+                                    )
+                                    loadTables(t.connectionId, t.database)
+                                    if (renamedTab.tabKey && renamedTab.detailTab) {
+                                      loadTabDataForTab(
+                                        renamedTab.tabKey,
+                                        t.connectionId,
+                                        t.database,
+                                        result.tableName,
+                                        renamedTab.detailTab,
+                                      )
+                                    }
+                                    return
+                                  }
                                   updateTabState(tabKey, (prev) => ({
                                     loadedTabs: prev.loadedTabs.filter(k => k !== 'columns'),
                                   }))
@@ -2544,6 +2699,7 @@ export const WorkbenchPage: React.FC = () => {
                       queryId={activeTab.queryId}
                       active={isActivePane}
                       onOpenObjectDetail={handleOpenObjectDetailFromQuery}
+                      onContextChange={handleQueryContextChange}
                     />
                   </div>
                 )
@@ -2560,7 +2716,15 @@ export const WorkbenchPage: React.FC = () => {
                       editTableName={activeTab.tableName}
                       lightweightStructureLoad={openConnections.find(c => c.id === activeTab.connectionId)?.dbType === 'dameng'}
                       dbType={openConnections.find(c => c.id === activeTab.connectionId)?.dbType}
-                      onSuccess={() => {
+                      onSuccess={(result: TableDesignerSaveResult) => {
+                        if (result.renamed && result.previousTableName) {
+                          applyRenamedTableState(
+                            activeTab.connectionId,
+                            activeTab.database,
+                            result.previousTableName,
+                            result.tableName,
+                          )
+                        }
                         loadTables(activeTab.connectionId, activeTab.database)
                         closeTableTab(tabKey)
                       }}
@@ -2657,6 +2821,7 @@ export const WorkbenchPage: React.FC = () => {
           connectionId={importSqlModal.connectionId}
           connectionName={importSqlModal.connectionName}
           database={importSqlModal.database}
+          dbType={importSqlModal.dbType}
           databases={(databasesMap[importSqlModal.connectionId] || []).map(d => d.name)}
           onClose={() => setImportSqlModal(null)}
         />
@@ -2674,6 +2839,7 @@ export const WorkbenchPage: React.FC = () => {
           connectionId={backupModal.connectionId}
           connectionName={backupModal.connectionName}
           database={backupModal.database}
+          dbType={backupModal.dbType}
         />
       )}
 
@@ -2684,6 +2850,7 @@ export const WorkbenchPage: React.FC = () => {
           targetConnectionId={restoreModal.connectionId}
           targetConnectionName={restoreModal.connectionName}
           defaultTargetDatabase={restoreModal.database}
+          dbType={restoreModal.dbType}
         />
       )}
 

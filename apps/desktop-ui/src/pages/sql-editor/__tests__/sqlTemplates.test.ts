@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { DbType } from '@/types'
+import type { editor } from 'monaco-editor'
 import {
   BUILTIN_SQL_TEMPLATES,
   getSqlTemplates,
+  insertSqlTemplate,
   isSqlTemplateAvailable,
   type SqlTemplate,
 } from '../sqlTemplates'
@@ -51,5 +53,32 @@ describe('SQL templates', () => {
       expect(template.body).toContain('${1:')
       expect(template.body).toContain('$0')
     }
+  })
+
+  it('inserts a selected template through Monaco snippet mode', () => {
+    const insert = vi.fn()
+    const focus = vi.fn()
+    const editorInstance = {
+      focus,
+      getContribution: vi.fn().mockReturnValue({ insert }),
+    } as unknown as editor.IStandaloneCodeEditor
+
+    expect(insertSqlTemplate(editorInstance, BUILTIN_SQL_TEMPLATES[0])).toBe(true)
+    expect(editorInstance.getContribution).toHaveBeenCalledWith('snippetController2')
+    expect(focus).toHaveBeenCalledOnce()
+    expect(insert).toHaveBeenCalledWith(BUILTIN_SQL_TEMPLATES[0].body, {
+      undoStopBefore: true,
+      undoStopAfter: true,
+    })
+  })
+
+  it('does not alter the editor when Monaco snippet mode is unavailable', () => {
+    const editorInstance = {
+      focus: vi.fn(),
+      getContribution: vi.fn().mockReturnValue(null),
+    } as unknown as editor.IStandaloneCodeEditor
+
+    expect(insertSqlTemplate(editorInstance, BUILTIN_SQL_TEMPLATES[0])).toBe(false)
+    expect(editorInstance.focus).not.toHaveBeenCalled()
   })
 })

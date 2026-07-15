@@ -42,6 +42,14 @@ fun Route.backupRoutes() {
             ?: return@post call.fail("NOT_CONNECTED", "连接未激活，请先打开连接")
 
         val dbAdapter = adapterRegistry.get(session.config.dbType)
+        if (!dbAdapter.capabilities().supportsLogicalBackup) {
+            return@post call.fail("UNSUPPORTED_DB_FEATURE", "${dbAdapter.dbType().displayName} 暂不支持逻辑备份")
+        }
+        try {
+            BackupPolicy.validateOrThrow(config, dbAdapter)
+        } catch (error: IllegalArgumentException) {
+            return@post call.fail("INVALID_BACKUP_REQUEST", error.message ?: "备份请求无效")
+        }
         val metadataAdapter = dbAdapter.metadataAdapter()
 
         // 在 IO 线程执行阻塞 JDBC 查询，并设置 15s 超时防止无限阻塞
@@ -75,6 +83,14 @@ fun Route.backupRoutes() {
             ?: return@post call.fail("NOT_FOUND", "连接配置不存在")
 
         val dbAdapter = adapterRegistry.get(connConfig.dbType)
+        if (!dbAdapter.capabilities().supportsLogicalBackup) {
+            return@post call.fail("UNSUPPORTED_DB_FEATURE", "${dbAdapter.dbType().displayName} 暂不支持逻辑备份")
+        }
+        try {
+            BackupPolicy.validateOrThrow(config, dbAdapter)
+        } catch (error: IllegalArgumentException) {
+            return@post call.fail("INVALID_BACKUP_REQUEST", error.message ?: "备份请求无效")
+        }
 
         val taskName = "Backup ${config.database}"
         val taskInfo = ServiceRegistry.taskManager.createTask(taskName, "backup")

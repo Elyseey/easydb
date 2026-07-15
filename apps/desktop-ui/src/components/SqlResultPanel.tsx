@@ -74,6 +74,7 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
   const tableWrapperRef = useRef<HTMLDivElement | null>(null)
   const tableBodyRef = useRef<HTMLDivElement | null>(null)
   const scrollTopRef = useRef(0)
+  const virtualRefreshFrameRef = useRef<number | null>(null)
   const autoLoadLockRef = useRef(false)
   const isLoadingMore = currentLoadKey === loadMoreKey
   const resultRows = useMemo(() => result.rows ?? [], [result.rows])
@@ -148,6 +149,19 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
     scrollBody.scrollTop = scrollTopRef.current
     scrollBody.dispatchEvent(new Event('scroll'))
   }, [])
+
+  const scheduleVirtualRefresh = useCallback(() => {
+    if (virtualRefreshFrameRef.current !== null) {
+      window.cancelAnimationFrame(virtualRefreshFrameRef.current)
+    }
+    virtualRefreshFrameRef.current = window.requestAnimationFrame(() => {
+      updateMeasuredTableHeight()
+      virtualRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        virtualRefreshFrameRef.current = null
+        forceVirtualRefresh()
+      })
+    })
+  }, [forceVirtualRefresh, updateMeasuredTableHeight])
 
   const beginColumnResize = useCallback((column: string, event: React.MouseEvent) => {
     startDeferredColumnResize({
@@ -265,22 +279,24 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
     const wrapperEl = tableWrapperRef.current
     if (!wrapperEl) return undefined
 
-    updateMeasuredTableHeight()
-    requestAnimationFrame(updateMeasuredTableHeight)
+    scheduleVirtualRefresh()
 
-    const observer = new ResizeObserver(updateMeasuredTableHeight)
+    const observer = new ResizeObserver(scheduleVirtualRefresh)
     observer.observe(wrapperEl)
     if (toolbarRef.current) observer.observe(toolbarRef.current)
-    return () => observer.disconnect()
-  }, [result.hasMore, result.rows?.length, tableHeight, updateMeasuredTableHeight])
+    return () => {
+      observer.disconnect()
+      if (virtualRefreshFrameRef.current !== null) {
+        window.cancelAnimationFrame(virtualRefreshFrameRef.current)
+        virtualRefreshFrameRef.current = null
+      }
+    }
+  }, [result.hasMore, result.rows?.length, scheduleVirtualRefresh, tableHeight])
 
   useEffect(() => {
     if (!active) return
-    requestAnimationFrame(() => {
-      updateMeasuredTableHeight()
-      requestAnimationFrame(forceVirtualRefresh)
-    })
-  }, [active, forceVirtualRefresh, updateMeasuredTableHeight])
+    scheduleVirtualRefresh()
+  }, [active, scheduleVirtualRefresh])
 
   useEffect(() => {
     autoLoadLockRef.current = false
@@ -298,6 +314,8 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
     tableBodyRef.current = nextTableBody
     if (!nextTableBody) return undefined
 
+    scheduleVirtualRefresh()
+
     const handleScroll = () => {
       scrollTopRef.current = nextTableBody.scrollTop
       maybeLoadMore()
@@ -312,7 +330,7 @@ const SqlResultPanelComponent: React.FC<SqlResultPanelProps> = ({
         tableBodyRef.current = null
       }
     }
-  }, [maybeLoadMore, result.rows?.length, tableScrollY])
+  }, [maybeLoadMore, result.rows?.length, scheduleVirtualRefresh, tableScrollY])
 
   const columns = useMemo(() => (
     orderedColumns.map((column) => ({

@@ -15,7 +15,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 import React, { useState, useCallback } from 'react'
-import { Typography, Space, Switch, Button, Modal, Radio, Tabs, List, theme, Avatar, Progress, Spin, App, Select, Alert } from 'antd'
+import { Typography, Space, Switch, Button, Modal, Radio, Tabs, List, theme, Avatar, Progress, Spin, App, Select, Alert, Tag } from 'antd'
 import {
   SettingOutlined, InfoCircleOutlined, SyncOutlined, CheckCircleOutlined,
   CloudDownloadOutlined, BulbOutlined, DesktopOutlined, SafetyCertificateOutlined,
@@ -31,6 +31,7 @@ import {
 import { useThemeStore, type ThemeMode } from '@/stores/themeStore'
 import { useAppSettingsStore } from '@/stores/appSettingsStore'
 import { storageApi, backupApi } from '@/services/api'
+import { BUILTIN_SQL_TEMPLATES } from '@/pages/sql-editor/sqlTemplates'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -302,7 +303,24 @@ export const SettingsPage: React.FC = () => {
               <List.Item.Meta
                 avatar={<Avatar size="large" icon={<FileTextOutlined />} style={{ backgroundColor: token.colorPrimaryBg, color: token.colorPrimary }} />}
                 title={<Text strong>常用 SQL 模板</Text>}
-                description="输入 sel、selw、ins、upd 等缩写并按 Tab，快速展开带占位符的 SQL 语句"
+                description={(
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Text type="secondary">
+                      默认开启。可从 SQL 编辑器的「SQL 工具」中直接插入，也可输入缩写并选择补全建议；展开后按 Tab 切换占位符。
+                    </Text>
+                    <div aria-label="内置 SQL 模板列表" style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {BUILTIN_SQL_TEMPLATES.map((template) => (
+                        <Tag key={template.id} color={template.risk === 'write' ? 'warning' : undefined} style={{ marginInlineEnd: 0 }}>
+                          <span style={{ fontFamily: token.fontFamilyCode }}>{template.prefix}</span>
+                          {' · '}{template.label}
+                        </Tag>
+                      ))}
+                    </div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      条件更新和条件删除模板始终包含 WHERE 条件占位符；插入模板不会自动执行 SQL。
+                    </Text>
+                  </Space>
+                )}
               />
             </List.Item>
 

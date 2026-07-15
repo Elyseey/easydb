@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { supportsDatabaseTaskPair, supportsDatabaseTaskRole } from '../databaseTaskPairs'
 
 describe('database task pair capabilities', () => {
-  it('supports MySQL to MySQL and MySQL to Dameng migration only', () => {
+  it('supports all registered MySQL and Dameng migration pairs', () => {
     expect(supportsDatabaseTaskPair('migration', 'mysql', 'mysql')).toBe(true)
     expect(supportsDatabaseTaskPair('migration', 'mysql', 'dameng')).toBe(true)
-    expect(supportsDatabaseTaskPair('migration', 'dameng', 'mysql')).toBe(false)
-    expect(supportsDatabaseTaskRole('migration', 'dameng', 'source')).toBe(false)
+    expect(supportsDatabaseTaskPair('migration', 'dameng', 'mysql')).toBe(true)
+    expect(supportsDatabaseTaskPair('migration', 'dameng', 'dameng')).toBe(true)
+    expect(supportsDatabaseTaskRole('migration', 'dameng', 'source')).toBe(true)
     expect(supportsDatabaseTaskRole('migration', 'dameng', 'target')).toBe(true)
   })
 

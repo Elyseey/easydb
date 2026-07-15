@@ -103,7 +103,27 @@ data class DatabaseCapabilities(
     val supportsAlterDatabaseCharset: Boolean = false,
     val supportsViews: Boolean = true,
     val supportsStoredProcedures: Boolean = false,
-    val supportsTriggers: Boolean = false
+    val supportsTriggers: Boolean = false,
+    val supportsLogicalExport: Boolean = false,
+    val supportsSqlFileImport: Boolean = false,
+    val supportsLogicalBackup: Boolean = false,
+    val supportsLogicalRestore: Boolean = false,
+    val supportsOverwriteRestore: Boolean = false
+)
+
+/**
+ * 数据库驱动为逻辑备份建立的读取上下文。
+ *
+ * [consistency] 只能是 snapshot 或 best_effort。驱动无法建立一致性快照时必须在
+ * [warnings] 中说明原因，调用方会把警告写入任务日志和 manifest。
+ */
+data class LogicalBackupContext(
+    val consistency: String,
+    val binlogFile: String? = null,
+    val binlogPosition: Long? = null,
+    val charset: String? = null,
+    val collation: String? = null,
+    val warnings: List<String> = emptyList()
 )
 
 // ─── 安全辅助 ───────────────────────────────────

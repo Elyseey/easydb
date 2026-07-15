@@ -16,7 +16,9 @@ object ServiceRegistry {
     val migrationAdapterRegistry = MigrationAdapterRegistry(
         listOf(
             RegisteredMigrationAdapter("mysql", "mysql", mysqlAdapter.migrationAdapter()),
-            RegisteredMigrationAdapter("mysql", "dameng", MysqlToDamengMigrationAdapter())
+            RegisteredMigrationAdapter("mysql", "dameng", MysqlToDamengMigrationAdapter()),
+            RegisteredMigrationAdapter("dameng", "mysql", DamengSourceMigrationAdapter.toMysql()),
+            RegisteredMigrationAdapter("dameng", "dameng", DamengSourceMigrationAdapter.toDameng())
         )
     )
     val connectionManager = ConnectionManager()

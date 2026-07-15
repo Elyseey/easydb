@@ -13,9 +13,24 @@ import { invoke } from '@tauri-apps/api/core'
 import { backupApi, restoreApi, taskApi } from '@/services/api'
 import { handleApiError, toast } from '@/utils/notification'
 import { formatDuration, getElapsedMs } from '@/utils/format'
+import type { DbType } from '@/types'
+import { databaseNamespaceLabel } from '@/utils/databaseNamespace'
+import {
+  isRestoreDatabaseTypeCompatible,
+  isManifestModeRestorable,
+  restoreModeOptions,
+  restoreStrategyOptions,
+  suggestedRestoreTarget,
+} from '@/utils/restorePolicy'
 
 function hasTauriInvoke(): boolean {
-  return typeof window !== 'undefined' && typeof (window as unknown as { __TAURI__?: unknown }).__TAURI__ === 'object'
+  if (typeof window === 'undefined') return false
+  const candidate = window as Window & {
+    __TAURI_INTERNALS__?: {
+      invoke?: unknown
+    }
+  }
+  return typeof candidate.__TAURI_INTERNALS__?.invoke === 'function'
 }
 
 const { Dragger } = Upload
@@ -42,6 +57,7 @@ interface RestoreDatabaseModalProps {
   targetConnectionId: string
   targetConnectionName: string
   defaultTargetDatabase?: string
+  dbType: DbType
 }
 
 interface BackupManifest {
@@ -117,10 +133,12 @@ const restoreTableColumns: TableColumnsType<RestoreTableItem> = [
 ]
 
 export default function RestoreDatabaseModal({
-  open, onClose, targetConnectionId, targetConnectionName, defaultTargetDatabase = ''
+  open, onClose, targetConnectionId, targetConnectionName, defaultTargetDatabase = '', dbType
 }: RestoreDatabaseModalProps) {
   const { token } = theme.useToken()
   const [form] = Form.useForm()
+  const namespaceLabel = databaseNamespaceLabel(dbType)
+  const isDameng = dbType === 'dameng'
 
   const [step, setStep] = useState(0)            // 0:选文件 1:预检 2:配置 3:执行 4:结果
   const [filePath, setFilePath] = useState('')
@@ -165,7 +183,6 @@ export default function RestoreDatabaseModal({
     if (open && step === 0) {
       loadBackupFiles()
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, step])
 
   const loadBackupFiles = async () => {
@@ -173,8 +190,7 @@ export default function RestoreDatabaseModal({
     try {
       const files = await backupApi.list() as BackupFileInfo[]
       setBackupFiles(files || [])
-    } catch (e) {
-      console.warn('加载备份文件列表失败', e)
+    } catch {
       setBackupFiles([])
     } finally {
       setBackupFilesLoading(false)
@@ -208,8 +224,9 @@ export default function RestoreDatabaseModal({
       }))
       setTables(tableItems)
       setSelectedKeys(tableItems.map(t => t.key))
-      // 优先使用用户选择的默认库，否则用备份源库
-      form.setFieldValue('targetDatabase', defaultTargetDatabase?.trim() || result.manifest.database)
+      // 达梦仅允许恢复到全新 Schema，避免默认填入右键选中的现有 Schema。
+      const targetName = suggestedRestoreTarget(result.manifest.database, dbType, defaultTargetDatabase)
+      form.setFieldsValue({ targetDatabase: targetName, strategy: 'restore_to_new' })
       setStep(1)
     } catch (e) {
       handleApiError(e, '文件预检失败')
@@ -224,10 +241,22 @@ export default function RestoreDatabaseModal({
     try {
       const values = await form.validateFields()
       if (!values.targetDatabase?.trim()) {
-        toast.warning('请输入目标数据库名')
+        toast.warning(`请输入目标${namespaceLabel}名`)
         return
       }
-      if (selectedKeys.length === 0) {
+      if (!inspectResult.fileValid || !inspectResult.checksumValid) {
+        toast.error('备份包完整性校验未通过，不能执行恢复')
+        return
+      }
+      if (!isRestoreDatabaseTypeCompatible(inspectResult.manifest.dbType, dbType)) {
+        toast.error(`备份包类型为 ${inspectResult.manifest.dbType}，不能恢复到 ${dbType} 连接`)
+        return
+      }
+      if (!isManifestModeRestorable(inspectResult.manifest.mode, dbType)) {
+        toast.error('仅数据备份无法恢复到全新的达梦 Schema')
+        return
+      }
+      if (tables.length > 0 && selectedKeys.length === 0) {
         toast.warning('请至少选择一张表进行恢复')
         return
       }
@@ -322,7 +351,6 @@ export default function RestoreDatabaseModal({
         setFilePath(result)
       }
     } catch (e) {
-      console.error('选择备份文件失败:', e)
       toast.error('选择备份文件失败: ' + (e as Error).message)
     }
   }
@@ -330,6 +358,10 @@ export default function RestoreDatabaseModal({
   const manifest = inspectResult?.manifest
   const checksumOk = inspectResult?.checksumValid ?? false
   const fileValid = inspectResult?.fileValid ?? false
+  const dbTypeMatches = manifest ? isRestoreDatabaseTypeCompatible(manifest.dbType, dbType) : false
+  const manifestModeRestorable = manifest ? isManifestModeRestorable(manifest.mode, dbType) : false
+  const hasRequiredTableSelection = tables.length === 0 || selectedKeys.length > 0
+  const canRestore = fileValid && checksumOk && dbTypeMatches && manifestModeRestorable && hasRequiredTableSelection
 
   const stepItems = [
     { title: '选择文件', icon: <InboxOutlined /> },
@@ -344,7 +376,7 @@ export default function RestoreDatabaseModal({
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Space>
             <DatabaseOutlined style={{ color: token.colorWarning }} />
-            <Text strong>恢复数据库</Text>
+            <Text strong>恢复{namespaceLabel}</Text>
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>目标连接：{targetConnectionName}</Text>
         </div>
@@ -366,11 +398,10 @@ export default function RestoreDatabaseModal({
             <Button onClick={() => { setStep(0); setInspectResult(null); setTables([]); setSelectedKeys([]) }}>
               重新选择文件
             </Button>
-            <Button type="primary" danger={!checksumOk || !fileValid}
+            <Button type="primary"
               onClick={handleStart} loading={loading}
-              disabled={!fileValid || selectedKeys.length === 0}>
-              {!checksumOk ? '⚠️ 忽略警告并恢复'
-                : tables.length === selectedKeys.length ? '开始恢复'
+              disabled={!canRestore}>
+              {tables.length === selectedKeys.length ? '开始恢复'
                 : `恢复 ${selectedKeys.length} 张表`}
             </Button>
           </Space>
@@ -390,7 +421,9 @@ export default function RestoreDatabaseModal({
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="从标准备份包恢复数据库内容。恢复将写入目标数据库，可能覆盖现有内容，请确认后执行。"
+          message={isDameng
+            ? '从标准备份包恢复到全新 Schema。目标 Schema 必须不存在，达梦不支持覆盖恢复。'
+            : '从标准备份包恢复数据库内容。覆盖恢复会删除已有内容，请确认后执行。'}
         />
 
         <Steps size="small" current={step} style={{ marginBottom: 24, padding: '0 20px' }}
@@ -485,7 +518,10 @@ export default function RestoreDatabaseModal({
             {/* Integrity status */}
             <Space style={{ marginBottom: 16 }}>
               <Tag color={fileValid ? 'success' : 'error'}>{fileValid ? '✓ 文件结构完整' : '✗ 文件损坏'}</Tag>
-              <Tag color={checksumOk ? 'success' : 'warning'}>{checksumOk ? '✓ SHA-256 校验通过' : '⚠ 校验失败（可能被篡改）'}</Tag>
+              <Tag color={checksumOk ? 'success' : 'error'}>{checksumOk ? '✓ SHA-256 校验通过' : '✗ 校验失败，禁止恢复'}</Tag>
+              <Tag color={dbTypeMatches ? 'success' : 'error'}>
+                {dbTypeMatches ? '✓ 数据库类型匹配' : `✗ 备份类型 ${manifest.dbType} 与目标 ${dbType} 不匹配`}
+              </Tag>
               <Tag color={manifest.consistency === 'snapshot' ? 'processing' : 'default'}>
                 {manifest.consistency === 'snapshot' ? '✓ 一致性快照' : '⚠ 最佳努力一致性'}
               </Tag>
@@ -496,9 +532,29 @@ export default function RestoreDatabaseModal({
                 description={inspectResult.warnings.join('\n')} />
             )}
 
+            {!canRestore && (
+              <Alert
+                type="error"
+                showIcon
+                message="当前备份包不能恢复"
+                description={!fileValid
+                  ? '备份包结构不完整或格式不受支持。'
+                  : !checksumOk
+                    ? '备份包内容校验失败，可能已损坏或被修改。'
+                    : !dbTypeMatches
+                      ? '仅支持恢复到相同类型的数据库连接。'
+                      : !manifestModeRestorable
+                        ? '仅数据备份不含建表结构，无法恢复到必须为空的新达梦 Schema。'
+                      : '请至少选择一张表。'}
+                style={{ marginBottom: 16 }}
+              />
+            )}
+
             {/* Backup info */}
             <Descriptions size="small" bordered column={2} style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="源数据库">{manifest.database}</Descriptions.Item>
+              <Descriptions.Item label={`源${manifest.dbType.toLowerCase() === 'dameng' ? 'Schema' : '数据库'}`}>
+                {manifest.database}
+              </Descriptions.Item>
               <Descriptions.Item label="数据库类型">{manifest.dbType} {manifest.serverVersion}</Descriptions.Item>
               <Descriptions.Item label="备份模式">
                 <Tag>{manifest.mode === 'full' ? '完整备份' : manifest.mode === 'structure_only' ? '仅结构' : '仅数据'}</Tag>
@@ -520,7 +576,7 @@ export default function RestoreDatabaseModal({
                 style={{ marginBottom: 16 }}
               >
                 <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
-                  默认全选。留空等同于恢复全部表（推荐）。
+                  默认全选；可取消不需要恢复的表，至少保留一张。
                 </Text>
                 <Space style={{ marginBottom: 8 }}>
                   <Input.Search
@@ -560,28 +616,38 @@ export default function RestoreDatabaseModal({
 
             {/* Restore config form */}
             <Form form={form} layout="vertical" initialValues={{
-              targetDatabase: defaultTargetDatabase || manifest.database,
+              targetDatabase: suggestedRestoreTarget(manifest.database, dbType, defaultTargetDatabase),
               mode: 'restore_all',
               strategy: 'restore_to_new',
             }}>
-              <Form.Item name="targetDatabase" label="目标数据库名" rules={[{ required: true, message: '请输入目标数据库名' }]}>
-                <Input placeholder="将数据恢复到此数据库（不存在则自动创建）"
+              <Form.Item name="targetDatabase" label={`目标${namespaceLabel}名`} rules={[{ required: true, message: `请输入目标${namespaceLabel}名` }]}>
+                <Input placeholder={`将数据恢复到全新的${namespaceLabel}（目标必须不存在）`}
                   style={{ fontFamily: 'monospace' }} />
               </Form.Item>
 
               <Form.Item name="strategy" label="恢复策略">
-                <Select options={[
-                  { label: '恢复到新库（安全推荐）', value: 'restore_to_new' },
-                  { label: '覆盖已有库（先删除再创建）', value: 'overwrite_existing' },
-                ]} />
+                <Select
+                  options={restoreStrategyOptions(dbType)}
+                  onChange={(strategy: 'restore_to_new' | 'overwrite_existing') => {
+                    form.setFieldValue(
+                      'targetDatabase',
+                      suggestedRestoreTarget(manifest.database, dbType, defaultTargetDatabase, strategy),
+                    )
+                  }}
+                />
               </Form.Item>
 
+              {isDameng && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="安全限制：达梦只支持恢复到新 Schema，不会删除或覆盖已有 Schema。"
+                  style={{ marginBottom: 16 }}
+                />
+              )}
+
               <Form.Item name="mode" label="恢复内容">
-                <Select options={[
-                  { label: '完整恢复（结构 + 数据）', value: 'restore_all' },
-                  { label: '仅恢复结构', value: 'structure_only' },
-                  { label: '仅恢复数据', value: 'data_only' },
-                ]} />
+                <Select options={restoreModeOptions(dbType)} />
               </Form.Item>
             </Form>
           </div>
@@ -629,7 +695,7 @@ export default function RestoreDatabaseModal({
           <Result
             status="success"
             title="恢复完成"
-            subTitle="数据库已恢复完成。"
+            subTitle={`${namespaceLabel}已恢复完成。`}
             extra={[<Button key="close" type="primary" onClick={handleClose}>关闭</Button>]}
           />
         )}

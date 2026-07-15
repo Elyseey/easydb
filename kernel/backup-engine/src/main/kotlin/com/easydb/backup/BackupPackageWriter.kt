@@ -28,7 +28,7 @@ class BackupPackageWriter(private val workDir: File) {
     }
 
     fun writeString(relativePath: String, content: String) {
-        val file = File(workDir, relativePath)
+        val file = resolveSafeFile(relativePath)
         file.parentFile.mkdirs()
         file.writeText(content)
         checksums[relativePath] = computeSha256(file)
@@ -43,7 +43,7 @@ class BackupPackageWriter(private val workDir: File) {
     }
 
     fun createGzipDataWriter(relativePath: String): DataWriter {
-        val file = File(workDir, relativePath)
+        val file = resolveSafeFile(relativePath)
         file.parentFile.mkdirs()
         val fos = FileOutputStream(file)
         val gzipOut = GZIPOutputStream(fos)
@@ -78,6 +78,21 @@ class BackupPackageWriter(private val workDir: File) {
             }
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun resolveSafeFile(relativePath: String): File {
+        require(relativePath.isNotBlank()) { "Backup package path must not be blank" }
+        require(!relativePath.startsWith('/') && !relativePath.startsWith('\\')) {
+            "Backup package path must be relative"
+        }
+        require('\\' !in relativePath && relativePath.split('/').none { it == ".." || it.isBlank() }) {
+            "Unsafe backup package path: $relativePath"
+        }
+        val file = File(workDir, relativePath).canonicalFile
+        require(file.toPath().startsWith(workDir.canonicalFile.toPath())) {
+            "Backup package path escapes work directory"
+        }
+        return file
     }
 
     fun packToZip(outputZipFile: File) {

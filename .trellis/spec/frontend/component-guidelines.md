@@ -236,6 +236,141 @@ Required regression coverage:
 - Title normalization rejects whitespace-only names and enforces the length limit.
 - Context-menu target resolution returns the tab key for nested elements such as the close icon, not only the text label.
 
+## Table Designer Rename — Save Structure Against the Original Identity
+
+### 1. Scope / Trigger
+
+Apply this contract when an existing table's name can be edited in `TableDesigner` and saved together with column, index, primary-key, or comment changes.
+
+### 2. Signatures
+
+```ts
+interface TableDesignerSaveResult {
+  tableName: string
+  previousTableName?: string
+  renamed: boolean
+}
+
+metadataApi.renameTable(connectionId, database, oldName, newName)
+```
+
+### 3. Contracts
+
+- Keep the original catalog table name separately from the editable input value.
+- Generate and execute structural DDL against the original table name. Call the generic `renameTable` metadata API only after every structural statement succeeds.
+- A rename-only save executes no empty SQL batch and calls `renameTable` directly.
+- `onSuccess` fires only after the complete requested save succeeds and carries both names when `renamed` is true.
+- The workbench must pass the result through `applyRenamedTableState()` so the resource tree, table tab key/title, standalone designer state, selection, active table, and subsequent detail loads all use the new name.
+- MySQL and Dameng keep their rename syntax inside their metadata adapters. The frontend may show a dialect-specific preview but must not replace the generic mutation API with raw rename SQL.
+- DDL cannot be treated as an atomic transaction. If one or more structural statements succeeded before a later failure, show a partial-success warning and instruct the user to reopen the designer to confirm the real structure.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Trimmed table name is empty | Reject before SQL/API execution with `请输入表名` |
+| Name unchanged and no structural diff | Show `无变更`; execute nothing |
+| Name changed and no structural diff | Call only `renameTable(oldName, newName)` |
+| Structural diff and name changed | Execute all structural statements on `oldName`, then rename |
+| Structural statement fails before any success | Show the normal modification error; do not rename |
+| Structural statement fails after earlier successes | Show `部分修改已生效` with completed/total counts; do not rename |
+| Rename fails after structural success | State that structure changes are already applied and rename failed |
+
+### 5. Good / Base / Bad Cases
+
+- Good: edit `orders`, add a column, and rename to `orders_archive`; the column DDL targets `orders`, then the adapter renames it, and the active tab becomes `orders_archive`.
+- Base: edit only a column or comment without changing the name; existing table-design behavior remains unchanged.
+- Bad: generate `ALTER TABLE orders_archive ...` before `orders_archive` exists, or rename successfully while the workbench still queries the old tab identity.
+
+### 6. Tests Required
+
+- Rename-only component test: input is enabled, no structural SQL executes, and the callback returns old/new names.
+- MySQL ordering test: structural SQL uses the original backtick-quoted table and completes before `renameTable`.
+- Dameng ordering test: structural SQL uses the original double-quoted table and completes before `renameTable`.
+- Failure regression: partial structural success produces an explicit partial-success warning and never attempts rename.
+- Frontend type-check/build after changing the save-result callback contract.
+
+### 7. Wrong vs Correct
+
+```ts
+// ❌ Wrong: the editable value becomes the structural DDL target immediately.
+const alterSql = generateAlterSql(tableName)
+await metadataApi.renameTable(connectionId, database, oldName, tableName)
+
+// ✅ Correct: structural identity stays stable until the final rename step.
+const alterSql = generateAlterSql(originalTableName)
+for (const statement of splitStatements(alterSql)) {
+  await sqlApi.execute(connectionId, database, statement)
+}
+await metadataApi.renameTable(connectionId, database, originalTableName, tableName.trim())
+```
+
+## Query Object Detail Jump — Carry Connection Identity
+
+### 1. Scope / Trigger
+
+Apply this contract whenever a SQL query pane opens a table, view, procedure, function, or trigger in the workbench. A query pane can switch connections after its outer workbench tab was created, so the outer tab is not an authoritative source for the current connection.
+
+### 2. Signatures
+
+```ts
+type OpenObjectDetailRequest = {
+  connectionId: string
+  database: string
+  name: string
+  objectType: 'table' | 'view' | 'procedure' | 'function' | 'trigger'
+}
+
+type QueryContextChange = {
+  queryId: string
+  connectionId?: string
+  database?: string
+}
+```
+
+### 3. Contracts
+
+- `connectionId` must come from the same `EditorTab` used to load the object's metadata.
+- The object-detail callback must carry `connectionId`; the workbench must not infer it from the active outer tab.
+- When an inner query pane changes connection or database, synchronize the matching outer `SqlQueryTabState` by `queryId`.
+- If the target connection is not yet present in the workbench tree, add that existing connection before opening the object tab. Do not create or replace a database session solely for the jump.
+
+### 4. Validation & Error Matrix
+
+| Condition | Behavior |
+|---|---|
+| Request has no connection ID | Do not create a jump request |
+| Object type is not supported | Do not open a workbench object tab |
+| Connection ID is absent from the canonical connection store | Show a clear warning and stop |
+| Connection is valid but not loaded in the workbench | Add it to the workbench, then open the object |
+
+### 5. Good / Base / Bad Cases
+
+- Good: A query created on Dameng switches to MySQL, then opens `emission.users`; the object tab uses the current MySQL connection.
+- Base: A query never switches connections; object navigation behaves exactly as before.
+- Bad: MySQL `emission.users` is opened with the query tab's original Dameng connection and fails with an invalid Schema error.
+
+### 6. Tests Required
+
+- Unit test the request builder and assert it preserves `connectionId`, database, object name, and type.
+- Cover unsupported object types returning no request.
+- For component/E2E coverage, switch a query between two database types and assert the object-detail request uses the selected connection in both directions.
+
+### 7. Wrong vs Correct
+
+```ts
+// Wrong: outer workbench state can be stale after the query pane switches connections.
+openObject(outerTab.connectionId, request.database, request.name)
+
+// Correct: identity travels with the object request produced by the current EditorTab.
+onOpenObjectDetail({
+  connectionId: currentEditorTab.connectionId,
+  database,
+  name,
+  objectType,
+})
+```
+
 ---
 
 ## Workbench Tab Switching — Virtual Table Mount Cost

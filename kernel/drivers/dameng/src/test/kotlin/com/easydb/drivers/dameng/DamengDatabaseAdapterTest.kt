@@ -17,6 +17,11 @@ class DamengDatabaseAdapterTest {
 
         assertFalse(capabilities.supportsAlterDatabaseCharset)
         assertTrue(capabilities.supportsTransactions)
+        assertTrue(capabilities.supportsLogicalExport)
+        assertTrue(capabilities.supportsSqlFileImport)
+        assertTrue(capabilities.supportsLogicalBackup)
+        assertTrue(capabilities.supportsLogicalRestore)
+        assertFalse(capabilities.supportsOverwriteRestore)
     }
 
     @Test
@@ -28,6 +33,8 @@ class DamengDatabaseAdapterTest {
             "ALTER SESSION SET CURRENT_SCHEMA = \"BXJC-MES\"",
             dialect.buildSwitchDatabaseSql("BXJC-MES")
         )
+        assertEquals("'O''Reilly\\path'", dialect.formatExportStringLiteral("O'Reilly\\path"))
+        assertEquals("CREATE SCHEMA \"mixedCase\"", dialect.buildCreateNamespaceSql("mixedCase"))
     }
 
     @Test
@@ -108,5 +115,29 @@ class DamengDatabaseAdapterTest {
         assertTrue(statements[0].startsWith("CREATE TABLE \"USERS\""))
         assertEquals("COMMENT ON TABLE \"USERS\" IS '用户表'", statements[1])
         assertEquals("COMMENT ON COLUMN \"USERS\".\"ID\" IS '主键'", statements[2])
+    }
+
+    @Test
+    fun `splits table comments without splitting semicolons inside literals`() {
+        val statements = DamengRestoreDdl.statements(
+            """
+            CREATE TABLE "T" ("TEXT" VARCHAR2(40) DEFAULT 'a;b', "Q" VARCHAR2(40) DEFAULT q'[c;d]');
+            COMMENT ON TABLE "T" IS 'table;comment';
+            COMMENT ON COLUMN "T"."TEXT" IS 'column;comment';
+            """.trimIndent(),
+            "table"
+        )
+
+        assertEquals(3, statements.size)
+        assertTrue(statements[0].contains("'a;b'"))
+        assertTrue(statements[0].contains("q'[c;d]'"))
+        assertTrue(statements[1].contains("'table;comment'"))
+    }
+
+    @Test
+    fun `keeps routine blocks as one restore statement`() {
+        val ddl = "CREATE PROCEDURE \"P\" AS BEGIN INSERT INTO \"T\" VALUES (1); COMMIT; END;"
+
+        assertEquals(listOf(ddl), DamengRestoreDdl.statements(ddl, "procedure"))
     }
 }
