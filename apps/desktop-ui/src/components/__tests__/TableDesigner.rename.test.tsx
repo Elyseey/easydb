@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TableDesigner } from '../TableDesigner'
 
@@ -47,6 +47,20 @@ const tableDefinition = {
   }],
   indexes: [],
 }
+
+const damengColumnDefinition = (nullable: boolean) => ({
+  table: { name: 'orders', comment: '' },
+  columns: [{
+    name: 'corp_code',
+    type: 'VARCHAR2(50)',
+    nullable,
+    defaultValue: undefined,
+    isPrimaryKey: false,
+    isAutoIncrement: false,
+    comment: '',
+  }],
+  indexes: [],
+})
 
 const renderDesigner = (dbType: 'mysql' | 'dameng' = 'mysql') => {
   const onSuccess = vi.fn()
@@ -142,5 +156,45 @@ describe('TableDesigner table rename', () => {
       '部分修改已生效（1/2 条），请重新打开设计页确认实际结构',
     )
     expect(apiMocks.renameTable).not.toHaveBeenCalled()
+  })
+
+  it('explicitly drops the Dameng NOT NULL constraint when required is unchecked', async () => {
+    apiMocks.tableDesign.mockResolvedValue(damengColumnDefinition(false))
+    renderDesigner('dameng')
+
+    const columnInput = await screen.findByDisplayValue('corp_code')
+    const columnRow = columnInput.closest('tr')
+    expect(columnRow).not.toBeNull()
+    fireEvent.click(within(columnRow!).getAllByRole('checkbox')[0])
+    fireEvent.click(screen.getByRole('button', { name: /保存修改/ }))
+
+    await waitFor(() => {
+      expect(apiMocks.executeSql).toHaveBeenCalledWith(
+        'conn-1',
+        'ENERGY',
+        'ALTER TABLE "orders" ALTER COLUMN "corp_code" SET NULL;',
+      )
+    })
+    expect(apiMocks.executeSql).toHaveBeenCalledTimes(1)
+  })
+
+  it('explicitly adds the Dameng NOT NULL constraint when required is checked', async () => {
+    apiMocks.tableDesign.mockResolvedValue(damengColumnDefinition(true))
+    renderDesigner('dameng')
+
+    const columnInput = await screen.findByDisplayValue('corp_code')
+    const columnRow = columnInput.closest('tr')
+    expect(columnRow).not.toBeNull()
+    fireEvent.click(within(columnRow!).getAllByRole('checkbox')[0])
+    fireEvent.click(screen.getByRole('button', { name: /保存修改/ }))
+
+    await waitFor(() => {
+      expect(apiMocks.executeSql).toHaveBeenCalledWith(
+        'conn-1',
+        'ENERGY',
+        'ALTER TABLE "orders" ALTER COLUMN "corp_code" SET NOT NULL;',
+      )
+    })
+    expect(apiMocks.executeSql).toHaveBeenCalledTimes(1)
   })
 })

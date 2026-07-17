@@ -274,9 +274,9 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
   }
 
   // 构建列定义子句
-  const colDef = (col: ColumnRow) => {
+  const colDef = (col: ColumnRow, includeNullability = true) => {
     let def = `${qi(col.name)} ${normalizeTypeForDialect(col)}`
-    if (!col.nullable) def += ' NOT NULL'
+    if (includeNullability && !col.nullable) def += ' NOT NULL'
     def += defaultClause(col)
     if (col.isAutoIncrement) def += isDameng ? ' IDENTITY(1,1)' : ' AUTO_INCREMENT'
     if (!isDameng && col.comment) def += ` COMMENT '${escapeSqlString(col.comment)}'`
@@ -310,19 +310,24 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
       if (!col._original) continue
       const orig = originalColumnsRef.current.find(o => o._original === col._original)
       if (!orig) continue
-      const typeChanged = normalizeTypeForDialect(col) !== normalizeTypeForDialect(orig) ||
-        col.nullable !== orig.nullable || col.defaultValue !== orig.defaultValue ||
+      const definitionChanged = normalizeTypeForDialect(col) !== normalizeTypeForDialect(orig) ||
+        col.defaultValue !== orig.defaultValue ||
         col.isAutoIncrement !== orig.isAutoIncrement
+      const nullableChanged = col.nullable !== orig.nullable
+      const columnChanged = definitionChanged || nullableChanged
       const nameChanged = col.name !== orig.name
       const commentChanged = col.comment !== orig.comment
-      if (!isDameng && (nameChanged || typeChanged || commentChanged)) {
+      if (!isDameng && (nameChanged || columnChanged || commentChanged)) {
         stmts.push(`ALTER TABLE ${t} CHANGE COLUMN ${qi(orig.name)} ${colDef(col)};`)
       } else if (isDameng) {
         if (nameChanged) {
           stmts.push(`ALTER TABLE ${t} RENAME COLUMN ${qi(orig.name)} TO ${qi(col.name)};`)
         }
-        if (typeChanged) {
-          stmts.push(`ALTER TABLE ${t} MODIFY ${colDef(col)};`)
+        if (definitionChanged) {
+          stmts.push(`ALTER TABLE ${t} MODIFY ${colDef(col, false)};`)
+        }
+        if (nullableChanged) {
+          stmts.push(`ALTER TABLE ${t} ALTER COLUMN ${qi(col.name)} SET ${col.nullable ? 'NULL' : 'NOT NULL'};`)
         }
         if (commentChanged) {
           stmts.push(`COMMENT ON COLUMN ${damengColumnTarget(targetTableName, col.name)} IS '${escapeSqlString(col.comment)}';`)
