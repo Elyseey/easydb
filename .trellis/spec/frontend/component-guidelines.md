@@ -53,6 +53,23 @@ Correct global override pattern:
 
 For input flows, prefer a controlled `<Modal>` over `Modal.confirm` because confirm dialogs are optimized for short confirmation text, not form controls. For destructive confirmations, `Modal.confirm` is acceptable only if screenshots verify title, content, cancel button, and dangerous OK button are all visible in dark and light themes.
 
+### Modal Child Overlays — Preserve Ant Design's Contextual Layering
+
+Ant Design portal components calculate their popup layer relative to Modal and Drawer contexts.
+Global CSS must not force `.ant-select-dropdown`, `.ant-dropdown`, `.ant-cascader-dropdown`,
+`.ant-popover`, `.ant-tooltip`, or `.ant-picker-dropdown` to a fixed `z-index`, especially with
+`!important`. A fixed menu layer can sit below the Modal mask, making a correctly opened Select
+look unresponsive.
+
+Keep global overrides limited to visual surface properties such as background, border, blur, and
+shadow. Let Ant Design own overlay stacking. Do not override `--ant-z-index-popup-base` inside
+`.ant-modal-root`; portaled dropdowns may not inherit that local variable.
+
+Required regression coverage:
+
+- Verify global overlay rules contain no fixed `z-index` override.
+- Manually open a Select inside a controlled Modal and confirm its options are visible and clickable.
+
 ---
 
 ## Ant Design Dropdown + Tooltip — Keep Overlays Mutually Exclusive
