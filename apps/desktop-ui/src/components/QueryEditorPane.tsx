@@ -26,6 +26,7 @@ import { SaveScriptModal } from '../pages/sql-editor/SaveScriptModal'
 import { SavedScriptsModal } from '../pages/sql-editor/SavedScriptsModal'
 import { SqlHistoryDrawer } from '../pages/sql-editor/SqlHistoryDrawer'
 import { useAppSettingsStore } from '@/stores/appSettingsStore'
+import { useThemeStore } from '@/stores/themeStore'
 import { formatHotkey } from '@/utils/osUtils'
 import {
   DEFAULT_SQL_PREVIEW_PAGE_SIZE,
@@ -150,6 +151,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({
   onContextChange,
 }) => {
   const { token } = theme.useToken()
+  const effectiveTheme = useThemeStore((s) => s.effectiveTheme)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null)
   const completionDisposableRef = useRef<{ dispose: () => void } | null>(null)
@@ -825,7 +827,7 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({
             key={`editor-${queryId}`}
             height="100%"
             language="sql"
-            theme="vs-dark"
+            theme={effectiveTheme === 'dark' ? 'vs-dark' : 'light'}
             path={editorModelPath}
             keepCurrentModel
             defaultValue={activeEditorTab.sql}

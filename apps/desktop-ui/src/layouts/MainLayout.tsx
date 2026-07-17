@@ -85,6 +85,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
   const themeMode = useThemeStore((s) => s.themeMode)
   const setThemeMode = useThemeStore((s) => s.setThemeMode)
+  const themeStyle = useThemeStore((s) => s.themeStyle)
+  const setThemeStyle = useThemeStore((s) => s.setThemeStyle)
   const registerCommand = useCommandStore((s) => s.registerCommand)
   const unregisterCommand = useCommandStore((s) => s.unregisterCommand)
 
@@ -115,6 +117,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     const defaultCommands = [
       ...navigationCommands,
       { id: 'theme-toggle', title: '切换 深色/浅色 主题', category: 'Preferences', icon: <BgColorsOutlined />, action: () => setThemeMode(themeMode === 'dark' ? 'light' : 'dark') },
+      { id: 'theme-style-toggle', title: '切换 简约专业/流光 风格', category: 'Preferences', icon: <BgColorsOutlined />, action: () => setThemeStyle(themeStyle === 'professional' ? 'glass' : 'professional') },
       { id: 'run-sql', title: '执行选中的 SQL (如果可用)', category: 'Editor', icon: <PlayCircleOutlined />, shortcut: ['Cmd', 'Enter'], action: () => {
           document.dispatchEvent(new CustomEvent('easydb-run-sql'))
       }}
@@ -125,7 +128,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     return () => {
       defaultCommands.forEach(c => unregisterCommand(c.id))
     }
-  }, [activeDbType, navigate, themeMode, setThemeMode, registerCommand, unregisterCommand])
+  }, [activeDbType, navigate, themeMode, themeStyle, setThemeMode, setThemeStyle, registerCommand, unregisterCommand])
 
   // 面包屑项
   const breadcrumbItems = [

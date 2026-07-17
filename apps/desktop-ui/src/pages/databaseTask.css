@@ -1,0 +1,69 @@
+.database-task-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+}
+
+.database-task-page__content {
+  flex: 1;
+  overflow: auto;
+  padding: 32px;
+}
+
+.database-task-page__topology {
+  position: relative;
+}
+
+.database-task-page .ant-card:hover {
+  background: var(--edb-bg-elevated) !important;
+  border-color: var(--edb-border-default) !important;
+  box-shadow: var(--edb-surface-shadow), var(--edb-inner-highlight) !important;
+  transform: none !important;
+}
+
+.database-task-endpoint-card {
+  height: 100%;
+}
+
+.database-task-endpoint-card--source,
+.database-task-endpoint-card--source:hover {
+  border-color: var(--edb-accent) !important;
+}
+
+.database-task-endpoint-card--target,
+.database-task-endpoint-card--target:hover {
+  border-color: var(--edb-success) !important;
+}
+
+.database-task-connector {
+  position: absolute;
+  left: 50%;
+  top: 60px;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  transform: translateX(-50%);
+  background: var(--edb-bg-elevated);
+  backdrop-filter: var(--edb-surface-filter-sm);
+  -webkit-backdrop-filter: var(--edb-surface-filter-sm);
+  border: 1px solid var(--edb-border-default);
+  border-radius: 50%;
+  box-shadow: var(--edb-surface-shadow), var(--edb-inner-highlight);
+}
+
+.database-task-object-card {
+  margin-top: 24px;
+}
+
+.database-task-page__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 32px;
+  background: var(--edb-bg-elevated);
+  backdrop-filter: var(--edb-surface-filter);
+  -webkit-backdrop-filter: var(--edb-surface-filter);
+  border-top: 1px solid var(--edb-border-default);
+}

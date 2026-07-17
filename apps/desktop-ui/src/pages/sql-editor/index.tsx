@@ -31,6 +31,7 @@ import { useConnectionStore } from '@/stores/connectionStore'
 import { useSqlEditorStore } from '@/stores/sqlEditorStore'
 import { sqlApi, connectionApi } from '@/services/api'
 import { useAppSettingsStore } from '@/stores/appSettingsStore'
+import { useThemeStore } from '@/stores/themeStore'
 import { EmptyState } from '@/components/EmptyState'
 import { SqlResultPanel } from '@/components/SqlResultPanel'
 import { handleApiError, toast } from '@/utils/notification'
@@ -70,6 +71,7 @@ const extractAllTableNames = (sql: string): string[] => {
 
 export const SqlEditorPage: React.FC = () => {
   const { token } = theme.useToken()
+  const effectiveTheme = useThemeStore((s) => s.effectiveTheme)
   const sqlHistoryEnabled          = useAppSettingsStore((s) => s.sqlHistoryEnabled)
   const sqlHistoryFilterByDatabase = useAppSettingsStore((s) => s.sqlHistoryFilterByDatabase)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
@@ -491,7 +493,7 @@ export const SqlEditorPage: React.FC = () => {
                 key={activeTabKey}
                 height="100%"
                 language="sql"
-                theme="vs-dark"
+                theme={effectiveTheme === 'dark' ? 'vs-dark' : 'light'}
                 defaultValue={activeEditorTab.sql}
                 onChange={(value) => updateTabSql(activeTabKey, value ?? '')}
                 onMount={handleEditorMount}

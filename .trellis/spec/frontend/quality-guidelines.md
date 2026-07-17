@@ -20,7 +20,7 @@ background: '#1e1e1e'
 color: '#d4d4d4'
 
 // 必须使用
-background: 'var(--glass-panel)'
+background: 'var(--edb-bg-surface)'
 color: 'inherit'                   // 或 token.colorText
 ```
 
@@ -62,7 +62,32 @@ requestAnimationFrame(() => {
 
 所有颜色/边框/背景必须来自：
 - `token.*`（Ant Design 主题变量）
-- `var(--glass-*)` CSS 变量（项目玻璃态设计系统）
+- `var(--edb-*)` CSS 语义变量（跨主题的文字、背景、边框、状态和浮层）
+- `var(--glass-*)` 仅用于流光主题特有的透明度、模糊和内发光效果
+
+### ✅ 多风格主题契约
+
+- `data-theme-style` 只允许 `professional | glass`，`data-theme` 只允许 `light | dark`。
+- 新安装默认 `professional + light`；存在旧 `easydb-theme` 且没有
+  `easydb-theme-style` 的用户迁移为 `glass + 原明暗模式`。
+- 通用组件不得直接写流光配色；必须依赖 `--edb-*` 或 Ant Design token。
+- 输入框必须显式覆盖文字、占位符、光标、hover、focus、error 和 disabled 状态。
+- 组合输入框必须使用 `:focus-within` 给外层显示焦点环，不能只依赖 Ant Design
+  运行时添加的 `*-focused` class。
+- 下拉菜单、Popover、Modal、Drawer、消息通知使用统一语义浮层背景与层级变量，
+  防止透明背景穿透或相互遮挡。
+
+```css
+/* ❌ 错误：通用组件绑定流光主题 */
+.search-box { background: var(--glass-panel); color: #fff; }
+
+/* ✅ 正确：四种风格/明暗组合共享语义变量 */
+.search-box { background: var(--edb-input-bg); color: var(--edb-text-primary); }
+.ant-input-affix-wrapper:focus-within {
+  border-color: var(--edb-accent);
+  box-shadow: 0 0 0 3px var(--edb-accent-muted);
+}
+```
 
 ### ✅ Workbench Tab Switching — 区分数据缓存和视图重建成本
 
@@ -112,7 +137,7 @@ requestAnimationFrame(() => {
 
 ### 涉及弹窗/Modal 的 PR
 
-- [ ] SQL 预览等代码块是否使用了 `var(--glass-panel)` 而非硬编码颜色？
+- [ ] SQL 预览等代码块是否使用了 `var(--edb-bg-surface)` 等语义变量而非硬编码颜色？
 - [ ] `Modal.confirm` / `modal.confirm` 是否在深色和浅色主题下都能看见标题、正文、取消按钮和确认按钮？
 - [ ] 全局 Modal 样式是否同时覆盖 `.ant-modal-content` 和 AntD v6 的 `.ant-modal-container`？
 - [ ] 含输入框的弹窗是否使用受控 `<Modal>`，而不是把表单塞进 `Modal.confirm`？

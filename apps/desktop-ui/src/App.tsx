@@ -30,10 +30,8 @@ import { DataTrackerPage } from '@/pages/data-tracker'
 import { SlowQueryPage } from '@/pages/slow-query'
 import { checkForUpdate, getAutoCheckEnabled } from '@/utils/updater'
 import { useThemeStore } from '@/stores/themeStore'
+import { getEasyDbThemeConfig } from '@/theme/themeConfig'
 import { configureFeedbackApis } from '@/utils/notification'
-
-const fontFamily = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-const fontFamilyCode = "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace"
 
 const AppContent: React.FC = () => {
   const { message, notification, modal } = AntApp.useApp()
@@ -54,7 +52,7 @@ const AppContent: React.FC = () => {
               <div>
                 <p>当前版本：v{info.currentVersion}</p>
                 {info.releaseNotes && (
-                  <p style={{ fontSize: 12, color: '#666', maxHeight: 120, overflow: 'auto' }}>
+                  <p style={{ fontSize: 12, color: 'var(--edb-text-secondary)', maxHeight: 120, overflow: 'auto' }}>
                     {info.releaseNotes.slice(0, 300)}
                   </p>
                 )}
@@ -97,29 +95,18 @@ const AppContent: React.FC = () => {
 
 const App: React.FC = () => {
   const effectiveTheme = useThemeStore((s) => s.effectiveTheme)
+  const themeStyle = useThemeStore((s) => s.themeStyle)
   const isDark = effectiveTheme === 'dark'
+  const antdTheme = getEasyDbThemeConfig(
+    themeStyle,
+    effectiveTheme,
+    isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
+  )
 
   return (
     <ConfigProvider
       locale={zhCN}
-      theme={{
-        algorithm: isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
-        token: {
-          colorPrimary: isDark ? '#818CF8' : '#7C3AED',
-          colorBgBase: isDark ? '#0f0c29' : '#e8d5f5',
-          colorBgContainer: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.40)',
-          colorBgElevated: isDark ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.55)',
-          colorBgLayout: 'transparent',
-          colorBorder: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.50)',
-          colorBorderSecondary: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.35)',
-          colorText: isDark ? 'rgba(255,255,255,0.95)' : 'rgba(0,0,0,0.85)',
-          colorTextSecondary: isDark ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.55)',
-          borderRadius: 12,
-          fontSize: 13,
-          fontFamily,
-          fontFamilyCode,
-        },
-      }}>
+      theme={antdTheme}>
       <AntApp>
         <AppContent />
       </AntApp>

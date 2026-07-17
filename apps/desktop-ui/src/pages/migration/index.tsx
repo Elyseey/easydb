@@ -40,6 +40,7 @@ import { useNavigate } from 'react-router-dom'
 import { supportsDatabaseTaskPair, supportsDatabaseTaskRole } from '@/utils/databaseTaskPairs'
 import type { ConnectionConfig } from '@/types'
 import { groupConnectionsByDatabaseType } from './connectionGroups'
+import '../databaseTask.css'
 
 const { Title, Text } = Typography
 
@@ -245,23 +246,18 @@ export const MigrationPage: React.FC = () => {
   const canNext = !!sourceId && !!targetId && !!sourceDb && !!targetDb && selectedVisibleTables.length > 0 && currentPairSupported
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'transparent' }}>
+    <div className="database-task-page">
       {/* 核心双屏拓扑界面 */}
-      <div style={{ flex: 1, overflow: 'auto', padding: 32 }}>
+      <div className="database-task-page__content">
         
-        <Title level={4} style={{ marginBottom: 24 }}>数据同步 (Data Transfer)</Title>
+        <Title level={4} style={{ marginBottom: 24 }}>数据迁移 (Data Migration)</Title>
 
-        <Row gutter={48} align="stretch" style={{ position: 'relative' }}>
+        <Row gutter={48} align="stretch" className="database-task-page__topology">
           {/* 左屏：数据源 */}
           <Col span={12}>
             <Card 
-              hoverable
+              className={`database-task-endpoint-card${sourceId ? ' database-task-endpoint-card--source' : ''}`}
               bodyStyle={{ padding: 24, height: '100%' }}
-              style={{ 
-                height: '100%', 
-                borderColor: sourceId ? token.colorPrimaryBorder : undefined,
-                boxShadow: sourceId ? '0 4px 12px rgba(0,0,0,0.05)' : undefined 
-              }}
             >
               <Title level={5} style={{ marginBottom: 24 }}><DatabaseOutlined style={{ color: token.colorPrimary, marginRight: 8 }}/>数据源 (Source)</Title>
               
@@ -294,32 +290,15 @@ export const MigrationPage: React.FC = () => {
           </Col>
 
           {/* 中央连接器 UI */}
-          <div style={{
-            position: 'absolute',
-            left: '50%',
-            top: 60,
-            transform: 'translateX(-50%)',
-            zIndex: 10,
-            background: 'var(--glass-panel)',
-            backdropFilter: 'var(--glass-blur-sm)',
-            padding: '8px',
-            borderRadius: '50%',
-            border: '1px solid var(--glass-border)',
-            boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)'
-          }}>
+          <div className="database-task-connector">
             <SwapRightOutlined style={{ fontSize: 24, color: token.colorPrimary }} />
           </div>
 
           {/* 右屏：目标端 */}
           <Col span={12}>
             <Card 
-              hoverable
+              className={`database-task-endpoint-card${targetId ? ' database-task-endpoint-card--target' : ''}`}
               bodyStyle={{ padding: 24, height: '100%' }}
-              style={{ 
-                height: '100%', 
-                borderColor: targetId ? token.colorSuccessBorder : undefined,
-                boxShadow: targetId ? '0 4px 12px rgba(0,0,0,0.05)' : undefined 
-              }}
             >
               <Title level={5} style={{ marginBottom: 24 }}><DatabaseOutlined style={{ color: token.colorSuccess, marginRight: 8 }}/>目标端 (Target)</Title>
               
@@ -355,7 +334,7 @@ export const MigrationPage: React.FC = () => {
         {/* 第2层：精细对象选取 (双库选中后才显示) */}
         {sourceDb && targetDb && (
           <Card 
-            style={{ marginTop: 24, boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }} 
+            className="database-task-object-card"
             bodyStyle={{ padding: 24 }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -399,17 +378,7 @@ export const MigrationPage: React.FC = () => {
       </div>
 
       {/* 底部吸附控制台 */}
-      <div style={{
-        padding: '16px 32px',
-        borderTop: '1px solid var(--glass-border)',
-        background: 'var(--glass-panel)',
-        backdropFilter: 'var(--glass-blur)',
-        WebkitBackdropFilter: 'var(--glass-blur)',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        boxShadow: '0 -2px 10px rgba(0,0,0,0.02)'
-      }}>
+      <div className="database-task-page__footer">
         <Space size="large">
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <Text type="secondary">迁移模式：</Text>

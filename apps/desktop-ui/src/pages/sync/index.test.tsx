@@ -1,16 +1,16 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { render } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import type { ConnectionConfig } from '@/types'
 import { useConnectionStore } from '@/stores/connectionStore'
-import { MigrationPage } from '..'
+import { SyncPage } from '.'
 
 const apiMocks = vi.hoisted(() => ({
   listConnections: vi.fn(),
   openConnection: vi.fn(),
   listDatabases: vi.fn(),
   listObjects: vi.fn(),
-  startMigration: vi.fn(),
+  startSync: vi.fn(),
 }))
 
 vi.mock('@/services/api', () => ({
@@ -22,8 +22,8 @@ vi.mock('@/services/api', () => ({
     databases: apiMocks.listDatabases,
     objects: apiMocks.listObjects,
   },
-  migrationApi: {
-    start: apiMocks.startMigration,
+  syncApi: {
+    start: apiMocks.startSync,
   },
 }))
 
@@ -32,55 +32,31 @@ vi.mock('@/utils/notification', () => ({
   handleApiError: vi.fn(),
 }))
 
-const connection = (
-  id: string,
-  name: string,
-  dbType: ConnectionConfig['dbType'],
-): ConnectionConfig => ({
+const connection = (id: string): ConnectionConfig => ({
   id,
-  name,
-  dbType,
+  name: `MySQL ${id}`,
+  dbType: 'mysql',
   host: '127.0.0.1',
-  port: dbType === 'dameng' ? 5236 : 3306,
+  port: 3306,
   username: 'tester',
   password: '',
   status: 'connected',
 })
 
-describe('MigrationPage connection selection', () => {
+describe('SyncPage theme surfaces', () => {
   beforeEach(() => {
     useConnectionStore.setState({
-      connections: [
-        connection('dm-1', '达梦生产库', 'dameng'),
-        connection('mysql-1', 'MySQL 生产库', 'mysql'),
-        connection('mysql-2', 'MySQL 测试库', 'mysql'),
-      ],
+      connections: [connection('source'), connection('target')],
     })
-  })
-
-  it('renders source connections in database type groups', async () => {
-    render(
-      <MemoryRouter>
-        <MigrationPage />
-      </MemoryRouter>,
-    )
-
-    fireEvent.mouseDown(screen.getAllByRole('combobox')[0])
-
-    expect(await screen.findByText('MySQL (2)')).toBeInTheDocument()
-    expect(screen.getByText('达梦 (1)')).toBeInTheDocument()
-    expect(screen.getByText(/MySQL 生产库/)).toBeInTheDocument()
-    expect(screen.getByText(/达梦生产库/)).toBeInTheDocument()
   })
 
   it('uses the stable shared database task surfaces', () => {
     const { container } = render(
       <MemoryRouter>
-        <MigrationPage />
+        <SyncPage />
       </MemoryRouter>,
     )
 
-    expect(screen.getByText('数据迁移 (Data Migration)')).toBeInTheDocument()
     expect(container.querySelector('.database-task-page')).toBeInTheDocument()
     expect(container.querySelectorAll('.database-task-endpoint-card')).toHaveLength(2)
     expect(container.querySelector('.database-task-connector')).toBeInTheDocument()

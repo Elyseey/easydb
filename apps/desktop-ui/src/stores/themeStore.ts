@@ -17,55 +17,97 @@
 import { create } from 'zustand'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
+export type ThemeStyle = 'professional' | 'glass'
+export type EffectiveTheme = Exclude<ThemeMode, 'system'>
 
-const STORAGE_KEY = 'easydb-theme'
+export const THEME_MODE_STORAGE_KEY = 'easydb-theme'
+export const THEME_STYLE_STORAGE_KEY = 'easydb-theme-style'
 
-function getSystemTheme(): 'light' | 'dark' {
+const isThemeMode = (value: string | null): value is ThemeMode =>
+  value === 'light' || value === 'dark' || value === 'system'
+
+const isThemeStyle = (value: string | null): value is ThemeStyle =>
+  value === 'professional' || value === 'glass'
+
+function getSystemTheme(): EffectiveTheme {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
-function getEffectiveTheme(mode: ThemeMode): 'light' | 'dark' {
+function getEffectiveTheme(mode: ThemeMode): EffectiveTheme {
   return mode === 'system' ? getSystemTheme() : mode
 }
 
-function loadThemeMode(): ThemeMode {
-  const saved = localStorage.getItem(STORAGE_KEY) as ThemeMode | null
-  return saved ?? 'light'
+export interface StoredThemePreference {
+  themeMode: ThemeMode
+  themeStyle: ThemeStyle
+}
+
+/**
+ * Legacy releases persisted only easydb-theme. Treat that as an existing user
+ * and retain the glass appearance; a completely fresh install starts with the
+ * professional light theme.
+ */
+export function resolveStoredTheme(storage: Pick<Storage, 'getItem'>): StoredThemePreference {
+  const storedMode = storage.getItem(THEME_MODE_STORAGE_KEY)
+  const storedStyle = storage.getItem(THEME_STYLE_STORAGE_KEY)
+  return {
+    themeMode: isThemeMode(storedMode) ? storedMode : 'light',
+    themeStyle: isThemeStyle(storedStyle)
+      ? storedStyle
+      : isThemeMode(storedMode) ? 'glass' : 'professional',
+  }
+}
+
+function applyRootTheme(themeStyle: ThemeStyle, effectiveTheme: EffectiveTheme) {
+  document.documentElement.setAttribute('data-theme-style', themeStyle)
+  document.documentElement.setAttribute('data-theme', effectiveTheme)
+  document.documentElement.style.colorScheme = effectiveTheme
 }
 
 interface ThemeState {
   themeMode: ThemeMode
-  effectiveTheme: 'light' | 'dark'
+  themeStyle: ThemeStyle
+  effectiveTheme: EffectiveTheme
   setThemeMode: (mode: ThemeMode) => void
+  setThemeStyle: (style: ThemeStyle) => void
 }
 
 export const useThemeStore = create<ThemeState>((set) => {
-  const initial = loadThemeMode()
+  const initial = resolveStoredTheme(localStorage)
 
   // 监听系统主题变化
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     set((state) => {
       if (state.themeMode === 'system') {
         const effective = getSystemTheme()
-        document.documentElement.setAttribute('data-theme', effective)
+        applyRootTheme(state.themeStyle, effective)
         return { effectiveTheme: effective }
       }
       return {}
     })
   })
 
-  // 初始化时设置 data-theme
-  const effective = getEffectiveTheme(initial)
-  document.documentElement.setAttribute('data-theme', effective)
+  const effective = getEffectiveTheme(initial.themeMode)
+  applyRootTheme(initial.themeStyle, effective)
 
   return {
-    themeMode: initial,
+    themeMode: initial.themeMode,
+    themeStyle: initial.themeStyle,
     effectiveTheme: effective,
     setThemeMode: (mode: ThemeMode) => {
-      localStorage.setItem(STORAGE_KEY, mode)
+      localStorage.setItem(THEME_MODE_STORAGE_KEY, mode)
       const effective = getEffectiveTheme(mode)
-      document.documentElement.setAttribute('data-theme', effective)
-      set({ themeMode: mode, effectiveTheme: effective })
+      set((state) => {
+        applyRootTheme(state.themeStyle, effective)
+        return { themeMode: mode, effectiveTheme: effective }
+      })
+    },
+    setThemeStyle: (themeStyle: ThemeStyle) => {
+      localStorage.setItem(THEME_STYLE_STORAGE_KEY, themeStyle)
+      set((state) => {
+        applyRootTheme(themeStyle, state.effectiveTheme)
+        return { themeStyle }
+      })
     },
   }
 })

@@ -28,7 +28,7 @@ import {
   checkForUpdate, getAutoCheckEnabled, setAutoCheckEnabled, APP_VERSION,
   type UpdateInfo,
 } from '@/utils/updater'
-import { useThemeStore, type ThemeMode } from '@/stores/themeStore'
+import { useThemeStore, type ThemeMode, type ThemeStyle } from '@/stores/themeStore'
 import { useAppSettingsStore } from '@/stores/appSettingsStore'
 import { storageApi, backupApi } from '@/services/api'
 import { BUILTIN_SQL_TEMPLATES } from '@/pages/sql-editor/sqlTemplates'
@@ -67,6 +67,8 @@ export const SettingsPage: React.FC = () => {
 
   const themeMode = useThemeStore((s) => s.themeMode)
   const setThemeMode = useThemeStore((s) => s.setThemeMode)
+  const themeStyle = useThemeStore((s) => s.themeStyle)
+  const setThemeStyle = useThemeStore((s) => s.setThemeStyle)
 
   const sqlHistoryEnabled          = useAppSettingsStore((s) => s.sqlHistoryEnabled)
   const sqlHistoryFilterByDatabase = useAppSettingsStore((s) => s.sqlHistoryFilterByDatabase)
@@ -128,6 +130,19 @@ export const SettingsPage: React.FC = () => {
     }
   }, [])
 
+  // 加载备份文件列表
+  const loadBackupFiles = useCallback(async () => {
+    setBackupFilesLoading(true)
+    try {
+      const data = await backupApi.list() as BackupFileInfo[]
+      setBackupFiles(data)
+    } catch {
+      setBackupFiles([])
+    } finally {
+      setBackupFilesLoading(false)
+    }
+  }, [])
+
   // 执行清理
   const handleCleanup = useCallback(async (target: string, mode: string, days?: number) => {
     const targetLabels: Record<string, string> = { exports: '导出文件', logs: '任务日志', tasks: '任务记录', backups: '备份文件' }
@@ -162,20 +177,7 @@ export const SettingsPage: React.FC = () => {
         }
       },
     })
-  }, [modal, message, loadStorageInfo, showBackupFiles])
-
-  // 加载备份文件列表
-  const loadBackupFiles = useCallback(async () => {
-    setBackupFilesLoading(true)
-    try {
-      const data = await backupApi.list() as BackupFileInfo[]
-      setBackupFiles(data)
-    } catch {
-      setBackupFiles([])
-    } finally {
-      setBackupFilesLoading(false)
-    }
-  }, [])
+  }, [modal, message, loadStorageInfo, showBackupFiles, loadBackupFiles])
 
   // 切换备份文件列表展开状态
   const handleToggleBackupFiles = useCallback(() => {
@@ -230,6 +232,31 @@ export const SettingsPage: React.FC = () => {
           >
             <List.Item actions={[
               <Radio.Group
+                value={themeStyle}
+                onChange={(e) => setThemeStyle(e.target.value as ThemeStyle)}
+                optionType="button"
+                buttonStyle="solid"
+                size="middle"
+              >
+                <Radio.Button value="professional">简约专业</Radio.Button>
+                <Radio.Button value="glass">流光</Radio.Button>
+              </Radio.Group>
+            ]}>
+              <List.Item.Meta
+                avatar={(
+                  <Avatar
+                    size="large"
+                    icon={<AppstoreOutlined />}
+                    style={{ backgroundColor: token.colorPrimaryBg, color: token.colorPrimary }}
+                  />
+                )}
+                title={<Text strong>界面风格</Text>}
+                description="简约专业为默认风格，也可切换回原有流光主题"
+              />
+            </List.Item>
+
+            <List.Item actions={[
+              <Radio.Group
                 value={themeMode}
                 onChange={(e) => setThemeMode(e.target.value as ThemeMode)}
                 optionType="button"
@@ -243,8 +270,8 @@ export const SettingsPage: React.FC = () => {
             ]}>
               <List.Item.Meta 
                 avatar={<Avatar size="large" icon={<BulbOutlined />} style={{ backgroundColor: token.colorWarningBg, color: token.colorWarning }}/>}
-                title={<Text strong>外观与主题</Text>}
-                description="切换应用界面的全局色彩风格"
+                title={<Text strong>明暗模式</Text>}
+                description="选择浅色、深色，或跟随系统外观"
               />
             </List.Item>
 
