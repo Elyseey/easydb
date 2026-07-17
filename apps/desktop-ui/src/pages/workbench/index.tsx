@@ -19,6 +19,7 @@ import {
   Layout, Tree, Tabs, Table, Typography, Input, Space, Button, Tag, Tooltip, Modal, Dropdown,
   theme, Breadcrumb,
 } from 'antd'
+import type { InputRef } from 'antd'
 import {
   DatabaseOutlined, ReloadOutlined, 
   CodeOutlined, StarOutlined,
@@ -30,13 +31,13 @@ import {
   FileText, Table2, Activity, Zap, Eye, KeyRound, Search, Plus, Database, Cog, FunctionSquare,
 } from 'lucide-react'
 import type { TableInfo, ColumnInfo, ConnectionConfig, SavedScript, DatabaseInfo } from '@/types'
-import { useWorkbenchStore, type TableTabState, type WorkbenchTab } from '@/stores/workbenchStore'
+import { useWorkbenchStore, type TableDataQuery, type TableTabState, type WorkbenchTab } from '@/stores/workbenchStore'
 import { useConnectionStore } from '@/stores/connectionStore'
 import { useSqlEditorStore } from '@/stores/sqlEditorStore'
 import { useCommandStore } from '@/stores/commandStore'
 import { metadataApi, connectionApi, scriptApi, setReconnectCallback } from '@/services/api'
 import { handleApiError, toast } from '@/utils/notification'
-import { exportTableData } from '@/utils/exportUtils'
+import { confirmDataExport } from '@/components/confirmDataExport'
 import { EmptyState } from '@/components/EmptyState'
 import { EditableDataTable } from '@/components/EditableDataTable'
 import { CreateDatabaseModal } from '@/components/CreateDatabaseModal'
@@ -45,18 +46,35 @@ import { ImportSqlDialog } from '@/components/ImportSqlDialog'
 import ExportDatabaseModal from '@/components/ExportDatabaseModal'
 import BackupDatabaseModal from '@/components/BackupDatabaseModal'
 import RestoreDatabaseModal from '@/components/RestoreDatabaseModal'
-import { TableDesigner } from '@/components/TableDesigner'
+import { TableDesigner, type TableDesignerSaveResult } from '@/components/TableDesigner'
+import { DdlViewer } from '@/components/DdlViewer'
 import { QueryEditorPane } from '@/components/QueryEditorPane'
 import { ShortcutsModal } from '@/components/ShortcutsModal'
 import { CallProcedurePanel, type CallProcedureTarget } from '@/components/CallProcedurePanel'
 import { formatHotkey } from '@/utils/osUtils'
+import { getDbCapabilities } from '@/utils/dbCapabilities'
+import { databaseNamespaceLabel } from '@/utils/databaseNamespace'
+import type { OpenObjectDetailRequest } from '@/utils/openObjectDetail'
+import {
+  MAX_QUERY_TAB_TITLE_LENGTH,
+  normalizeQueryTabTitle,
+  resolveWorkbenchTabKey,
+} from './queryTabTitle'
+import { tableDetailLoadPlan, type TableDetailLoadTarget } from './tableDetailLoadPlan'
 
 const { Sider, Content } = Layout
 const { Text } = Typography
 type TreeDataNode = DataNode & { 'data-node-key'?: string }
+type WorkbenchPaneRenderState = {
+  keepAliveKeys: string[]
+  dirtyKeys: string[]
+}
 
 /** 每次 previewRows 加载的行数（与后端 limit 对齐） */
 const PREVIEW_PAGE_SIZE = 1000
+const WORKBENCH_KEEP_ALIVE_LIMIT = 8
+const addUnique = (items: string[], item: string) => items.includes(item) ? items : [...items, item]
+const removeItems = (items: string[], removing: string[]) => items.filter((item) => !removing.includes(item))
 
 /** 分类列表视图 — 独立组件，搜索状态通过 props 持久化 */
 import type { MenuProps } from 'antd'
@@ -171,7 +189,7 @@ const CategoryListView: React.FC<{
           </Text>
           <Space size={8} style={{ marginTop: 6 }} wrap>
             <Text type="secondary" style={{ fontSize: 12 }}>{database}</Text>
-            <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+            <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
               {categoryObjects.length} 个对象
             </Tag>
           </Space>
@@ -261,6 +279,10 @@ export const WorkbenchPage: React.FC = () => {
 
   // --- Store（持久化状态，路由切换不丢失）---
   const openConnections = useWorkbenchStore((s) => s.openConnections)
+  const openConnectionDbTypes = useMemo(
+    () => new Map(openConnections.map((connection) => [connection.id, connection.dbType])),
+    [openConnections]
+  )
   const addOpenConnection = useWorkbenchStore((s) => s.addOpenConnection)
   const removeOpenConnection = useWorkbenchStore((s) => s.removeOpenConnection)
 
@@ -306,16 +328,114 @@ export const WorkbenchPage: React.FC = () => {
   const activeTableTabKey = useWorkbenchStore((s) => s.activeTableTabKey)
   const setActiveTableTabKey = useWorkbenchStore((s) => s.setActiveTableTabKey)
   const batchUpdate = useWorkbenchStore((s) => s.batchUpdate)
-  const activeTab = activeTableTabKey ? openTableTabs[activeTableTabKey] ?? null : null
+  const [paneState, setPaneState] = useState<WorkbenchPaneRenderState>({
+    keepAliveKeys: [],
+    dirtyKeys: [],
+  })
+  const mountedPaneKeys = useMemo(() => {
+    const openKeys = new Set(Object.keys(openTableTabs))
+    const keys = paneState.keepAliveKeys.filter((key) => openKeys.has(key))
+    if (activeTableTabKey && openKeys.has(activeTableTabKey) && !keys.includes(activeTableTabKey)) {
+      return [...keys, activeTableTabKey]
+    }
+    return keys
+  }, [activeTableTabKey, openTableTabs, paneState.keepAliveKeys])
+
+  const pruneKeepAliveKeys = useCallback((
+    nextKeys: string[],
+    nextDirtyKeys: string[],
+    openKeys: Set<string>,
+    activeKey: string | null,
+  ) => {
+    const dirtySet = new Set(nextDirtyKeys)
+    const normalized = nextKeys.filter((key, index) => openKeys.has(key) && nextKeys.indexOf(key) === index)
+    const active = activeKey && openKeys.has(activeKey) ? activeKey : null
+    const pinned = normalized.filter((key) => key === active || dirtySet.has(key))
+    const recent = normalized.filter((key) => !pinned.includes(key))
+    const room = Math.max(0, WORKBENCH_KEEP_ALIVE_LIMIT - pinned.length)
+    return [...pinned, ...recent.slice(-room)]
+  }, [])
+
+  const markPaneVisited = useCallback((key: string | null) => {
+    if (!key) return
+    setPaneState((prev) => {
+      const openKeys = new Set(Object.keys(useWorkbenchStore.getState().openTableTabs))
+      if (!openKeys.has(key)) return prev
+      const withoutKey = prev.keepAliveKeys.filter((item) => item !== key)
+      const dirtyKeys = prev.dirtyKeys.filter((item) => openKeys.has(item))
+      return {
+        keepAliveKeys: pruneKeepAliveKeys([...withoutKey, key], dirtyKeys, openKeys, key),
+        dirtyKeys,
+      }
+    })
+  }, [pruneKeepAliveKeys])
+
+  const setPaneDirty = useCallback((key: string, dirty: boolean) => {
+    setPaneState((prev) => {
+      const openKeys = new Set(Object.keys(useWorkbenchStore.getState().openTableTabs))
+      const dirtySet = new Set(prev.dirtyKeys.filter((item) => openKeys.has(item)))
+      const wasDirty = dirtySet.has(key)
+      if (wasDirty === dirty && prev.dirtyKeys.every((item) => openKeys.has(item))) {
+        return prev
+      }
+      if (dirty) dirtySet.add(key)
+      else dirtySet.delete(key)
+      const dirtyKeys = Array.from(dirtySet)
+      return {
+        keepAliveKeys: pruneKeepAliveKeys(prev.keepAliveKeys, dirtyKeys, openKeys, activeTableTabKey),
+        dirtyKeys,
+      }
+    })
+  }, [activeTableTabKey, pruneKeepAliveKeys])
+
+  const removePaneKeys = useCallback((keys: Iterable<string>) => {
+    const removing = new Set(keys)
+    setPaneState((prev) => ({
+      keepAliveKeys: prev.keepAliveKeys.filter((key) => !removing.has(key)),
+      dirtyKeys: prev.dirtyKeys.filter((key) => !removing.has(key)),
+    }))
+  }, [])
+
+  useEffect(() => {
+    if (activeTableTabKey) markPaneVisited(activeTableTabKey)
+  }, [activeTableTabKey, markPaneVisited])
+
+  useEffect(() => {
+    const openKeys = new Set(Object.keys(openTableTabs))
+    setPaneState((prev) => {
+      const dirtyKeys = prev.dirtyKeys.filter((key) => openKeys.has(key))
+      const keepAliveKeys = pruneKeepAliveKeys(prev.keepAliveKeys, dirtyKeys, openKeys, activeTableTabKey)
+      if (
+        dirtyKeys.length === prev.dirtyKeys.length &&
+        keepAliveKeys.length === prev.keepAliveKeys.length &&
+        dirtyKeys.every((key, index) => key === prev.dirtyKeys[index]) &&
+        keepAliveKeys.every((key, index) => key === prev.keepAliveKeys[index])
+      ) {
+        return prev
+      }
+      return { keepAliveKeys, dirtyKeys }
+    })
+  }, [activeTableTabKey, openTableTabs, pruneKeepAliveKeys])
 
   // --- 请求竞态控制 ---
-  const loadSeqRef = useRef(0)
+  const loadSeqRef = useRef<Record<string, number>>({})
   useEffect(() => {
-    return () => { loadSeqRef.current++ }
+    return () => { loadSeqRef.current = {} }
   }, [])
 
   // --- Tab 右键菜单 ---
   const [tabCtxMenu, setTabCtxMenu] = useState<{ x: number; y: number; tabKey: string } | null>(null)
+  const [renamingQueryTab, setRenamingQueryTab] = useState<{ tabKey: string; value: string } | null>(null)
+  const renameQueryTabInputRef = useRef<InputRef>(null)
+  const renamingQueryTabKey = renamingQueryTab?.tabKey
+
+  useEffect(() => {
+    if (!renamingQueryTabKey) return undefined
+    const frame = window.requestAnimationFrame(() => {
+      renameQueryTabInputRef.current?.focus({ cursor: 'all' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [renamingQueryTabKey])
 
   // --- 树节点右键菜单 ---
   const [treeCtxMenu, setTreeCtxMenu] = useState<{ x: number; y: number; nodeKey: string } | null>(null)
@@ -332,17 +452,20 @@ export const WorkbenchPage: React.FC = () => {
   }, [treeCtxMenu])
 
   // --- 新建数据库弹窗状态 ---
-  const [createDbModal, setCreateDbModal] = useState<{ connectionId: string; connectionName: string } | null>(null)
+  const [createDbModal, setCreateDbModal] = useState<{ connectionId: string; connectionName: string; dbType: ConnectionConfig['dbType'] } | null>(null)
 
   // --- 编辑数据库弹窗状态 ---
   const [editDbModal, setEditDbModal] = useState<{ connectionId: string; databaseName: string } | null>(null)
 
 
   // --- SQL 文件导入弹窗状态 ---
-  const [importSqlModal, setImportSqlModal] = useState<{ connectionId: string; connectionName: string; database?: string } | null>(null)
-  const [exportModal, setExportModal] = useState<{ connectionId: string; connectionName: string, database: string } | null>(null)
-  const [backupModal, setBackupModal] = useState<{ connectionId: string; connectionName: string; database: string } | null>(null)
-  const [restoreModal, setRestoreModal] = useState<{ connectionId: string; connectionName: string; database: string } | null>(null)
+  const [importSqlModal, setImportSqlModal] = useState<{ connectionId: string; connectionName: string; database?: string; dbType: ConnectionConfig['dbType'] } | null>(null)
+  const [exportModal, setExportModal] = useState<{ connectionId: string; connectionName: string; database: string; dbType: ConnectionConfig['dbType'] } | null>(null)
+  const [backupModal, setBackupModal] = useState<{ connectionId: string; connectionName: string; database: string; dbType: ConnectionConfig['dbType'] } | null>(null)
+  const [restoreModal, setRestoreModal] = useState<{ connectionId: string; connectionName: string; database: string; dbType: ConnectionConfig['dbType'] } | null>(null)
+  const [renameTableTarget, setRenameTableTarget] = useState<{ connectionId: string; database: string; tableName: string } | null>(null)
+  const [renameTableInput, setRenameTableInput] = useState('')
+  const [renamingTable, setRenamingTable] = useState(false)
 
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [callProcedureTarget, setCallProcedureTarget] = useState<CallProcedureTarget | null>(null)
@@ -465,57 +588,112 @@ export const WorkbenchPage: React.FC = () => {
     })
   }, [setOpenTableTabs])
 
-  const loadTabDataForTab = useCallback(async (tabKey: string, connId: string, dbName: string, tableName: string, tab: string) => {
-    const seq = ++loadSeqRef.current
+  const refreshTableRows = useCallback(async (tabKey: string, query?: TableDataQuery, errorMessage = '刷新数据失败') => {
+    const requestKey = `${tabKey}::data`
+    const seq = (loadSeqRef.current[requestKey] ?? 0) + 1
+    loadSeqRef.current[requestKey] = seq
+    const isCurrentRequest = () => loadSeqRef.current[requestKey] === seq
+    const stateTab = useWorkbenchStore.getState().openTableTabs[tabKey]
+    if (!stateTab || stateTab.type !== 'table') return
+
+    const dataQuery = query ? { ...(stateTab.dataQuery ?? {}), ...query } : stateTab.dataQuery ?? {}
+    const hasQuery = Boolean(dataQuery.where || dataQuery.orderBy)
+
+    updateTabState(tabKey, (prev) => ({
+      dataQuery,
+      loadingMoreRows: false,
+      loadingTabs: addUnique(prev.loadingTabs, 'data'),
+    }))
+
     try {
-      // columns 始终加载
+      const rows = await metadataApi.previewRows(
+        stateTab.connectionId,
+        stateTab.database,
+        stateTab.tableName,
+        { ...dataQuery, limit: PREVIEW_PAGE_SIZE }
+      ) as Record<string, unknown>[]
+      if (!isCurrentRequest()) return
+      updateTabState(tabKey, (prev) => ({
+        previewRows: rows,
+        dataQuery,
+        hasMoreRows: !hasQuery && rows.length >= PREVIEW_PAGE_SIZE,
+        loadedTabs: addUnique(prev.loadedTabs, 'data'),
+      }))
+    } catch (e) {
+      if (!isCurrentRequest()) return
+      handleApiError(e, errorMessage)
+    } finally {
+      if (isCurrentRequest()) {
+        updateTabState(tabKey, (prev) => ({
+          loadingTabs: removeItems(prev.loadingTabs, ['data']),
+        }))
+      }
+    }
+  }, [updateTabState])
+
+  const loadTabDataForTab = useCallback(async (tabKey: string, connId: string, dbName: string, tableName: string, tab: TableDetailLoadTarget) => {
+    const requestKey = `${tabKey}::${tab}`
+    const seq = (loadSeqRef.current[requestKey] ?? 0) + 1
+    loadSeqRef.current[requestKey] = seq
+    const isCurrentRequest = () => loadSeqRef.current[requestKey] === seq
+    const startedTabs: string[] = []
+    try {
       const promises: Promise<void>[] = []
       // currentTab 可能为 undefined（新 Tab 刚创建，state 还未 commit）
-      const currentTab = openTableTabs[tabKey]
+      const currentTab = useWorkbenchStore.getState().openTableTabs[tabKey] ?? openTableTabs[tabKey]
       if (currentTab && currentTab.type !== 'table') return
       const tableTab = currentTab as TableTabState | undefined
-      const needColumns = !tableTab?.loadedTabs.includes('columns')
-      const needTab = tab !== 'columns' && !tableTab?.loadedTabs.includes(tab)
+      const { loadColumns: needColumns, loadTab: needTab } = tableDetailLoadPlan(
+        tab,
+        tableTab?.loadedTabs ?? [],
+      )
       if (!needColumns && !needTab) return
+      if (needColumns) startedTabs.push('columns')
+      if (needTab) startedTabs.push(tab)
+      updateTabState(tabKey, (prev) => ({
+        loadingTabs: startedTabs.reduce((next, item) => addUnique(next, item), prev.loadingTabs),
+      }))
       if (needColumns) {
         promises.push(
-          metadataApi.tableDefinition(connId, dbName, tableName).then((def: unknown) => {
-            if (seq !== loadSeqRef.current) return
+          metadataApi.columns(connId, dbName, tableName).then((columns: unknown) => {
+            if (!isCurrentRequest()) return
             updateTabState(tabKey, (prev) => ({
-              columns: (def as { columns: ColumnInfo[] }).columns || [],
-              loadedTabs: [...prev.loadedTabs, 'columns'],
+              columns: (columns as ColumnInfo[]) || [],
+              loadedTabs: addUnique(prev.loadedTabs, 'columns'),
             }))
           })
         )
       }
       if (needTab) {
         if (tab === 'data') {
+          const dataQuery = tableTab?.dataQuery ?? {}
+          const hasQuery = Boolean(dataQuery.where || dataQuery.orderBy)
           promises.push(
-            metadataApi.previewRows(connId, dbName, tableName, { limit: PREVIEW_PAGE_SIZE }).then((rows: unknown) => {
-              if (seq !== loadSeqRef.current) return
+            metadataApi.previewRows(connId, dbName, tableName, { ...dataQuery, limit: PREVIEW_PAGE_SIZE }).then((rows: unknown) => {
+              if (!isCurrentRequest()) return
               const rowArr = rows as Record<string, unknown>[]
               updateTabState(tabKey, (prev) => ({
                 previewRows: rowArr,
-                hasMoreRows: rowArr.length >= PREVIEW_PAGE_SIZE,
-                loadedTabs: [...prev.loadedTabs, 'data'],
+                hasMoreRows: !hasQuery && rowArr.length >= PREVIEW_PAGE_SIZE,
+                loadedTabs: addUnique(prev.loadedTabs, 'data'),
               }))
             })
           )
         } else if (tab === 'design') {
           // TableDesigner handles its own data loading internally, so nothing is strictly required here except marking it loaded.
           promises.push(Promise.resolve().then(() => {
-              if (seq !== loadSeqRef.current) return
+              if (!isCurrentRequest()) return
               updateTabState(tabKey, (prev) => ({
-                loadedTabs: [...prev.loadedTabs, 'design'],
+                loadedTabs: addUnique(prev.loadedTabs, 'design'),
               }))
           }))
         } else if (tab === 'ddl') {
           promises.push(
             metadataApi.ddl(connId, dbName, tableName).then((ddlStr: unknown) => {
-              if (seq !== loadSeqRef.current) return
+              if (!isCurrentRequest()) return
               updateTabState(tabKey, (prev) => ({
                 ddl: ddlStr as string,
-                loadedTabs: [...prev.loadedTabs, 'ddl'],
+                loadedTabs: addUnique(prev.loadedTabs, 'ddl'),
               }))
             })
           )
@@ -523,10 +701,119 @@ export const WorkbenchPage: React.FC = () => {
       }
       await Promise.all(promises)
     } catch (e) {
-      if (seq !== loadSeqRef.current) return
+      if (!isCurrentRequest()) return
       handleApiError(e, '加载表详情失败')
+    } finally {
+      if (isCurrentRequest() && startedTabs.length > 0) {
+        updateTabState(tabKey, (prev) => ({
+          loadingTabs: removeItems(prev.loadingTabs, startedTabs),
+        }))
+      }
     }
   }, [openTableTabs, updateTabState])
+
+  const applyRenamedTableState = useCallback((connId: string, dbName: string, oldName: string, newName: string) => {
+    const oldTabKey = `table:${connId}::${dbName}::${oldName}`
+    const newTabKey = `table:${connId}::${dbName}::${newName}`
+    const state = useWorkbenchStore.getState()
+    const nextTabs: Record<string, WorkbenchTab> = { ...state.openTableTabs }
+    const oldTab = nextTabs[oldTabKey]
+    let nextActiveTableTabKey = state.activeTableTabKey
+    let reloadTabKey: string | null = null
+    let reloadDetailTab: TableTabState['detailTab'] | null = null
+
+    if (oldTab?.type === 'table') {
+      delete nextTabs[oldTabKey]
+      nextTabs[newTabKey] = {
+        ...oldTab,
+        tableName: newName,
+        columns: [],
+        indexes: [],
+        ddl: '',
+        previewRows: [],
+        dataQuery: {},
+        hasMoreRows: false,
+        loadingMoreRows: false,
+        loadedTabs: [],
+        loadingTabs: [],
+      }
+      if (state.activeTableTabKey === oldTabKey) nextActiveTableTabKey = newTabKey
+      reloadTabKey = newTabKey
+      reloadDetailTab = oldTab.detailTab
+    }
+
+    for (const [tabKey, tab] of Object.entries(nextTabs)) {
+      if (
+        tab.type === 'table-designer' &&
+        tab.mode === 'edit' &&
+        tab.connectionId === connId &&
+        tab.database === dbName &&
+        tab.tableName === oldName
+      ) {
+        nextTabs[tabKey] = { ...tab, tableName: newName }
+      }
+    }
+
+    setObjectsMap((prev) => {
+      const objectKey = `${connId}::${dbName}`
+      const objects = prev[objectKey]
+      if (!objects) return prev
+      return {
+        ...prev,
+        [objectKey]: objects.map((item) => item.name === oldName ? { ...item, name: newName } : item),
+      }
+    })
+
+    const selected = state.selectedCtx
+    const nextSelectedCtx =
+      selected?.connectionId === connId && selected.database === dbName && selected.table === oldName
+        ? { ...selected, table: newName }
+        : selected
+    const nextActiveTable =
+      state.activeConnectionId === connId && state.activeDatabase === dbName && state.activeTable === oldName
+        ? newName
+        : state.activeTable
+
+    batchUpdate({
+      openTableTabs: nextTabs,
+      activeTableTabKey: nextActiveTableTabKey,
+      selectedCtx: nextSelectedCtx,
+      activeTable: nextActiveTable,
+    })
+
+    return { tabKey: reloadTabKey, detailTab: reloadDetailTab }
+  }, [batchUpdate, setObjectsMap])
+
+  const closeRenameTableModal = useCallback(() => {
+    if (renamingTable) return
+    setRenameTableTarget(null)
+    setRenameTableInput('')
+  }, [renamingTable])
+
+  const handleRenameTableSubmit = useCallback(async () => {
+    if (!renameTableTarget || renamingTable) return
+
+    const targetName = renameTableInput.trim()
+    const { connectionId, database, tableName } = renameTableTarget
+    if (!targetName || targetName === tableName) return
+
+    setRenamingTable(true)
+    try {
+      await metadataApi.renameTable(connectionId, database, tableName, targetName)
+      const renamedTab = applyRenamedTableState(connectionId, database, tableName, targetName)
+      toast.success(`表已重命名为「${targetName}」`)
+      setRenameTableTarget(null)
+      setRenameTableInput('')
+      loadTables(connectionId, database)
+      if (renamedTab.tabKey && renamedTab.detailTab) {
+        loadTabDataForTab(renamedTab.tabKey, connectionId, database, targetName, renamedTab.detailTab)
+      }
+    } catch (e) {
+      handleApiError(e, '重命名表失败')
+    } finally {
+      setRenamingTable(false)
+    }
+  }, [applyRenamedTableState, loadTables, loadTabDataForTab, renameTableInput, renameTableTarget, renamingTable])
 
   // 打开或激活一个表 Tab
   const openOrActivateTab = useCallback((connId: string, connName: string, dbName: string, tableName: string, defaultTab: 'data' | 'ddl' | 'design' = 'data', objectType: 'table' | 'view' | 'procedure' | 'function' | 'trigger' = 'table') => {
@@ -544,10 +831,12 @@ export const WorkbenchPage: React.FC = () => {
         indexes: [],
         ddl: '',
         previewRows: [],
-        hasMoreRows: true,
+        dataQuery: {},
+        hasMoreRows: false,
         loadingMoreRows: false,
         detailTab: defaultTab,
         loadedTabs: [],
+        loadingTabs: [],
       }
       batchUpdate({
         openTableTabs: { ...openTableTabs, [tabKey]: newTab },
@@ -570,6 +859,52 @@ export const WorkbenchPage: React.FC = () => {
       })
     }
   }, [openTableTabs, batchUpdate, loadTabDataForTab])
+
+  const handleOpenObjectDetailFromQuery = useCallback((request: OpenObjectDetailRequest) => {
+    const connection = connections.find((item) => item.id === request.connectionId)
+    if (!connection) {
+      toast.warning('无法识别对象所属连接，请重新选择连接后再试')
+      return
+    }
+
+    if (!openConnections.some((item) => item.id === connection.id)) {
+      addOpenConnection(connection.id, connection.name, connection.dbType)
+    }
+
+    const defaultTab = (request.objectType === 'table' || request.objectType === 'view') ? 'data' : 'ddl'
+    openOrActivateTab(connection.id, connection.name, request.database, request.name, defaultTab, request.objectType)
+  }, [addOpenConnection, connections, openConnections, openOrActivateTab])
+
+  const handleQueryContextChange = useCallback((context: {
+    queryId: string
+    connectionId?: string
+    database?: string
+  }) => {
+    const tabKey = `sql:${context.queryId}`
+    setOpenTableTabs((current) => {
+      const tab = current[tabKey]
+      if (!tab || tab.type !== 'sql-query') return current
+      const connection = context.connectionId
+        ? connections.find((item) => item.id === context.connectionId)
+        : undefined
+      const connectionId = context.connectionId ?? tab.connectionId
+      const connectionName = connection?.name ?? tab.connectionName
+      if (
+        tab.connectionId === connectionId &&
+        tab.connectionName === connectionName &&
+        tab.database === context.database
+      ) return current
+      return {
+        ...current,
+        [tabKey]: {
+          ...tab,
+          connectionId,
+          connectionName,
+          database: context.database,
+        },
+      }
+    })
+  }, [connections, setOpenTableTabs])
 
   // 打开或激活数据库概览 Tab
   const openOrActivateDbOverview = useCallback((connId: string, connName: string, dbName: string) => {
@@ -629,6 +964,8 @@ export const WorkbenchPage: React.FC = () => {
 
   // 关闭一个表 Tab
   const closeTableTab = useCallback((tabKey: string) => {
+    setRenamingQueryTab((current) => current?.tabKey === tabKey ? null : current)
+    removePaneKeys([tabKey])
     setOpenTableTabs(prev => {
       const next = { ...prev }
       delete next[tabKey]
@@ -639,7 +976,55 @@ export const WorkbenchPage: React.FC = () => {
       }
       return next
     })
-  }, [activeTableTabKey, setOpenTableTabs, setActiveTableTabKey])
+  }, [activeTableTabKey, removePaneKeys, setOpenTableTabs, setActiveTableTabKey])
+
+  const beginRenameQueryTab = useCallback((tabKey: string) => {
+    const tab = openTableTabs[tabKey]
+    if (tab?.type !== 'sql-query') return
+    setTabCtxMenu(null)
+    setActiveTableTabKey(tabKey)
+    setRenamingQueryTab({ tabKey, value: tab.label || '查询' })
+  }, [openTableTabs, setActiveTableTabKey])
+
+  const handleTabBarContextMenu = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault()
+    const tabKey = resolveWorkbenchTabKey(event.target)
+    if (!tabKey || !openTableTabs[tabKey]) return
+    event.stopPropagation()
+    setTabCtxMenu({ x: event.clientX, y: event.clientY, tabKey })
+  }, [openTableTabs])
+
+  const handleTabBarDoubleClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    const target = event.target
+    if (target instanceof Element && target.closest('.ant-tabs-tab-remove, input, textarea')) return
+
+    const tabKey = resolveWorkbenchTabKey(target)
+    if (!tabKey || openTableTabs[tabKey]?.type !== 'sql-query') return
+    event.preventDefault()
+    event.stopPropagation()
+    beginRenameQueryTab(tabKey)
+  }, [beginRenameQueryTab, openTableTabs])
+
+  const finishRenameQueryTab = useCallback((tabKey: string, value: string) => {
+    const title = normalizeQueryTabTitle(value)
+    if (title) {
+      const target = useWorkbenchStore.getState().openTableTabs[tabKey]
+      if (target?.type === 'sql-query') {
+        setOpenTableTabs((current) => ({
+          ...current,
+          [tabKey]: { ...target, label: title },
+        }))
+        useSqlEditorStore.getState().updateTab(target.queryId, { title })
+      }
+    }
+    setRenamingQueryTab(null)
+  }, [setOpenTableTabs])
+
+  useEffect(() => {
+    if (renamingQueryTab && !openTableTabs[renamingQueryTab.tabKey]) {
+      setRenamingQueryTab(null)
+    }
+  }, [openTableTabs, renamingQueryTab])
 
   // --- 添加连接到工作台 ---
   const [connectingId, setConnectingId] = useState<string | null>(null)
@@ -664,7 +1049,7 @@ export const WorkbenchPage: React.FC = () => {
         setConnectingId(null)
       }
     }
-    addOpenConnection(conn.id, conn.name)
+    addOpenConnection(conn.id, conn.name, conn.dbType)
   }, [connections, updateConnection, addOpenConnection])
 
   // --- 从工作台移除连接 ---
@@ -768,16 +1153,22 @@ export const WorkbenchPage: React.FC = () => {
 
   // --- 收藏脚本 --------------------------------------------
   const [savedScripts, setSavedScripts] = useState<SavedScript[]>([])
+  const lastSavedScriptsFocusLoadAtRef = useRef(0)
   const loadSavedScripts = useCallback(async () => {
     try {
       const res = await scriptApi.list()
       setSavedScripts(res as SavedScript[])
-    } catch(e) { /* ignore */ }
+    } catch { /* ignore */ }
   }, [])
   useEffect(() => { loadSavedScripts() }, [loadSavedScripts])
   // 暴露给外部调用（如保存弹窗结束后想刷新）可以利用发布订阅，或简单定时、或重新挂载
   useEffect(() => {
-    const handleFocus = () => loadSavedScripts()
+    const handleFocus = () => {
+      const now = Date.now()
+      if (now - lastSavedScriptsFocusLoadAtRef.current < 5000) return
+      lastSavedScriptsFocusLoadAtRef.current = now
+      loadSavedScripts()
+    }
     window.addEventListener('focus', handleFocus)
     return () => window.removeEventListener('focus', handleFocus)
   }, [loadSavedScripts])
@@ -1039,17 +1430,33 @@ export const WorkbenchPage: React.FC = () => {
   ) => {
     try {
       toast.info('正在获取数据...')
-      const [def, rows] = await Promise.all([
-        metadataApi.tableDefinition(connId, dbName, tableName) as Promise<{ columns: ColumnInfo[] }>,
+      const [columns, rows] = await Promise.all([
+        metadataApi.columns(connId, dbName, tableName) as Promise<ColumnInfo[]>,
         metadataApi.previewRows(connId, dbName, tableName) as Promise<Record<string, unknown>[]>,
       ])
-      const colNames = (def.columns || []).map(c => c.name)
-      exportTableData(tableName, colNames, rows, format)
-      toast.success('导出成功')
+      const colNames = (columns || []).map(c => c.name)
+      if (format === 'sql') {
+        const dbType = openConnectionDbTypes.get(connId)
+        if (!dbType) {
+          toast.warning('无法识别当前连接的数据库类型')
+          return
+        }
+        confirmDataExport({
+          columns: colNames,
+          rows,
+          format,
+          filenameBase: tableName,
+          tableName,
+          dbType,
+          loadedOnly: true,
+        })
+      } else {
+        confirmDataExport({ columns: colNames, rows, format, filenameBase: tableName, tableName, loadedOnly: true })
+      }
     } catch (e) {
       handleApiError(e, '导出数据失败')
     }
-  }, [])
+  }, [openConnectionDbTypes])
 
   // --- 右键菜单 ---
   const getContextMenuItems = useCallback((nodeKey: string): MenuProps['items'] => {
@@ -1057,33 +1464,36 @@ export const WorkbenchPage: React.FC = () => {
     if (nodeKey.startsWith('conn:')) {
       const connId = nodeKey.slice(5)
       const conn = openConnections.find((c) => c.id === connId)
-      return [
-        {
+      const cap = getDbCapabilities(conn?.dbType ?? null)
+      const items: MenuProps['items'] = []
+      if (cap.metadata.schemaCreation) {
+        items.push({
           key: 'create-db',
           icon: <PlusOutlined />,
-          label: '新建数据库',
-          onClick: () => setCreateDbModal({ connectionId: connId, connectionName: conn?.name ?? '' }),
-        },
+          label: conn?.dbType === 'dameng' ? '新建 Schema' : '新建数据库',
+          onClick: () => setCreateDbModal({ connectionId: connId, connectionName: conn?.name ?? '', dbType: conn?.dbType ?? 'mysql' }),
+        })
+      }
+      items.push(
         {
           key: 'refresh-conn',
           icon: <ReloadOutlined />,
           label: '刷新',
           onClick: () => loadDatabases(connId),
         },
-      ]
+      )
+      return items
     }
     // 数据库节点：刷新 / 删除数据库
     if (nodeKey.startsWith('db:')) {
       const parts = nodeKey.slice(3).split(':')
       const connId = parts[0]
       const dbName = parts.slice(1).join(':')
-      return [
-        {
-          key: 'edit-db',
-          icon: <EditOutlined />,
-          label: '编辑数据库',
-          onClick: () => setEditDbModal({ connectionId: connId, databaseName: dbName }),
-        },
+      const conn = openConnections.find((c) => c.id === connId)
+      const dbType = conn?.dbType ?? 'mysql'
+      const cap = getDbCapabilities(dbType)
+      const namespaceLabel = databaseNamespaceLabel(dbType)
+      const items: MenuProps['items'] = [
         {
           key: 'refresh-db',
           icon: <ReloadOutlined />,
@@ -1091,71 +1501,80 @@ export const WorkbenchPage: React.FC = () => {
           onClick: () => loadTables(connId, dbName),
         },
         { type: 'divider' },
-        {
+      ]
+      if (cap.metadata.schemaAlterCharset) {
+        items.unshift({
+          key: 'edit-db',
+          icon: <EditOutlined />,
+          label: '编辑数据库',
+          onClick: () => setEditDbModal({ connectionId: connId, databaseName: dbName }),
+        })
+      }
+      if (cap.workbench.backup) {
+        items.push({
           key: 'backup-db',
           icon: <DatabaseOutlined />,
-          label: '备份数据库...',
-          onClick: () => {
-            const conn = openConnections.find((c) => c.id === connId)
-            setBackupModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName })
-          }
-        },
-        {
+          label: `备份${namespaceLabel}...`,
+          onClick: () => setBackupModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName, dbType }),
+        })
+      }
+      if (cap.workbench.restore) {
+        items.push({
           key: 'restore-db',
           icon: <ReloadOutlined />,
-          label: '恢复数据库...',
-          onClick: () => {
-            const conn = openConnections.find((c) => c.id === connId)
-            setRestoreModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName })
-          }
-        },
-        {
+          label: `恢复${namespaceLabel}...`,
+          onClick: () => setRestoreModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName, dbType }),
+        })
+      }
+      if (cap.workbench.exportData) {
+        items.push({
           key: 'export-db',
           icon: <ExportOutlined />,
-          label: '导出数据库...',
-          onClick: () => {
-             const conn = openConnections.find((c) => c.id === connId)
-             setExportModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName })
-          }
-        },
-        {
+          label: `导出${namespaceLabel}...`,
+          onClick: () => setExportModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName, dbType }),
+        })
+      }
+      if (cap.workbench.importSql) {
+        items.push({
           key: 'import-sql',
           icon: <UploadOutlined />,
           label: '执行 SQL 文件',
-          onClick: () => {
-            const conn = openConnections.find((c) => c.id === connId)
-            setImportSqlModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName })
-          },
-        },
-        { type: 'divider' },
-        {
-          key: 'drop-db',
-          icon: <DeleteOutlined />,
-          label: '删除数据库',
-          danger: true,
-          onClick: () => {
-            Modal.confirm({
-              title: `确认删除数据库「${dbName}」？`,
-              content: '此操作不可恢复，数据库中的所有数据将被永久删除。',
-              okText: '删除',
-              okType: 'danger',
-              cancelText: '取消',
-              onOk: async () => {
-                try {
-                  await metadataApi.dropDatabase(connId, dbName)
-                  toast.success(`数据库「${dbName}」已删除`)
-                  loadDatabases(connId)
-                  if (selectedCtx?.connectionId === connId && selectedCtx?.database === dbName) {
-                    setSelectedCtx({ connectionId: connId })
+          onClick: () => setImportSqlModal({ connectionId: connId, connectionName: conn?.name ?? '', database: dbName, dbType }),
+        })
+      }
+      if (cap.metadata.schemaManagement) {
+        items.push(
+          { type: 'divider' },
+          {
+            key: 'drop-db',
+            icon: <DeleteOutlined />,
+            label: `删除${namespaceLabel}`,
+            danger: true,
+            onClick: () => {
+              Modal.confirm({
+                title: `确认删除${namespaceLabel}「${dbName}」？`,
+                content: `此操作不可恢复，${namespaceLabel} 中的所有数据将被永久删除。`,
+                okText: '删除',
+                okType: 'danger',
+                cancelText: '取消',
+                onOk: async () => {
+                  try {
+                    await metadataApi.dropDatabase(connId, dbName)
+                    toast.success(`${namespaceLabel}「${dbName}」已删除`)
+                    loadDatabases(connId)
+                    if (selectedCtx?.connectionId === connId && selectedCtx?.database === dbName) {
+                      setSelectedCtx({ connectionId: connId })
+                    }
+                  } catch (e) {
+                    handleApiError(e, `删除${namespaceLabel}失败`)
                   }
-                } catch (e) {
-                  handleApiError(e, '删除数据库失败')
-                }
-              },
-            })
+                },
+              })
+            },
           },
-        },
-      ]
+        )
+      }
+      return items
     }
     // 分类节点（表/视图/触发器）
     if (nodeKey.startsWith('cat:')) {
@@ -1163,8 +1582,10 @@ export const WorkbenchPage: React.FC = () => {
       const connId = parts[0]
       const dbName = parts[1]
       const catKey = parts.slice(2).join(':')
+      const conn = openConnections.find((c) => c.id === connId)
+      const cap = getDbCapabilities(conn?.dbType ?? null)
       const items: MenuProps['items'] = []
-      if (catKey === 'tables') {
+      if (catKey === 'tables' && cap.workbench.tableDesigner) {
         items.push({
           key: 'create-table',
           icon: <PlusOutlined />,
@@ -1255,33 +1676,8 @@ export const WorkbenchPage: React.FC = () => {
           icon: <EditOutlined />,
           label: '重命名',
           onClick: () => {
-            let newName = objName
-            Modal.confirm({
-              title: `重命名表「${objName}」`,
-              content: (
-                <Input
-                  defaultValue={objName}
-                  onChange={(e) => { newName = e.target.value }}
-                  style={{ marginTop: 8 }}
-                  autoFocus
-                />
-              ),
-              okText: '确定',
-              cancelText: '取消',
-              onOk: async () => {
-                if (!newName.trim() || newName === objName) return
-                try {
-                  await metadataApi.renameTable(connId, dbName, objName, newName)
-                  toast.success(`表已重命名为「${newName}」`)
-                  loadTables(connId, dbName)
-                  if (selectedCtx?.table === objName) {
-                    setSelectedCtx({ connectionId: connId, database: dbName, table: newName })
-                  }
-                } catch (e) {
-                  handleApiError(e, '重命名表失败')
-                }
-              },
-            })
+            setRenameTableTarget({ connectionId: connId, database: dbName, tableName: objName })
+            setRenameTableInput(objName)
           },
         },
         {
@@ -1356,7 +1752,7 @@ export const WorkbenchPage: React.FC = () => {
       ]
     }
     return []
-  }, [openConnections, loadDatabases, loadTables, selectedCtx, setSelectedCtx, handleTableExport, setCreateDbModal, setEditDbModal, setImportSqlModal, setExportModal, openTableDesignerTab, objectsMap, openOrActivateTab, updateTabState, loadTabDataForTab])
+  }, [openConnections, loadDatabases, loadTables, selectedCtx, setSelectedCtx, handleTableExport, setCreateDbModal, setEditDbModal, setImportSqlModal, setExportModal, openTableDesignerTab, objectsMap, openOrActivateTab])
 
   // 延迟计算菜单项：仅在右键触发瞬间计算 1 次（而非 titleRender 中 N 次）
   const treeCtxMenuItems = useMemo(
@@ -1472,14 +1868,14 @@ export const WorkbenchPage: React.FC = () => {
             </Dropdown>
           </div>
           <Space size={8} wrap style={{ marginTop: 12 }}>
-            <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+            <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
               连接 {openConnections.length}
             </Tag>
-            <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+            <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
               脚本 {savedScripts.length}
             </Tag>
             {activeConnectionName && (
-              <Tag bordered={false} color="processing" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+              <Tag variant="filled" color="processing" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                 当前: {activeConnectionName}
               </Tag>
             )}
@@ -1688,6 +2084,8 @@ export const WorkbenchPage: React.FC = () => {
                     type="editable-card"
                     size="small"
                     hideAdd
+                    onContextMenu={handleTabBarContextMenu}
+                    onDoubleClick={handleTabBarDoubleClick}
                     activeKey={activeTableTabKey ?? undefined}
                     onChange={(key) => {
                       const tab = openTableTabs[key]
@@ -1754,16 +2152,41 @@ export const WorkbenchPage: React.FC = () => {
                         : tab.type === 'sql-query'
                           ? `SQL 查询`
                           : tab.database
+                      const isRenaming = tab.type === 'sql-query' && renamingQueryTab?.tabKey === key
                       return {
                         key,
-                        label: (
+                        label: isRenaming ? (
                           <span
-                            title={tabTitle}
-                            onContextMenu={(e) => {
-                              e.preventDefault()
-                              e.stopPropagation()
-                              setTabCtxMenu({ x: e.clientX, y: e.clientY, tabKey: key })
-                            }}
+                            style={{ display: 'inline-flex', alignItems: 'center' }}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            {tabIcon}
+                            <Input
+                              ref={renameQueryTabInputRef}
+                              aria-label="查询页签名称"
+                              size="small"
+                              value={renamingQueryTab.value}
+                              maxLength={MAX_QUERY_TAB_TITLE_LENGTH}
+                              onChange={(event) => setRenamingQueryTab({ tabKey: key, value: event.target.value })}
+                              onBlur={() => finishRenameQueryTab(key, renamingQueryTab.value)}
+                              onKeyDown={(event) => {
+                                event.stopPropagation()
+                                if (event.key === 'Enter') {
+                                  event.preventDefault()
+                                  finishRenameQueryTab(key, renamingQueryTab.value)
+                                } else if (event.key === 'Escape') {
+                                  event.preventDefault()
+                                  setRenamingQueryTab(null)
+                                }
+                              }}
+                              style={{ width: 168, height: 24 }}
+                            />
+                          </span>
+                        ) : (
+                          <span
+                            title={tab.type === 'sql-query' ? `${tabLabel}（双击重命名）` : tabTitle}
+                            style={tab.type === 'sql-query' ? { userSelect: 'none' } : undefined}
                           >
                             {tabIcon}{tabLabel}
                           </span>
@@ -1791,8 +2214,12 @@ export const WorkbenchPage: React.FC = () => {
                         padding: '6px 0', minWidth: 140,
                       }}>
                         {[
+                          ...(openTableTabs[tabCtxMenu.tabKey]?.type === 'sql-query'
+                            ? [{ label: '重命名', onClick: () => beginRenameQueryTab(tabCtxMenu.tabKey) }]
+                            : []),
                           { label: '关闭', onClick: () => closeTableTab(tabCtxMenu.tabKey) },
                           { label: '关闭其他', onClick: () => {
+                            removePaneKeys(tabKeys.filter((key) => key !== tabCtxMenu.tabKey))
                             setOpenTableTabs(prev => {
                               const keep = prev[tabCtxMenu.tabKey]
                               return keep ? { [tabCtxMenu.tabKey]: keep } : {}
@@ -1802,6 +2229,7 @@ export const WorkbenchPage: React.FC = () => {
                           { label: '关闭左侧', onClick: () => {
                             const idx = tabKeys.indexOf(tabCtxMenu.tabKey)
                             const toRemove = new Set(tabKeys.slice(0, idx))
+                            removePaneKeys(toRemove)
                             setOpenTableTabs(prev => {
                               const next = { ...prev }
                               for (const k of toRemove) delete next[k]
@@ -1812,6 +2240,7 @@ export const WorkbenchPage: React.FC = () => {
                           { label: '关闭右侧', onClick: () => {
                             const idx = tabKeys.indexOf(tabCtxMenu.tabKey)
                             const toRemove = new Set(tabKeys.slice(idx + 1))
+                            removePaneKeys(toRemove)
                             setOpenTableTabs(prev => {
                               const next = { ...prev }
                               for (const k of toRemove) delete next[k]
@@ -1820,6 +2249,7 @@ export const WorkbenchPage: React.FC = () => {
                             if (activeTableTabKey && toRemove.has(activeTableTabKey)) setActiveTableTabKey(tabCtxMenu.tabKey)
                           }},
                           { label: '关闭全部', onClick: () => {
+                            removePaneKeys(tabKeys)
                             setOpenTableTabs({})
                             setActiveTableTabKey(null)
                           }},
@@ -1840,14 +2270,39 @@ export const WorkbenchPage: React.FC = () => {
                 </>
               )
             })()}
-            {/* 当前活动 Tab 的详情内容 */}
-            {/* Tab 内容区域 — 根据 Tab 类型渲染 */}
-            {activeTab && (() => {
-              const tabKey = activeTableTabKey!
+            {/* Tab 内容区域 — 最近使用的 pane 保持挂载，避免表格切换重建 */}
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+              {mountedPaneKeys.map((paneKey) => {
+                const paneTab = openTableTabs[paneKey]
+                if (!paneTab) return null
+                const isActivePane = paneKey === activeTableTabKey
+                const tabKey = paneKey
+                const activeTab = paneTab
+
+                return (
+                  <div
+                    key={paneKey}
+                    aria-hidden={!isActivePane}
+                    style={{
+                      display: isActivePane ? 'flex' : 'none',
+                      flexDirection: 'column',
+                      height: '100%',
+                      minHeight: 0,
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {(() => {
 
               // ===== 表详情 Tab =====
               if (activeTab.type === 'table') {
                 const t = activeTab
+                const isDataLoading = t.detailTab === 'data' && (
+                  t.loadingTabs.includes('data') ||
+                  t.loadingTabs.includes('columns')
+                )
+                const isDdlLoading = t.detailTab === 'ddl' && (
+                  t.loadingTabs.includes('ddl')
+                )
                 return (
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                     <div style={{ padding: '12px 16px 0 16px', flexShrink: 0 }}>
@@ -1874,10 +2329,10 @@ export const WorkbenchPage: React.FC = () => {
                             />
                             <Space size={8} wrap style={{ marginTop: 10 }}>
                               <Text strong style={{ fontSize: 18, color: token.colorText }}>{t.tableName}</Text>
-                              <Tag bordered={false} color={t.objectType === 'view' ? 'processing' : 'default'} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                              <Tag variant="filled" color={t.objectType === 'view' ? 'processing' : 'default'} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 {t.objectType === 'view' ? '视图' : '表'}
                               </Tag>
-                              <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                              <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 {t.connectionName}
                               </Tag>
                             </Space>
@@ -1914,7 +2369,9 @@ export const WorkbenchPage: React.FC = () => {
                                 <Text type="secondary" style={{ fontSize: 12, flex: 1 }}>
                                   {t.objectType === 'view'
                                     ? '视图数据为只读模式'
-                                    : t.columns.length > 0 && t.columns.some((c: ColumnInfo) => c.isPrimaryKey)
+                                    : isDataLoading
+                                      ? '正在加载表数据...'
+                                      : t.columns.length > 0 && t.columns.some((c: ColumnInfo) => c.isPrimaryKey)
                                       ? `可编辑数据 · 主键：${t.columns.filter((c: ColumnInfo) => c.isPrimaryKey).map((c: ColumnInfo) => c.name).join(', ')}`
                                       : '当前表缺少主键，数据编辑功能不可用'}
                                 </Text>
@@ -1922,12 +2379,35 @@ export const WorkbenchPage: React.FC = () => {
                                   <Text type="secondary" style={{ fontSize: 12 }}>
                                     {t.previewRows.length > 0 ? `共 ${t.previewRows.length} 行` : ''}
                                   </Text>
+                                  <Tooltip title="刷新当前数据">
+                                    <Button
+                                      size="small"
+                                      icon={<ReloadOutlined />}
+                                      loading={isDataLoading}
+                                      style={quietButtonStyle}
+                                      onClick={() => refreshTableRows(tabKey)}
+                                    >
+                                      刷新
+                                    </Button>
+                                  </Tooltip>
                                   {t.previewRows.length > 0 && (
                                     <Dropdown menu={{
                                       items: [
-                                        { key: 'csv', label: '导出为 CSV', onClick: () => exportTableData(t.tableName, t.columns.map((c: ColumnInfo) => c.name), t.previewRows, 'csv') },
-                                        { key: 'json', label: '导出为 JSON', onClick: () => exportTableData(t.tableName, t.columns.map((c: ColumnInfo) => c.name), t.previewRows, 'json') },
-                                        { key: 'sql', label: '导出为 SQL INSERT', onClick: () => exportTableData(t.tableName, t.columns.map((c: ColumnInfo) => c.name), t.previewRows, 'sql') },
+                                        { key: 'csv', label: '导出为 CSV', onClick: () => confirmDataExport({ columns: t.columns.map((c: ColumnInfo) => c.name), rows: t.previewRows, format: 'csv', filenameBase: t.tableName, tableName: t.tableName, loadedOnly: t.hasMoreRows }) },
+                                        { key: 'json', label: '导出为 JSON', onClick: () => confirmDataExport({ columns: t.columns.map((c: ColumnInfo) => c.name), rows: t.previewRows, format: 'json', filenameBase: t.tableName, tableName: t.tableName, loadedOnly: t.hasMoreRows }) },
+                                        ...(openConnectionDbTypes.get(t.connectionId) ? [{
+                                          key: 'sql',
+                                          label: '导出为 SQL INSERT',
+                                          onClick: () => confirmDataExport({
+                                            columns: t.columns.map((c: ColumnInfo) => c.name),
+                                            rows: t.previewRows,
+                                            format: 'sql',
+                                            filenameBase: t.tableName,
+                                            tableName: t.tableName,
+                                            dbType: openConnectionDbTypes.get(t.connectionId)!,
+                                            loadedOnly: t.hasMoreRows,
+                                          }),
+                                        }] : []),
                                       ],
                                     }}>
                                       <Button size="small" icon={<DownloadOutlined />} style={quietButtonStyle}>导出</Button>
@@ -1938,58 +2418,57 @@ export const WorkbenchPage: React.FC = () => {
                               <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                                 <EditableDataTable
                                   connectionId={t.connectionId}
+                                  dbType={openConnectionDbTypes.get(t.connectionId)}
                                   database={t.database}
                                   tableName={t.tableName}
                                   columns={t.columns}
                                   dataSource={t.previewRows}
                                   hasMore={t.hasMoreRows}
                                   loadingMore={t.loadingMoreRows}
+                                  loading={isDataLoading}
+                                  active={isActivePane && t.detailTab === 'data'}
+                                  onDirtyChange={(dirty) => setPaneDirty(tabKey, dirty)}
+                                  filterState={{
+                                    whereDraft: t.dataQuery?.whereDraft ?? t.dataQuery?.where ?? '',
+                                    appliedWhere: t.dataQuery?.appliedWhere ?? t.dataQuery?.where ?? '',
+                                    sortColumn: t.dataQuery?.sortColumn ?? null,
+                                    sortDirection: t.dataQuery?.sortDirection ?? null,
+                                  }}
+                                  onFilterStateChange={(patch) => {
+                                    updateTabState(tabKey, (prev) => ({
+                                      dataQuery: { ...(prev.dataQuery ?? {}), ...patch },
+                                    }))
+                                  }}
                                   onLoadMore={async () => {
                                     // 防止并发
                                     if (t.loadingMoreRows || !t.hasMoreRows) return
+                                    const requestKey = `${tabKey}::data`
+                                    const seq = (loadSeqRef.current[requestKey] ?? 0) + 1
+                                    loadSeqRef.current[requestKey] = seq
+                                    const isCurrentRequest = () => loadSeqRef.current[requestKey] === seq
                                     updateTabState(tabKey, () => ({ loadingMoreRows: true }))
                                     try {
                                       const rows = await metadataApi.previewRows(
                                         t.connectionId, t.database, t.tableName,
-                                        { limit: PREVIEW_PAGE_SIZE, offset: t.previewRows.length }
+                                        { ...(t.dataQuery ?? {}), limit: PREVIEW_PAGE_SIZE, offset: t.previewRows.length }
                                       ) as Record<string, unknown>[]
+                                      if (!isCurrentRequest()) return
+                                      const hasQuery = Boolean(t.dataQuery?.where || t.dataQuery?.orderBy)
                                       updateTabState(tabKey, (prev) => ({
                                         previewRows: [...prev.previewRows, ...rows],
-                                        hasMoreRows: rows.length >= PREVIEW_PAGE_SIZE,
-                                        loadingMoreRows: false,
+                                        hasMoreRows: !hasQuery && rows.length >= PREVIEW_PAGE_SIZE,
                                       }))
                                     } catch (e) {
-                                      updateTabState(tabKey, () => ({ loadingMoreRows: false }))
+                                      if (!isCurrentRequest()) return
                                       handleApiError(e, '加载更多数据失败')
+                                    } finally {
+                                      if (isCurrentRequest()) {
+                                        updateTabState(tabKey, () => ({ loadingMoreRows: false }))
+                                      }
                                     }
                                   }}
-                                  onRefresh={async () => {
-                                    try {
-                                      const rows = await metadataApi.previewRows(
-                                        t.connectionId, t.database, t.tableName,
-                                        { limit: PREVIEW_PAGE_SIZE }
-                                      ) as Record<string, unknown>[]
-                                      updateTabState(tabKey, () => ({
-                                        previewRows: rows,
-                                        hasMoreRows: rows.length >= PREVIEW_PAGE_SIZE,
-                                      }))
-                                    } catch (e) {
-                                      handleApiError(e, '刷新数据失败')
-                                    }
-                                  }}
-                                  onFilter={async (params) => {
-                                    try {
-                                      const rows = await metadataApi.previewRows(
-                                        t.connectionId, t.database, t.tableName, params
-                                      ) as Record<string, unknown>[]
-                                      updateTabState(tabKey, () => ({
-                                        previewRows: rows,
-                                        hasMoreRows: false,
-                                      }))
-                                    } catch (e) {
-                                      handleApiError(e, '筛选数据失败')
-                                    }
-                                  }}
+                                  onRefresh={() => refreshTableRows(tabKey)}
+                                  onFilter={(params) => refreshTableRows(tabKey, params, '筛选数据失败')}
                                 />
                               </div>
                             </div>
@@ -2005,7 +2484,27 @@ export const WorkbenchPage: React.FC = () => {
                                 connectionName={t.connectionName}
                                 database={t.database}
                                 editTableName={t.tableName}
-                                onSuccess={() => {
+                                dbType={openConnections.find(c => c.id === t.connectionId)?.dbType}
+                                onSuccess={(result: TableDesignerSaveResult) => {
+                                  if (result.renamed && result.previousTableName) {
+                                    const renamedTab = applyRenamedTableState(
+                                      t.connectionId,
+                                      t.database,
+                                      result.previousTableName,
+                                      result.tableName,
+                                    )
+                                    loadTables(t.connectionId, t.database)
+                                    if (renamedTab.tabKey && renamedTab.detailTab) {
+                                      loadTabDataForTab(
+                                        renamedTab.tabKey,
+                                        t.connectionId,
+                                        t.database,
+                                        result.tableName,
+                                        renamedTab.detailTab,
+                                      )
+                                    }
+                                    return
+                                  }
                                   updateTabState(tabKey, (prev) => ({
                                     loadedTabs: prev.loadedTabs.filter(k => k !== 'columns'),
                                   }))
@@ -2023,18 +2522,7 @@ export const WorkbenchPage: React.FC = () => {
                           label: 'DDL',
                           children: (
                             <div style={{ ...panelStyle, height: '100%', overflow: 'hidden', padding: 0 }}>
-                              <pre style={{
-                                margin: 0,
-                                padding: 16,
-                                color: token.colorText,
-                                background: 'var(--glass-panel)',
-                                fontSize: 12,
-                                fontFamily: 'var(--font-family-code)',
-                                overflow: 'auto',
-                                height: '100%',
-                              }}>
-                                {t.ddl || '无 DDL 数据'}
-                              </pre>
+                              <DdlViewer ddl={t.ddl} loading={isDdlLoading} />
                             </div>
                           ),
                         },
@@ -2079,13 +2567,13 @@ export const WorkbenchPage: React.FC = () => {
                               {activeTab.database}
                             </Text>
                             <Space size={8} wrap style={{ marginTop: 10 }}>
-                              <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                              <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 {activeTab.connectionName}
                               </Tag>
-                              <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                              <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 对象 {dbObjects.length}
                               </Tag>
-                              <Tag bordered={false} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                              <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 表空间 {formatBytes(totalTableBytes)}
                               </Tag>
                             </Space>
@@ -2174,7 +2662,7 @@ export const WorkbenchPage: React.FC = () => {
                       objectCategories={objectCategories}
                       search={activeTab.categorySearch || ''}
                       onSearchChange={(value) => {
-                        const key = activeTableTabKey!
+                        const key = tabKey
                         setOpenTableTabs((prev) => ({
                           ...prev,
                           [key]: { ...prev[key], categorySearch: value } as WorkbenchTab,
@@ -2198,7 +2686,12 @@ export const WorkbenchPage: React.FC = () => {
               if (activeTab.type === 'sql-query') {
                 return (
                   <div style={{ flex: 1, overflow: 'hidden' }}>
-                    <QueryEditorPane queryId={activeTab.queryId} />
+                    <QueryEditorPane
+                      queryId={activeTab.queryId}
+                      active={isActivePane}
+                      onOpenObjectDetail={handleOpenObjectDetailFromQuery}
+                      onContextChange={handleQueryContextChange}
+                    />
                   </div>
                 )
               }
@@ -2212,18 +2705,31 @@ export const WorkbenchPage: React.FC = () => {
                       connectionName={activeTab.connectionName}
                       database={activeTab.database}
                       editTableName={activeTab.tableName}
-                      onSuccess={() => {
+                      dbType={openConnections.find(c => c.id === activeTab.connectionId)?.dbType}
+                      onSuccess={(result: TableDesignerSaveResult) => {
+                        if (result.renamed && result.previousTableName) {
+                          applyRenamedTableState(
+                            activeTab.connectionId,
+                            activeTab.database,
+                            result.previousTableName,
+                            result.tableName,
+                          )
+                        }
                         loadTables(activeTab.connectionId, activeTab.database)
-                        closeTableTab(activeTableTabKey!)
+                        closeTableTab(tabKey)
                       }}
-                      onCancel={() => closeTableTab(activeTableTabKey!)}
+                      onCancel={() => closeTableTab(tabKey)}
                     />
                   </div>
                 )
               }
 
               return null
-            })()}
+                    })()}
+                  </div>
+                )
+              })}
+            </div>
           </div>
         ) : (
           <EmptyState
@@ -2248,12 +2754,40 @@ export const WorkbenchPage: React.FC = () => {
         )}
       </Content>
 
+      <Modal
+        open={!!renameTableTarget}
+        title={renameTableTarget ? `重命名表「${renameTableTarget.tableName}」` : '重命名表'}
+        okText="确定"
+        cancelText="取消"
+        width={420}
+        centered
+        confirmLoading={renamingTable}
+        okButtonProps={{
+          disabled: !renameTableTarget || !renameTableInput.trim() || renameTableInput.trim() === renameTableTarget.tableName,
+        }}
+        onOk={handleRenameTableSubmit}
+        onCancel={closeRenameTableModal}
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%', paddingTop: 4 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>新表名</Text>
+          <Input
+            value={renameTableInput}
+            onChange={(e) => setRenameTableInput(e.target.value)}
+            onPressEnter={handleRenameTableSubmit}
+            placeholder="输入新表名"
+            autoFocus
+            disabled={renamingTable}
+          />
+        </Space>
+      </Modal>
+
       {/* 新建数据库弹窗 */}
       {createDbModal && (
         <CreateDatabaseModal
           open={!!createDbModal}
           connectionId={createDbModal.connectionId}
           connectionName={createDbModal.connectionName}
+          dbType={createDbModal.dbType}
           onClose={() => setCreateDbModal(null)}
           onSuccess={() => loadDatabases(createDbModal.connectionId)}
         />
@@ -2277,6 +2811,7 @@ export const WorkbenchPage: React.FC = () => {
           connectionId={importSqlModal.connectionId}
           connectionName={importSqlModal.connectionName}
           database={importSqlModal.database}
+          dbType={importSqlModal.dbType}
           databases={(databasesMap[importSqlModal.connectionId] || []).map(d => d.name)}
           onClose={() => setImportSqlModal(null)}
         />
@@ -2294,6 +2829,7 @@ export const WorkbenchPage: React.FC = () => {
           connectionId={backupModal.connectionId}
           connectionName={backupModal.connectionName}
           database={backupModal.database}
+          dbType={backupModal.dbType}
         />
       )}
 
@@ -2304,6 +2840,7 @@ export const WorkbenchPage: React.FC = () => {
           targetConnectionId={restoreModal.connectionId}
           targetConnectionName={restoreModal.connectionName}
           defaultTargetDatabase={restoreModal.database}
+          dbType={restoreModal.dbType}
         />
       )}
 
@@ -2356,7 +2893,13 @@ export const WorkbenchPage: React.FC = () => {
                 onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = 'var(--glass-panel-hover)' }}
                 onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
                 onClick={() => {
-                  if (item.onClick) item.onClick({ key: String(item.key), keyPath: [String(item.key)], domEvent: new MouseEvent('click') } as any)
+                  if (item.onClick) {
+                    item.onClick({
+                      key: String(item.key),
+                      keyPath: [String(item.key)],
+                      domEvent: new MouseEvent('click'),
+                    } as unknown as Parameters<NonNullable<typeof item.onClick>>[0])
+                  }
                   setTreeCtxMenu(null)
                 }}
               >

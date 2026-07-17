@@ -1,7 +1,7 @@
 // 全局类型定义
 
 // 数据库类型
-export type DbType = 'mysql' | 'postgresql' | 'oracle' | 'sqlserver' | 'sqlite'
+export type DbType = 'mysql' | 'dameng' | 'postgresql' | 'oracle' | 'sqlserver' | 'sqlite'
 
 // 连接状态
 export type ConnectionStatus = 'connected' | 'disconnected' | 'connecting' | 'error'
@@ -30,6 +30,8 @@ export interface ConnectionConfig {
   ssh?: SshConfig
   ssl?: SslConfig
   groupId?: string
+  /** Vault reference — non-null means a credential is stored */
+  passwordRef?: string | null
 }
 
 // 连接分组
@@ -46,8 +48,10 @@ export interface SshConfig {
   port: number
   username: string
   authType: 'password' | 'privateKey'
-  password?: string
+  password?: string | null
   privateKeyPath?: string
+  /** Vault reference — non-null means a credential is stored */
+  passwordRef?: string | null
 }
 
 // SSL 配置
@@ -104,7 +108,7 @@ export interface SqlResult {
   type: 'query' | 'update' | 'error'
   columns?: string[]
   rows?: Record<string, unknown>[]
-  affectedRows?: number
+  affectedRows?: number | null
   preview?: boolean
   hasMore?: boolean
   connectionId?: string // 用于加载更多
@@ -118,6 +122,7 @@ export interface SqlResult {
   sql: string
   executedAt: string
   error?: string
+  warning?: string
 }
 
 // SQL 历史记录
@@ -139,6 +144,15 @@ export interface TableVerifyResult {
   errorMessage?: string
 }
 
+export interface TaskEndpointSnapshot {
+  connectionId: string
+  connectionName: string
+  dbType: DbType
+  host: string
+  port: number
+  database: string
+}
+
 // 任务信息
 export interface TaskInfo {
   id: string
@@ -156,6 +170,9 @@ export interface TaskInfo {
   errorMessage?: string
   progressMessage?: string
   verification?: TableVerifyResult[]
+  sourceEndpoint?: TaskEndpointSnapshot
+  targetEndpoint?: TaskEndpointSnapshot
+  payload?: Record<string, string>
 }
 
 // 任务步骤
@@ -328,6 +345,8 @@ export interface IndexDiff {
   targetColumns?: string[]
   sourceUnique?: boolean
   targetUnique?: boolean
+  sourcePrimary?: boolean
+  targetPrimary?: boolean
   details: string
 }
 
@@ -491,6 +510,7 @@ export type EditabilityReason =
   | 'aggregate'           // 聚合查询
   | 'view'                // 视图查询
   | 'no_primary_key'      // 表无主键
+  | 'missing_primary_key_columns' // SELECT 结果未包含完整主键
   | 'metadata_error'      // 元数据获取失败
 
 export interface EditabilityStatus {
@@ -498,6 +518,6 @@ export interface EditabilityStatus {
   reason?: EditabilityReason
   tableName?: string
   primaryKeys?: string[]
+  missingPrimaryKeys?: string[]
   columns?: ColumnInfo[]
 }
-

@@ -4,6 +4,7 @@ include(
     "common",
     "api",
     "drivers:mysql",
+    "drivers:dameng",
     "metadata",
     "dialect",
     "compare-engine",

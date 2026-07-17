@@ -74,7 +74,7 @@ export const EditDatabaseModal: React.FC<EditDatabaseModalProps> = ({
       confirmLoading={loading}
       okText="保存"
       cancelText="取消"
-      destroyOnClose
+      destroyOnHidden
       width={420}
     >
       <Form form={form} layout="vertical" style={{ marginTop: 16 }}>

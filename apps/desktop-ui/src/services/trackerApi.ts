@@ -8,12 +8,12 @@ import type {
   TrackerServerCheck, RollbackSqlRequest, RollbackSqlResult,
   BinlogFileInfo, PagedHistoryResponse,
 } from '@/types'
+import { KERNEL_BASE_URL, kernelFetch } from './kernelAuth'
 
-const BASE = 'http://localhost:18080/api/tracker'
+const BASE = '/api/tracker'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+  const res = await kernelFetch(`${BASE}${path}`, {
     cache: 'no-store',
     ...options,
   })
@@ -108,6 +108,9 @@ export const trackerApi = {
     request<BinlogFileInfo[]>(`/binlog-files?connectionId=${connectionId}`),
 
   /** 创建 SSE 连接（现在只接收 SseTick 轻量通知） */
-  createEventSource: (sessionId: string) =>
-    new EventSource(`${BASE}/events?sessionId=${sessionId}`),
+  createEventSource: async (sessionId: string) => {
+    const { ticket } = await request<{ ticket: string }>('/events-ticket', { method: 'POST' })
+    const params = new URLSearchParams({ sessionId, ticket })
+    return new EventSource(`${KERNEL_BASE_URL}${BASE}/events?${params.toString()}`)
+  },
 }

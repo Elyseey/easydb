@@ -11,8 +11,10 @@ import {
 } from '@ant-design/icons'
 import { metadataApi, backupApi, taskApi } from '@/services/api'
 import type { TableInfo } from '@/types'
+import type { DbType } from '@/types'
 import { handleApiError, toast } from '@/utils/notification'
 import { formatDuration, getElapsedMs } from '@/utils/format'
+import { databaseNamespaceLabel } from '@/utils/databaseNamespace'
 
 const { Text } = Typography
 
@@ -40,6 +42,7 @@ interface BackupDatabaseModalProps {
   connectionId: string
   connectionName: string
   database: string
+  dbType: DbType
 }
 
 interface TableItem {
@@ -119,10 +122,12 @@ const columns: TableColumnsType<TableItem> = [
 ]
 
 export default function BackupDatabaseModal({
-  open, onClose, connectionId, connectionName, database
+  open, onClose, connectionId, connectionName, database, dbType
 }: BackupDatabaseModalProps) {
   const { token } = theme.useToken()
   const [form] = Form.useForm()
+  const backupMode = Form.useWatch('mode', form) ?? 'full'
+  const namespaceLabel = databaseNamespaceLabel(dbType)
 
   const [step, setStep] = useState(0)
   const [tables, setTables] = useState<TableItem[]>([])
@@ -218,7 +223,6 @@ export default function BackupDatabaseModal({
         setOutputPath(result)
       }
     } catch (e) {
-      console.error('选择文件夹失败:', e)
       toast.error('选择文件夹失败: ' + (e as Error).message)
     }
   }
@@ -342,9 +346,9 @@ export default function BackupDatabaseModal({
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           <Space>
             <SaveOutlined style={{ color: token.colorPrimary }} />
-            <Text strong>备份数据库</Text>
+            <Text strong>备份{namespaceLabel}</Text>
           </Space>
-          <Text type="secondary" style={{ fontSize: 12 }}>来源连接：{connectionName} · 数据库：{database}</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>来源连接：{connectionName} · {namespaceLabel}：{database}</Text>
         </div>
       }
       open={open}
@@ -376,8 +380,17 @@ export default function BackupDatabaseModal({
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="创建标准备份包，用于长期留存、变更前保护和后续恢复。备份包包含数据库结构、数据和校验信息。"
+          message={`创建标准备份包，用于长期留存、变更前保护和后续恢复。备份包包含${namespaceLabel}结构、数据和校验信息。`}
         />
+
+        {dbType === 'dameng' && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="达梦逻辑备份使用只读一致性事务；若无法建立一致性快照，任务日志会明确提示降级。"
+          />
+        )}
 
         <Steps size="small" current={step} style={{ marginBottom: 24, padding: '0 40px' }}
           items={[
@@ -397,7 +410,7 @@ export default function BackupDatabaseModal({
             }}>
               <Text strong style={{ display: 'block', marginBottom: 4 }}>选择备份表范围</Text>
               <Text type="secondary" style={{ display: 'block', marginBottom: 12, fontSize: 12 }}>
-                默认全选。留空等同于整库备份（推荐）。
+                默认全选；可取消不需要备份的表，至少保留一张。
               </Text>
               <Space style={{ marginBottom: 8 }}>
                 <Input.Search
@@ -497,9 +510,11 @@ export default function BackupDatabaseModal({
 
               <Alert
                 style={{ marginTop: 12 }}
-                type="warning"
+                type={dbType === 'dameng' && backupMode === 'data_only' ? 'error' : 'warning'}
                 showIcon
-                message="建议在结构调整、批量更新或迁移前先执行完整备份。"
+                message={dbType === 'dameng' && backupMode === 'data_only'
+                  ? '达梦仅允许恢复到全新 Schema，因此当前安全恢复模式不接受“仅数据”备份包。'
+                  : '建议在结构调整、批量更新或迁移前先执行完整备份。'}
               />
             </Card>
           </div>
@@ -553,9 +568,9 @@ export default function BackupDatabaseModal({
             title="备份完成"
             subTitle="标准备份包已生成。"
             extra={[
-              resultFilePath && (
+              resultFilePath && taskId && (
                 <Button key="download" type="primary" icon={<SaveOutlined />}
-                  href={backupApi.downloadUrl(resultFilePath)} target="_blank" download>
+                  onClick={() => backupApi.downloadTask(taskId).catch(err => toast.error(err.message || '下载失败'))}>
                   下载 .edbkp 文件
                 </Button>
               ),

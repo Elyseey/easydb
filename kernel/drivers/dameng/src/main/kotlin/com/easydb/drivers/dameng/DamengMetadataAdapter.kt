@@ -1,0 +1,851 @@
+package com.easydb.drivers.dameng
+
+import com.easydb.common.CharsetInfo
+import com.easydb.common.ColumnInfo
+import com.easydb.common.DatabaseInfo
+import com.easydb.common.DatabaseSession
+import com.easydb.common.IndexInfo
+import com.easydb.common.MetadataAdapter
+import com.easydb.common.RoutineInfo
+import com.easydb.common.TableDefinition
+import com.easydb.common.TableInfo
+import com.easydb.common.TriggerInfo
+import java.sql.Connection
+import java.sql.ResultSet
+import java.sql.Types
+
+internal object DamengDdlPolicy {
+    fun candidateTypes(objectType: String?): List<String> =
+        listOfNotNull(objectType, "TABLE", "VIEW", "PROCEDURE", "FUNCTION").distinct()
+}
+
+internal data class DamengDdlResolution(
+    val ddl: String,
+    val source: String?,
+    private val columns: List<ColumnInfo>? = null
+) {
+    fun columnsOrLoad(loader: () -> List<ColumnInfo>): List<ColumnInfo> = columns ?: loader()
+}
+
+class DamengMetadataAdapter : MetadataAdapter {
+
+    private val dialect = DamengDialectAdapter()
+
+    override fun listDatabases(session: DatabaseSession): List<DatabaseInfo> {
+        val conn = session.getJdbcConnection()
+        val schemas = linkedSetOf<String>()
+
+        DamengCatalogPolicy.mergeNames(schemas) {
+            conn.metaData.schemas.use { rs ->
+                val names = mutableListOf<String?>()
+                while (rs.next()) {
+                    names.add(rs.getString("TABLE_SCHEM"))
+                }
+                names
+            }
+        }
+
+        DamengCatalogPolicy.mergeNames(schemas) {
+            loadSchemaNames(conn, "SELECT USER AS NAME FROM DUAL", "NAME")
+        }
+        DamengCatalogPolicy.mergeNames(schemas) {
+            loadSchemaNames(conn, "SELECT USERNAME FROM ALL_USERS", "USERNAME")
+        }
+        DamengCatalogPolicy.mergeNames(schemas) {
+            loadSchemaNames(
+                conn,
+                "SELECT DISTINCT OWNER FROM ALL_OBJECTS WHERE OBJECT_TYPE IN ('TABLE', 'VIEW')",
+                "OWNER"
+            )
+        }
+
+        return schemas
+            .filter { it.isNotBlank() }
+            .sorted()
+            .map { DatabaseInfo(name = it) }
+    }
+
+    override fun listTables(session: DatabaseSession, database: String): List<TableInfo> {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val result = mutableListOf<TableInfo>()
+        val conn = session.getJdbcConnection()
+
+        conn.prepareStatement(
+            """
+            SELECT t.OWNER, t.TABLE_NAME, t.NUM_ROWS, comm.COMMENTS
+            FROM ALL_TABLES t
+            LEFT JOIN ALL_TAB_COMMENTS comm
+              ON t.OWNER = comm.OWNER
+             AND t.TABLE_NAME = comm.TABLE_NAME
+            WHERE t.OWNER = ?
+            ORDER BY t.TABLE_NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    result.add(
+                        TableInfo(
+                            name = rs.getString("TABLE_NAME"),
+                            schema = rs.getString("OWNER"),
+                            type = "table",
+                            rowCount = rs.getNullableLong("NUM_ROWS"),
+                            comment = rs.getString("COMMENTS")?.trim(),
+                            engine = "DM"
+                        )
+                    )
+                }
+            }
+        }
+
+        conn.prepareStatement(
+            """
+            SELECT v.OWNER, v.VIEW_NAME, comm.COMMENTS
+            FROM ALL_VIEWS v
+            LEFT JOIN ALL_TAB_COMMENTS comm
+              ON v.OWNER = comm.OWNER
+             AND v.VIEW_NAME = comm.TABLE_NAME
+            WHERE v.OWNER = ?
+            ORDER BY v.VIEW_NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    result.add(
+                        TableInfo(
+                            name = rs.getString("VIEW_NAME"),
+                            schema = rs.getString("OWNER"),
+                            type = "view",
+                            comment = rs.getString("COMMENTS")?.trim(),
+                            engine = "DM"
+                        )
+                    )
+                }
+            }
+        }
+
+        return result
+            .distinctBy { "${it.type}:${it.schema}:${it.name}" }
+            .sortedWith(compareBy<TableInfo> { it.type }.thenBy { it.name })
+    }
+
+    override fun listRoutines(session: DatabaseSession, database: String): List<RoutineInfo> {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val conn = session.getJdbcConnection()
+        return DamengCatalogPolicy.visibleFirst(
+            visibleLoader = { listRoutinesFromVisibleObjects(conn, schema) },
+            fallbackLoader = { listRoutinesFromSystemCatalog(conn, schema) }
+        )
+    }
+
+    private fun listRoutinesFromVisibleObjects(conn: Connection, schema: String): List<RoutineInfo> {
+        val result = mutableListOf<RoutineInfo>()
+        conn.prepareStatement(
+            """
+            SELECT OBJECT_NAME, OBJECT_TYPE
+            FROM ALL_OBJECTS
+            WHERE OWNER = ?
+              AND OBJECT_TYPE IN ('PROCEDURE', 'FUNCTION')
+            ORDER BY OBJECT_NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    result.add(
+                        RoutineInfo(
+                            name = rs.getString("OBJECT_NAME"),
+                            type = rs.getString("OBJECT_TYPE")
+                        )
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    private fun listRoutinesFromSystemCatalog(conn: Connection, schema: String): List<RoutineInfo> {
+        val result = mutableListOf<RoutineInfo>()
+        conn.prepareStatement(
+            """
+            SELECT o.NAME AS OBJECT_NAME,
+                   CASE o.SUBTYPE$ WHEN 'PROC' THEN 'PROCEDURE' ELSE 'FUNCTION' END AS ROUTINE_TYPE
+            FROM SYS.SYSOBJECTS o
+            JOIN SYS.SYSOBJECTS sch ON o.SCHID = sch.ID
+            WHERE sch.NAME = ?
+              AND o.TYPE$ = 'SCHOBJ'
+              AND o.SUBTYPE$ IN ('PROC', 'FUNC')
+            ORDER BY o.NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    result.add(
+                        RoutineInfo(
+                            name = rs.getString("OBJECT_NAME"),
+                            type = rs.getString("ROUTINE_TYPE")
+                        )
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    override fun listTriggers(session: DatabaseSession, database: String): List<TriggerInfo> {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val conn = session.getJdbcConnection()
+        return DamengCatalogPolicy.visibleFirst(
+            visibleLoader = { listTriggersFromVisibleObjects(conn, schema) },
+            fallbackLoader = { listTriggersFromSystemCatalog(conn, schema) }
+        )
+    }
+
+    private fun listTriggersFromVisibleObjects(conn: Connection, schema: String): List<TriggerInfo> {
+        val result = mutableListOf<TriggerInfo>()
+        conn.prepareStatement(
+            """
+            SELECT OBJECT_NAME AS TRIGGER_NAME
+            FROM ALL_OBJECTS
+            WHERE OWNER = ?
+              AND OBJECT_TYPE = 'TRIGGER'
+            ORDER BY OBJECT_NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) result.add(TriggerInfo(name = rs.getString("TRIGGER_NAME")))
+            }
+        }
+        return result
+    }
+
+    private fun listTriggersFromSystemCatalog(conn: Connection, schema: String): List<TriggerInfo> {
+        val result = mutableListOf<TriggerInfo>()
+        conn.prepareStatement(
+            """
+            SELECT o.NAME AS TRIGGER_NAME
+            FROM SYS.SYSOBJECTS o
+            JOIN SYS.SYSOBJECTS sch ON o.SCHID = sch.ID
+            WHERE sch.NAME = ?
+              AND o.TYPE$ = 'SCHOBJ'
+              AND o.SUBTYPE$ = 'TRIG'
+            ORDER BY o.NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    result.add(
+                        TriggerInfo(
+                            name = rs.getString("TRIGGER_NAME")
+                        )
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    override fun getObjectDdl(session: DatabaseSession, database: String, name: String, objectType: String): String {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(name)
+        val dmType = when (objectType.uppercase()) {
+            "PROCEDURE" -> "PROCEDURE"
+            "FUNCTION" -> "FUNCTION"
+            "TRIGGER" -> "TRIGGER"
+            "VIEW" -> "VIEW"
+            else -> "TABLE"
+        }
+        val ddl = tryGetDdl(session, dmType, schema, objectName)
+            ?: tryGetDdl(session, "TABLE", schema, objectName)
+            ?: ""
+        return if (ddl.isNotBlank()) appendCommentsToDdl(session, schema, objectName, ddl) else ddl
+    }
+
+    override fun getTableDefinition(session: DatabaseSession, database: String, table: String): TableDefinition {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
+        val tableInfo = findTableInfo(session, schema, objectName)
+            ?: TableInfo(name = objectName, schema = schema, type = "table", engine = "DM")
+
+        val resolvedDdl = resolveDdl(session, schema, objectName)
+        val columns = resolvedDdl.columnsOrLoad { getColumns(session, schema, objectName) }
+
+        return TableDefinition(
+            table = tableInfo,
+            columns = columns,
+            indexes = getIndexes(session, schema, objectName),
+            ddl = appendCommentsToDdl(session, schema, objectName, resolvedDdl.ddl, columns),
+            ddlSource = resolvedDdl.source
+        )
+    }
+
+    override fun getTableDesign(session: DatabaseSession, database: String, table: String): TableDefinition {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
+        return TableDefinition(
+            table = getTableInfo(session, schema, objectName),
+            columns = getColumns(session, schema, objectName),
+            indexes = getIndexes(session, schema, objectName)
+        )
+    }
+
+    override fun getTableInfo(session: DatabaseSession, database: String, table: String): TableInfo {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
+        return findTableInfo(session, schema, objectName)
+            ?: TableInfo(name = objectName, schema = schema, type = "table", engine = "DM")
+    }
+
+    private fun findTableInfo(session: DatabaseSession, schema: String, objectName: String): TableInfo? {
+        val conn = session.getJdbcConnection()
+        conn.prepareStatement(
+            """
+            SELECT t.OWNER, t.TABLE_NAME, t.NUM_ROWS, comm.COMMENTS
+            FROM ALL_TABLES t
+            LEFT JOIN ALL_TAB_COMMENTS comm
+              ON t.OWNER = comm.OWNER
+             AND t.TABLE_NAME = comm.TABLE_NAME
+            WHERE t.OWNER = ?
+              AND t.TABLE_NAME = ?
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, objectName)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    return TableInfo(
+                        name = rs.getString("TABLE_NAME"),
+                        schema = rs.getString("OWNER"),
+                        type = "table",
+                        rowCount = rs.getNullableLong("NUM_ROWS"),
+                        comment = rs.getString("COMMENTS")?.trim(),
+                        engine = "DM"
+                    )
+                }
+            }
+        }
+
+        conn.prepareStatement(
+            """
+            SELECT v.OWNER, v.VIEW_NAME, comm.COMMENTS
+            FROM ALL_VIEWS v
+            LEFT JOIN ALL_TAB_COMMENTS comm
+              ON v.OWNER = comm.OWNER
+             AND v.VIEW_NAME = comm.TABLE_NAME
+            WHERE v.OWNER = ?
+              AND v.VIEW_NAME = ?
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, objectName)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) {
+                    return TableInfo(
+                        name = rs.getString("VIEW_NAME"),
+                        schema = rs.getString("OWNER"),
+                        type = "view",
+                        comment = rs.getString("COMMENTS")?.trim(),
+                        engine = "DM"
+                    )
+                }
+            }
+        }
+
+        return null
+    }
+
+    override fun getIndexes(session: DatabaseSession, database: String, table: String): List<IndexInfo> {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
+        val conn = session.getJdbcConnection()
+        val primaryIndexNames = mutableSetOf<String>()
+        val indexMeta = linkedMapOf<String, IndexMeta>()
+
+        conn.prepareStatement(
+            """
+            SELECT INDEX_NAME
+            FROM ALL_CONSTRAINTS
+            WHERE OWNER = ?
+              AND TABLE_NAME = ?
+              AND CONSTRAINT_TYPE = 'P'
+              AND INDEX_NAME IS NOT NULL
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, objectName)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) primaryIndexNames.add(rs.getString("INDEX_NAME"))
+            }
+        }
+
+        conn.prepareStatement(
+            """
+            SELECT OWNER, INDEX_NAME, UNIQUENESS, INDEX_TYPE
+            FROM ALL_INDEXES
+            WHERE TABLE_OWNER = ?
+              AND TABLE_NAME = ?
+              AND INDEX_NAME IN (
+                  SELECT DISTINCT INDEX_NAME
+                  FROM ALL_IND_COLUMNS
+                  WHERE TABLE_OWNER = ? AND TABLE_NAME = ?
+              )
+            ORDER BY INDEX_NAME
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, objectName)
+            stmt.setString(3, schema)
+            stmt.setString(4, objectName)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val indexName = rs.getString("INDEX_NAME")
+                    indexMeta[indexName] = IndexMeta(
+                        unique = rs.getString("UNIQUENESS").equals("UNIQUE", ignoreCase = true),
+                        primary = indexName in primaryIndexNames,
+                        type = rs.getString("INDEX_TYPE") ?: "BTREE"
+                    )
+                }
+            }
+        }
+
+        conn.prepareStatement(
+            """
+            SELECT INDEX_NAME, COLUMN_NAME
+            FROM ALL_IND_COLUMNS
+            WHERE TABLE_OWNER = ?
+              AND TABLE_NAME = ?
+            ORDER BY INDEX_NAME, COLUMN_POSITION
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, objectName)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val indexName = rs.getString("INDEX_NAME")
+                    val meta = indexMeta.getOrPut(indexName) {
+                        IndexMeta(unique = false, primary = indexName in primaryIndexNames, type = "BTREE")
+                    }
+                    meta.columns.add(rs.getString("COLUMN_NAME"))
+                }
+            }
+        }
+
+        return indexMeta
+            .filter { it.value.columns.isNotEmpty() }
+            .map { (name, meta) ->
+                IndexInfo(
+                    name = if (meta.primary) "PRIMARY" else name,
+                    columns = meta.columns,
+                    isUnique = meta.unique || meta.primary,
+                    isPrimary = meta.primary,
+                    type = meta.type
+                )
+            }
+    }
+
+    override fun previewRows(
+        session: DatabaseSession,
+        database: String,
+        table: String,
+        limit: Int,
+        where: String?,
+        orderBy: String?,
+        offset: Int
+    ): List<Map<String, String?>> {
+        val conn = session.getJdbcConnection()
+        val sql = buildPreviewSql(database, table, limit.coerceIn(1, 5000), where, orderBy, offset.coerceAtLeast(0))
+        val rows = mutableListOf<Map<String, String?>>()
+
+        conn.createStatement().use { stmt ->
+            stmt.executeQuery(sql).use { rs ->
+                val meta = rs.metaData
+                val columnCount = meta.columnCount
+                while (rs.next()) {
+                    val row = linkedMapOf<String, String?>()
+                    for (i in 1..columnCount) {
+                        val columnName = meta.getColumnLabel(i) ?: meta.getColumnName(i)
+                        val colType = meta.getColumnType(i)
+                        row[columnName] = if (isBinaryColumn(colType)) {
+                            rs.getBytes(i)?.let { bytes ->
+                                val sizeLabel = when {
+                                    bytes.size < 1024 -> "${bytes.size} B"
+                                    bytes.size < 1024 * 1024 -> "${bytes.size / 1024} KB"
+                                    else -> "${bytes.size / (1024 * 1024)} MB"
+                                }
+                                "[BLOB $sizeLabel]"
+                            }
+                        } else {
+                            rs.getString(i)
+                        }
+                    }
+                    rows.add(row)
+                }
+            }
+        }
+
+        return rows
+    }
+
+    override fun getDdl(session: DatabaseSession, database: String, table: String): String {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
+        val resolvedDdl = resolveDdl(session, schema, objectName)
+        val columns = resolvedDdl.columnsOrLoad { getColumns(session, schema, objectName) }
+        return appendCommentsToDdl(session, schema, objectName, resolvedDdl.ddl, columns)
+    }
+
+    /**
+     * 先试原生 DBMS_METADATA.GET_DDL；失败降级拼装并保留已加载的列元数据。
+     */
+    private fun resolveDdl(session: DatabaseSession, schema: String, objectName: String): DamengDdlResolution {
+        val objectType = getObjectType(session, schema, objectName)
+        for (type in DamengDdlPolicy.candidateTypes(objectType)) {
+            val ddl = tryGetDdl(session, type, schema, objectName)
+            if (!ddl.isNullOrBlank()) return DamengDdlResolution(ddl, "native")
+        }
+        val columns = getColumns(session, schema, objectName)
+        val fallback = buildFallbackDdl(schema, objectName, columns)
+        return DamengDdlResolution(
+            ddl = fallback,
+            source = if (fallback.isBlank()) null else "synthesized",
+            columns = columns
+        )
+    }
+
+    override fun createDatabase(session: DatabaseSession, name: String, charset: String, collation: String) {
+        val schema = DamengIdentifierPolicy.newUnquotedName(name)
+        require(schema.isNotBlank()) { "Schema 名称不能为空" }
+        val conn = session.getJdbcConnection()
+        conn.createStatement().use { stmt ->
+            stmt.execute("CREATE SCHEMA ${dialect.quoteIdentifier(schema)}")
+        }
+    }
+
+    override fun dropDatabase(session: DatabaseSession, name: String) {
+        val schema = DamengIdentifierPolicy.catalogName(name)
+        val conn = session.getJdbcConnection()
+        conn.createStatement().use { stmt ->
+            stmt.execute("DROP SCHEMA ${dialect.quoteIdentifier(schema)} CASCADE")
+        }
+    }
+
+    override fun renameTable(session: DatabaseSession, database: String, oldName: String, newName: String) {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val oldObjectName = DamengIdentifierPolicy.catalogName(oldName)
+        val newObjectName = newName.trim()
+        require(schema.isNotBlank()) { "Schema 名称不能为空" }
+        require(oldObjectName.isNotBlank()) { "原表名不能为空" }
+        require(newObjectName.isNotBlank()) { "新表名不能为空" }
+
+        val conn = session.getJdbcConnection()
+        conn.createStatement().use { stmt ->
+            stmt.execute("ALTER TABLE ${quoteQualified(schema, oldObjectName)} RENAME TO ${dialect.quoteIdentifier(newObjectName)}")
+        }
+    }
+
+    override fun listCharsets(session: DatabaseSession): List<CharsetInfo> = emptyList()
+
+    override fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
+        val primaryColumns = getPrimaryColumns(session, schema, objectName)
+
+        return try {
+            getColumnsWithCommentView(session, schema, objectName, primaryColumns, "DBA_COL_COMMENTS")
+        } catch (_: Exception) {
+            getColumnsWithCommentView(session, schema, objectName, primaryColumns, "ALL_COL_COMMENTS")
+        }
+    }
+
+    private fun getColumnsWithCommentView(
+        session: DatabaseSession,
+        schema: String,
+        objectName: String,
+        primaryColumns: Set<String>,
+        commentView: String
+    ): List<ColumnInfo> {
+        val conn = session.getJdbcConnection()
+        val columns = mutableListOf<ColumnInfo>()
+        conn.prepareStatement(
+            """
+            SELECT c.COLUMN_NAME, c.DATA_TYPE, c.DATA_LENGTH, c.CHAR_LENGTH, c.DATA_PRECISION, c.DATA_SCALE,
+                   c.NULLABLE, c.DATA_DEFAULT, comm.COMMENTS
+            FROM ALL_TAB_COLUMNS c
+            LEFT JOIN $commentView comm
+              ON c.OWNER = comm.OWNER
+             AND c.TABLE_NAME = comm.TABLE_NAME
+             AND c.COLUMN_NAME = comm.COLUMN_NAME
+            WHERE c.OWNER = ?
+              AND c.TABLE_NAME = ?
+            ORDER BY c.COLUMN_ID
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, objectName)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val name = rs.getString("COLUMN_NAME")
+                    columns.add(
+                        ColumnInfo(
+                            name = name,
+                            type = buildColumnType(rs),
+                            nullable = rs.getString("NULLABLE") != "N",
+                            defaultValue = rs.getString("DATA_DEFAULT")?.trim(),
+                            isPrimaryKey = name in primaryColumns,
+                            isAutoIncrement = false,
+                            comment = rs.getString("COMMENTS")?.trim()
+                        )
+                    )
+                }
+            }
+        }
+
+        return columns
+    }
+
+    private fun getPrimaryColumns(session: DatabaseSession, schema: String, table: String): Set<String> {
+        val conn = session.getJdbcConnection()
+        val columns = linkedSetOf<String>()
+        conn.prepareStatement(
+            """
+            SELECT c.COLUMN_NAME
+            FROM ALL_CONSTRAINTS t
+            JOIN ALL_CONS_COLUMNS c
+              ON t.OWNER = c.OWNER
+             AND t.CONSTRAINT_NAME = c.CONSTRAINT_NAME
+             AND t.TABLE_NAME = c.TABLE_NAME
+            WHERE t.OWNER = ?
+              AND t.TABLE_NAME = ?
+              AND t.CONSTRAINT_TYPE = 'P'
+            ORDER BY c.POSITION
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, table)
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) columns.add(rs.getString("COLUMN_NAME"))
+            }
+        }
+        return columns
+    }
+
+    private fun buildColumnType(rs: ResultSet): String {
+        val dataType = rs.getString("DATA_TYPE") ?: return "UNKNOWN"
+        val length = rs.getNullableLong("DATA_LENGTH")
+        val charLength = rs.getNullableLong("CHAR_LENGTH")
+        val precision = rs.getNullableLong("DATA_PRECISION")
+        val scale = rs.getNullableLong("DATA_SCALE")
+
+        return when (dataType.uppercase()) {
+            "CHAR", "NCHAR", "VARCHAR", "VARCHAR2", "NVARCHAR2" ->
+                (charLength ?: length)?.let { "$dataType($it)" } ?: dataType
+            "BINARY", "VARBINARY" ->
+                length?.let { "$dataType($it)" } ?: dataType
+            "DECIMAL", "NUMERIC", "NUMBER" -> when {
+                precision != null && scale != null -> "$dataType($precision,$scale)"
+                precision != null -> "$dataType($precision)"
+                else -> dataType
+            }
+            "TIMESTAMP" -> if (scale != null) "$dataType($scale)" else dataType
+            else -> dataType
+        }
+    }
+
+    private fun buildPreviewSql(
+        database: String,
+        table: String,
+        limit: Int,
+        where: String?,
+        orderBy: String?,
+        offset: Int
+    ): String {
+        val baseSql = buildString {
+            append("SELECT * FROM ${quoteQualified(database, table)}")
+            sanitizeWhere(where)?.let { append(" WHERE $it") }
+            sanitizeOrderBy(orderBy)?.let { append(" ORDER BY $it") }
+        }
+        return dialect.buildPaginationSql(baseSql, limit, offset)
+    }
+
+    private fun sanitizeWhere(where: String?): String? {
+        val sanitized = where?.trim()?.replace(Regex(";.*$"), "") ?: return null
+        if (sanitized.isBlank()) return null
+        val upper = sanitized.uppercase()
+        val forbidden = listOf("DROP ", "DELETE ", "ALTER ", "TRUNCATE ", "INSERT ", "UPDATE ", "CREATE ", "GRANT ", "REVOKE ")
+        return sanitized.takeIf { forbidden.none { keyword -> upper.contains(keyword) } }
+    }
+
+    private fun sanitizeOrderBy(orderBy: String?): String? {
+        val sanitized = orderBy?.trim()?.replace(Regex("[;'\"()]"), "") ?: return null
+        return sanitized.takeIf { it.isNotBlank() }
+    }
+
+    private fun getObjectType(session: DatabaseSession, schema: String, name: String): String? {
+        val conn = session.getJdbcConnection()
+        conn.prepareStatement(
+            """
+            SELECT OBJECT_TYPE
+            FROM ALL_OBJECTS
+            WHERE OWNER = ?
+              AND OBJECT_NAME = ?
+              AND OBJECT_TYPE IN ('TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION', 'TRIGGER')
+            ORDER BY CASE OBJECT_TYPE WHEN 'TABLE' THEN 1 ELSE 2 END
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, name)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) return rs.getString("OBJECT_TYPE")
+            }
+        }
+        return null
+    }
+
+    private fun tryGetDdl(session: DatabaseSession, type: String, schema: String, name: String): String? {
+        return try {
+            session.getJdbcConnection().prepareStatement(
+                "SELECT DBMS_METADATA.GET_DDL(?, ?, ?)"
+            ).use { stmt ->
+                stmt.setString(1, type)
+                stmt.setString(2, name)
+                stmt.setString(3, schema)
+                stmt.executeQuery().use { rs ->
+                    if (rs.next()) rs.getString(1) else null
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun buildFallbackDdl(schema: String, table: String, columns: List<ColumnInfo>): String {
+        if (columns.isEmpty()) return ""
+
+        val columnLines = columns.map { column ->
+            buildString {
+                append("  ${dialect.quoteIdentifier(column.name)} ${column.type}")
+                if (!column.nullable) append(" NOT NULL")
+                if (!column.defaultValue.isNullOrBlank()) append(" DEFAULT ${column.defaultValue}")
+            }
+        }
+
+        return buildString {
+            appendLine("-- Fallback DDL generated from Dameng catalog metadata.")
+            appendLine("CREATE TABLE ${quoteQualified(schema, table)} (")
+            append(columnLines.joinToString(",\n"))
+            appendLine()
+            append(");")
+        }
+    }
+
+    private fun appendCommentsToDdl(
+        session: DatabaseSession,
+        schema: String,
+        objectName: String,
+        ddl: String,
+        columns: List<ColumnInfo> = getColumns(session, schema, objectName)
+    ): String {
+        if (ddl.isBlank()) return ddl
+
+        val tableComment = getTableComment(session, schema, objectName)
+        val commentStatements = mutableListOf<String>()
+        val qualifiedName = quoteQualified(schema, objectName)
+
+        if (!tableComment.isNullOrBlank() && !ddl.containsIgnoreCase("COMMENT ON TABLE $qualifiedName")) {
+            commentStatements.add(
+                "COMMENT ON TABLE $qualifiedName IS ${quoteStringLiteral(tableComment)};"
+            )
+        }
+
+        columns
+            .filter { !it.comment.isNullOrBlank() }
+            .forEach { column ->
+                val columnTarget = "$qualifiedName.${dialect.quoteIdentifier(column.name)}"
+                if (!ddl.containsIgnoreCase("COMMENT ON COLUMN $columnTarget")) {
+                    commentStatements.add(
+                        "COMMENT ON COLUMN $columnTarget IS ${quoteStringLiteral(column.comment!!)};"
+                    )
+                }
+            }
+
+        if (commentStatements.isEmpty()) return ddl
+        return buildString {
+            append(ddl.trimEnd().removeSuffix(";"))
+            append(';')
+            appendLine()
+            appendLine()
+            append(commentStatements.joinToString("\n"))
+        }
+    }
+
+    private fun getTableComment(session: DatabaseSession, schema: String, objectName: String): String? {
+        val conn = session.getJdbcConnection()
+        return conn.prepareStatement(
+            """
+            SELECT COMMENTS
+            FROM ALL_TAB_COMMENTS
+            WHERE OWNER = ?
+              AND TABLE_NAME = ?
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, schema)
+            stmt.setString(2, objectName)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) rs.getString("COMMENTS")?.trim() else null
+            }
+        }
+    }
+
+    private fun quoteStringLiteral(value: String): String {
+        return "'${value.replace("'", "''")}'"
+    }
+
+    private fun String.containsIgnoreCase(value: String): Boolean {
+        return indexOf(value, ignoreCase = true) >= 0
+    }
+
+    private fun quoteQualified(schema: String, name: String): String {
+        return "${dialect.quoteIdentifier(DamengIdentifierPolicy.catalogName(schema))}.${dialect.quoteIdentifier(DamengIdentifierPolicy.catalogName(name))}"
+    }
+
+    private fun loadSchemaNames(
+        conn: Connection,
+        sql: String,
+        column: String
+    ): List<String?> {
+        return conn.createStatement().use { stmt ->
+            stmt.executeQuery(sql).use { rs ->
+                val names = mutableListOf<String?>()
+                while (rs.next()) {
+                    names.add(rs.getString(column))
+                }
+                names
+            }
+        }
+    }
+
+    private fun isBinaryColumn(columnType: Int): Boolean {
+        return columnType in setOf(
+            Types.BLOB,
+            Types.BINARY,
+            Types.VARBINARY,
+            Types.LONGVARBINARY
+        )
+    }
+
+    private fun ResultSet.getNullableLong(column: String): Long? {
+        val value = getLong(column)
+        return if (wasNull()) null else value
+    }
+
+    private data class IndexMeta(
+        val unique: Boolean,
+        val primary: Boolean,
+        val type: String,
+        val columns: MutableList<String> = mutableListOf()
+    )
+}

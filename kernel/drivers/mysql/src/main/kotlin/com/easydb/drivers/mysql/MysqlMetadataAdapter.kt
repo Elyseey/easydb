@@ -24,6 +24,8 @@ import com.easydb.common.*
  */
 class MysqlMetadataAdapter : MetadataAdapter {
 
+    private val dialect = MysqlDialectAdapter()
+
     override fun listDatabases(session: DatabaseSession): List<DatabaseInfo> {
         val conn = session.getJdbcConnection()
         val result = mutableListOf<DatabaseInfo>()
@@ -58,18 +60,7 @@ class MysqlMetadataAdapter : MetadataAdapter {
             stmt.setString(1, database)
             stmt.executeQuery().use { rs ->
                 while (rs.next()) {
-                    val tableType = rs.getString("TABLE_TYPE")
-                    result.add(TableInfo(
-                        name = rs.getString("TABLE_NAME"),
-                        schema = rs.getString("TABLE_SCHEMA"),
-                        type = if (tableType == "VIEW") "view" else "table",
-                        rowCount = rs.getLong("TABLE_ROWS"),
-                        comment = rs.getString("TABLE_COMMENT"),
-                        dataLength = rs.getLong("DATA_LENGTH"),
-                        indexLength = rs.getLong("INDEX_LENGTH"),
-                        updateTime = rs.getString("UPDATE_TIME"),
-                        engine = rs.getString("ENGINE")
-                    ))
+                    result.add(readTableInfo(rs))
                 }
             }
         }
@@ -133,11 +124,59 @@ class MysqlMetadataAdapter : MetadataAdapter {
         val columns = try { getColumns(session, database, table) } catch (_: Exception) { emptyList() }
         val indexes = try { getIndexes(session, database, table) } catch (_: Exception) { emptyList() }
         val ddl = getDdl(session, database, table)
-        val tableInfo = TableInfo(name = table, schema = database)
-        return TableDefinition(table = tableInfo, columns = columns, indexes = indexes, ddl = ddl)
+        val tableInfo = getTableInfo(session, database, table)
+        return TableDefinition(
+            table = tableInfo,
+            columns = columns,
+            indexes = indexes,
+            ddl = ddl,
+            ddlSource = if (ddl.isNotBlank()) "native" else null
+        )
     }
 
-    private fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> {
+    override fun getTableDesign(session: DatabaseSession, database: String, table: String): TableDefinition {
+        return TableDefinition(
+            table = getTableInfo(session, database, table),
+            columns = getColumns(session, database, table),
+            indexes = getIndexes(session, database, table)
+        )
+    }
+
+    override fun getTableInfo(session: DatabaseSession, database: String, table: String): TableInfo {
+        val conn = session.getJdbcConnection()
+        conn.prepareStatement(
+            """
+            SELECT TABLE_NAME, TABLE_SCHEMA, TABLE_TYPE, TABLE_ROWS, TABLE_COMMENT,
+                   DATA_LENGTH, INDEX_LENGTH, UPDATE_TIME, ENGINE
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+            """.trimIndent()
+        ).use { stmt ->
+            stmt.setString(1, database)
+            stmt.setString(2, table)
+            stmt.executeQuery().use { rs ->
+                if (rs.next()) return readTableInfo(rs)
+            }
+        }
+        return TableInfo(name = table, schema = database)
+    }
+
+    private fun readTableInfo(rs: java.sql.ResultSet): TableInfo {
+        val tableType = rs.getString("TABLE_TYPE")
+        return TableInfo(
+            name = rs.getString("TABLE_NAME"),
+            schema = rs.getString("TABLE_SCHEMA"),
+            type = if (tableType == "VIEW") "view" else "table",
+            rowCount = rs.getLong("TABLE_ROWS"),
+            comment = rs.getString("TABLE_COMMENT"),
+            dataLength = rs.getLong("DATA_LENGTH"),
+            indexLength = rs.getLong("INDEX_LENGTH"),
+            updateTime = rs.getString("UPDATE_TIME"),
+            engine = rs.getString("ENGINE")
+        )
+    }
+
+    override fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> {
         val conn = session.getJdbcConnection()
         val result = mutableListOf<ColumnInfo>()
         conn.prepareStatement("""
@@ -330,6 +369,20 @@ class MysqlMetadataAdapter : MetadataAdapter {
         val conn = session.getJdbcConnection()
         conn.createStatement().use { stmt ->
             stmt.execute("DROP DATABASE `$name`")
+        }
+    }
+
+    override fun renameTable(session: DatabaseSession, database: String, oldName: String, newName: String) {
+        require(database.isNotBlank()) { "数据库名称不能为空" }
+        require(oldName.isNotBlank()) { "原表名不能为空" }
+        require(newName.isNotBlank()) { "新表名不能为空" }
+
+        val conn = session.getJdbcConnection()
+        conn.createStatement().use { stmt ->
+            stmt.execute(
+                "RENAME TABLE ${dialect.quoteIdentifier(database)}.${dialect.quoteIdentifier(oldName)} " +
+                    "TO ${dialect.quoteIdentifier(database)}.${dialect.quoteIdentifier(newName)}"
+            )
         }
     }
 

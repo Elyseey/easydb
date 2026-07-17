@@ -82,7 +82,7 @@ object CredentialCipher {
             String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
         } catch (e: Exception) {
             System.err.println("[CredentialCipher] Decrypt failed: ${e.message}")
-            ""  // 解密失败返回空，连接时会报认证错误，用户可重新输入
+            ciphertext  // 解密失败返回原始密文，防止后续自动保存导致磁盘密码被覆盖抹除
         }
     }
 
@@ -118,7 +118,7 @@ object CredentialCipher {
     }
 
     private fun tryMacOsUuid(): String? = runCatching {
-        val proc = ProcessBuilder("ioreg", "-rd1", "-c", "IOPlatformExpertDevice")
+        val proc = ProcessBuilder("/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice")
             .redirectErrorStream(true)
             .start()
         val output = proc.inputStream.bufferedReader().readText()

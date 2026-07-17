@@ -18,6 +18,7 @@ import type {
   ConnectionConfig, ChangeEvent, TrackerSessionStatus,
   TrackerServerCheck, BinlogFileInfo, SseTick, HistoryStats,
 } from '@/types'
+import { filterConnectionsByDiagnosticCapability } from '@/utils/dbCapabilities'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 
@@ -66,6 +67,7 @@ export const DataTrackerPage: React.FC = () => {
 
   // 连接与会话状态
   const [connections, setConnections] = useState<ConnectionConfig[]>([])
+  const trackerConnections = filterConnectionsByDiagnosticCapability(connections, 'dataTracker')
   const [selectedConnId, setSelectedConnId] = useState<string>('')
   const [serverCheck, setServerCheck] = useState<TrackerServerCheck | null>(null)
   const [checking, setChecking] = useState(false)
@@ -331,7 +333,7 @@ export const DataTrackerPage: React.FC = () => {
       message.success('追踪已启动')
 
       // 开启 SSE 接收轻量通知（只有计数，不再收完整事件）
-      const es = trackerApi.createEventSource(result.sessionId)
+      const es = await trackerApi.createEventSource(result.sessionId)
       es.onmessage = (e) => {
         try {
           const tick: SseTick = JSON.parse(e.data)
@@ -1022,7 +1024,7 @@ export const DataTrackerPage: React.FC = () => {
               placeholder="选择数据库连接"
               value={selectedConnId || undefined}
               onChange={setSelectedConnId}
-              options={connections.map(c => ({
+              options={trackerConnections.map(c => ({
                 value: c.id,
                 label: `${c.name} (${c.host}:${c.port})`,
               }))}

@@ -2,8 +2,7 @@ package com.easydb.launcher
 
 import com.easydb.api.fail
 import com.easydb.api.ok
-import com.easydb.common.ProcedureExecuteRequest
-import com.easydb.common.ProcedureExecuteResult
+import com.easydb.common.*
 import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.routing.*
@@ -14,15 +13,22 @@ import io.ktor.server.routing.*
  * - POST /api/procedure/inspect  → 查询参数元数据（名称、类型、方向）
  * - POST /api/procedure/execute  → 执行过程/函数，返回 OUT 参数 + 多结果集
  *
- * 路由通过 ServiceRegistry.mysqlAdapter.procedureAdapter() 获取适配器，
- * 不持有任何 MySQL 特定类的引用，支持 Phase 2 扩展 PG / 达梦。
+ * 路由通过 adapterRegistry 按 dbType 获取适配器，
+ * 如果适配器不支持存储过程，返回 UNSUPPORTED_DB_FEATURE 错误。
  */
 fun Route.procedureRoutes() {
     val connMgr        = ServiceRegistry.connectionManager
+    val adapterRegistry = ServiceRegistry.adapterRegistry
     val executeService = com.easydb.common.ProcedureExecuteService()
 
-    /** 获取当前连接类型对应的适配器（Phase 2：根据 dbType 切换） */
-    fun procedureAdapter() = ServiceRegistry.mysqlAdapter.procedureAdapter()
+    /** 根据 session 的 dbType 获取对应的 ProcedureAdapter，不支持时返回 null */
+    fun procedureAdapterFor(session: DatabaseSession): ProcedureAdapter? {
+        return try {
+            adapterRegistry.get(session.config.dbType).procedureAdapter()
+        } catch (_: UnsupportedOperationException) {
+            null
+        }
+    }
 
     // ─── POST /api/procedure/inspect ──────────────────────────────
 
@@ -50,8 +56,11 @@ fun Route.procedureRoutes() {
         val session = connMgr.getPrimarySession(connectionId)
             ?: return@post call.fail("NOT_CONNECTED", "连接未激活，请先打开连接")
 
+        val procedureAdapter = procedureAdapterFor(session)
+            ?: return@post call.fail("UNSUPPORTED_DB_FEATURE", "当前数据库类型（${session.config.dbType}）不支持存储过程功能")
+
         try {
-            val result = procedureAdapter().inspect(session, database, name, type)
+            val result = procedureAdapter.inspect(session, database, name, type)
             call.ok(result)
         } catch (e: Exception) {
             call.fail("INSPECT_FAILED", e.message ?: "获取参数元数据失败")
@@ -73,8 +82,13 @@ fun Route.procedureRoutes() {
                 ProcedureExecuteResult(success = false, duration = 0, error = "连接未激活，请先打开连接")
             )
 
+        val procedureAdapter = procedureAdapterFor(session)
+            ?: return@post call.ok(
+                ProcedureExecuteResult(success = false, duration = 0, error = "当前数据库类型（${session.config.dbType}）不支持存储过程功能")
+            )
+
         // 执行引擎：纯 JDBC 标准逻辑，适配器负责数据库特定 SQL
-        val result = executeService.execute(procedureAdapter(), session, request)
+        val result = executeService.execute(procedureAdapter, session, request)
         call.ok(result)
     }
 }

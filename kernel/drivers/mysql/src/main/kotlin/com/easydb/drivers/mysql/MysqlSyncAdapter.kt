@@ -34,18 +34,30 @@ class MysqlSyncAdapter : SyncAdapter {
             .filter { config.tables.isEmpty() || config.tables.contains(it.name) }
 
         val targetTableNames = try {
-            metadata.listTables(sessions.target, config.targetDatabase).map { it.name }
-        } catch (_: Exception) { emptyList() }
+            metadata.listTables(sessions.target, config.targetDatabase).map { it.name }.toSet()
+        } catch (_: Exception) { emptySet() }
 
         val previews = allObjects.map { obj ->
             if (obj.type == "table") {
                 val existsInTarget = targetTableNames.contains(obj.name)
+                val sourceDefinition = metadata.getTableDesign(sessions.source, config.sourceDatabase, obj.name)
+                val keyColumns = SyncKeyPolicy.reliableKey(sourceDefinition)
+                val reason = when {
+                    keyColumns == null -> "表没有非空主键或唯一键，无法安全执行 UPSERT"
+                    existsInTarget -> {
+                        val targetDefinition = metadata.getTableDesign(sessions.target, config.targetDatabase, obj.name)
+                        if (!SyncKeyPolicy.hasReliableKey(targetDefinition, keyColumns)) {
+                            "目标表缺少与源表一致的非空主键或唯一键"
+                        } else null
+                    }
+                    else -> null
+                }
                 SyncTablePreview(
                     tableName = obj.name,
-                    insertCount = if (!existsInTarget) (obj.rowCount?.toInt() ?: 0) else 0,
-                    updateCount = if (existsInTarget) (obj.rowCount?.toInt() ?: 0) else 0,
-                    canSync = true,
-                    reason = if (!existsInTarget) "目标表不存在，将自动创建" else null
+                    insertCount = if (!existsInTarget && reason == null) (obj.rowCount?.toInt() ?: 0) else 0,
+                    updateCount = if (existsInTarget && reason == null) (obj.rowCount?.toInt() ?: 0) else 0,
+                    canSync = reason == null,
+                    reason = reason ?: if (!existsInTarget) "目标表不存在，将自动创建" else null
                 )
             } else {
                 SyncTablePreview(
@@ -113,9 +125,18 @@ class MysqlSyncAdapter : SyncAdapter {
                 reporter.onProgress(progress, "同步表 $tableName (${index + 1}/$totalObjects)")
 
                 try {
-                    reporter.onStep(tableName, TaskStatus.RUNNING, "同步中")
+                    reporter.onStep(tableName, TaskStatus.RUNNING, "校验同步键")
+
+                    val sourceDefinition = metadata.getTableDesign(sessions.source, config.sourceDatabase, tableName)
+                    val keyColumns = SyncKeyPolicy.reliableKey(sourceDefinition)
+                        ?: error("表没有非空主键或唯一键，已拒绝同步")
 
                     val tableCreated = ensureTargetTable(sourceConn, targetConn, sourcePrefix, targetPrefix, tableName)
+                    val targetDefinition = metadata.getTableDesign(sessions.target, config.targetDatabase, tableName)
+                    require(SyncKeyPolicy.hasReliableKey(targetDefinition, keyColumns)) {
+                        "目标表缺少与源表一致的非空主键或唯一键，已拒绝同步"
+                    }
+                    reporter.onStep(tableName, TaskStatus.RUNNING, "同步中")
 
                     val isLargeTable = (table.rowCount ?: 0) > LARGE_TABLE_ROW_THRESHOLD
                     val batchSize = if (isLargeTable) LARGE_TABLE_BATCH_SIZE else DEFAULT_BATCH_SIZE

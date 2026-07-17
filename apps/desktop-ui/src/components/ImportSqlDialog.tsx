@@ -26,6 +26,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { sqlApi, taskApi } from '@/services/api'
 import { handleApiError, toast } from '@/utils/notification'
 import { formatDuration, getElapsedMs } from '@/utils/format'
+import type { DbType } from '@/types'
+import { databaseNamespaceLabel } from '@/utils/databaseNamespace'
 
 const { Text } = Typography
 
@@ -36,6 +38,7 @@ interface ImportSqlDialogProps {
   connectionName?: string
   database?: string
   databases?: string[]
+  dbType: DbType
 }
 
 interface SelectedSqlFile {
@@ -65,10 +68,11 @@ interface ImportTaskLog {
 }
 
 export const ImportSqlDialog: React.FC<ImportSqlDialogProps> = ({
-  open, onClose, connectionId, connectionName, database, databases,
+  open, onClose, connectionId, connectionName, database, databases, dbType,
 }) => {
   const { token } = theme.useToken()
   const nativePickerAvailable = hasTauriInvoke()
+  const namespaceLabel = databaseNamespaceLabel(dbType)
   const [currentStep, setCurrentStep] = useState(0)
   const [selectedDb, setSelectedDb] = useState(database ?? '')
   const [selectedFile, setSelectedFile] = useState<SelectedSqlFile | null>(null)
@@ -149,7 +153,7 @@ export const ImportSqlDialog: React.FC<ImportSqlDialogProps> = ({
       ? formatDuration(duration)
       : ''
 
-  const pollOnce = async (id: string) => {
+  const pollOnce = useCallback(async (id: string) => {
     if (pollingRef.current) return
     pollingRef.current = true
     try {
@@ -194,10 +198,10 @@ export const ImportSqlDialog: React.FC<ImportSqlDialogProps> = ({
     } finally {
       pollingRef.current = false
     }
-  }
+  }, [stopPolling])
 
   // A7: 串行轮询 —— 上一次请求完成后再等 1.5s 发下一次，避免慢响应积压
-  const startPolling = (id: string) => {
+  const startPolling = useCallback((id: string) => {
     stopPolling()
     const poll = async () => {
       await pollOnce(id)
@@ -205,7 +209,7 @@ export const ImportSqlDialog: React.FC<ImportSqlDialogProps> = ({
       timerRef.current = setTimeout(() => void poll(), 1500) as unknown as ReturnType<typeof setInterval>
     }
     void poll()
-  }
+  }, [pollOnce, stopPolling])
 
   const handlePickFile = useCallback(async () => {
     if (!nativePickerAvailable) {
@@ -231,7 +235,7 @@ export const ImportSqlDialog: React.FC<ImportSqlDialogProps> = ({
 
   const handleStart = useCallback(async () => {
     if (!effectiveFile || !connectionId || !selectedDb) {
-      toast.warning('请选择 SQL 文件和目标数据库')
+      toast.warning(`请选择 SQL 文件和目标${namespaceLabel}`)
       return
     }
 
@@ -263,7 +267,7 @@ export const ImportSqlDialog: React.FC<ImportSqlDialogProps> = ({
     } finally {
       setLoading(false)
     }
-  }, [connectionId, effectiveFile, selectedDb, startPolling])
+  }, [connectionId, effectiveFile, namespaceLabel, selectedDb, startPolling])
 
   const handleAbort = useCallback(async () => {
     if (!taskId) return
@@ -393,19 +397,28 @@ export const ImportSqlDialog: React.FC<ImportSqlDialogProps> = ({
               />
             )}
 
+            {dbType === 'dameng' && (
+              <Alert
+                type="warning"
+                showIcon
+                message="达梦 SQL 文件兼容范围"
+                description="支持常规 DDL、DML 与 EasyDB 导出的 SQL；暂不保证 DIsql 元命令及包含内部分号的 DMSQL/PLSQL 程序块可直接执行。"
+              />
+            )}
+
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <Text strong style={{ width: 90, flexShrink: 0 }}>目标连接：</Text>
               <Tag color="success">{connectionName ?? connectionId ?? '未选择'}</Tag>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <Text strong style={{ width: 90, flexShrink: 0 }}>目标数据库：</Text>
+              <Text strong style={{ width: 90, flexShrink: 0 }}>目标{namespaceLabel}：</Text>
               {databases && databases.length > 0 ? (
                 <Select
                   value={selectedDb}
                   onChange={setSelectedDb}
                   style={{ width: 240 }}
-                  placeholder="选择数据库"
+                  placeholder={`选择${namespaceLabel}`}
                   options={databases.map((db) => ({ value: db, label: db }))}
                 />
               ) : (

@@ -15,6 +15,7 @@ class MysqlDatabaseAdapter : DatabaseAdapter {
     private val migrationAdapter   = MysqlMigrationAdapter()
     private val procedureAdapter_  = MysqlProcedureAdapter()   // 存储过程/函数适配器
     private val slowQueryAnalyzer_ = MysqlSlowQueryAnalyzer()  // 慢查询分析适配器
+    private val logicalBackupAdapter_ = MysqlLogicalBackupAdapter()
 
     override fun dbType(): DbType = DbType.MYSQL
 
@@ -22,9 +23,15 @@ class MysqlDatabaseAdapter : DatabaseAdapter {
         supportsTransactions = true,
         supportsSsh = true,
         supportsSsl = true,
+        supportsAlterDatabaseCharset = true,
         supportsViews = true,
         supportsStoredProcedures = true,
-        supportsTriggers = true
+        supportsTriggers = true,
+        supportsLogicalExport = true,
+        supportsSqlFileImport = true,
+        supportsLogicalBackup = true,
+        supportsLogicalRestore = true,
+        supportsOverwriteRestore = true
     )
 
     override fun connectionAdapter(): ConnectionAdapter  = connectionAdapter
@@ -34,5 +41,6 @@ class MysqlDatabaseAdapter : DatabaseAdapter {
     override fun migrationAdapter(): MigrationAdapter   = migrationAdapter
     override fun procedureAdapter(): ProcedureAdapter    = procedureAdapter_
     override fun slowQueryAnalyzer(): SlowQueryAnalyzer? = slowQueryAnalyzer_
+    override fun logicalBackupAdapter(): LogicalBackupAdapter = logicalBackupAdapter_
 
 }

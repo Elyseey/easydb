@@ -4,6 +4,12 @@ package com.easydb.common
  * 数据编辑 SQL 生成引擎
  * 将前端提交的行变更（insert/update/delete）转换为可执行的 SQL 语句
  */
+data class DataEditStatement(
+    val sql: String,
+    val parameters: List<String?>,
+    val previewSql: String
+)
+
 class DataEditService {
 
     /**
@@ -13,12 +19,16 @@ class DataEditService {
      * @param changes 变更列表
      * @return 生成的 SQL 语句列表
      */
-    fun generateSql(dialect: DialectAdapter, tableName: String, changes: List<RowChange>): List<String> {
+    fun generateStatements(
+        dialect: DialectAdapter,
+        tableName: String,
+        changes: List<RowChange>
+    ): List<DataEditStatement> {
         return changes.mapNotNull { change ->
             when (change.type) {
-                "insert" -> generateInsertSql(dialect, tableName, change)
-                "update" -> generateUpdateSql(dialect, tableName, change)
-                "delete" -> generateDeleteSql(dialect, tableName, change)
+                "insert" -> generateInsertStatement(dialect, tableName, change)
+                "update" -> generateUpdateStatement(dialect, tableName, change)
+                "delete" -> generateDeleteStatement(dialect, tableName, change)
                 else -> null
             }
         }
@@ -27,18 +37,31 @@ class DataEditService {
     /**
      * 生成 INSERT 语句
      */
-    private fun generateInsertSql(dialect: DialectAdapter, tableName: String, change: RowChange): String {
+    private fun generateInsertStatement(
+        dialect: DialectAdapter,
+        tableName: String,
+        change: RowChange
+    ): DataEditStatement {
         val columns = change.values.keys.toList()
-        val values = columns.map { dialect.escapeValue(change.values[it]) }
+        val parameters = columns.map { change.values[it] }
         val colNames = columns.joinToString(", ") { dialect.quoteIdentifier(it) }
-        return "INSERT INTO ${dialect.quoteIdentifier(tableName)} ($colNames) VALUES (${values.joinToString(", ")})"
+        val previewValues = parameters.joinToString(", ") { dialect.escapeValue(it) }
+        return DataEditStatement(
+            sql = dialect.buildInsertSql(tableName, columns),
+            parameters = parameters,
+            previewSql = "INSERT INTO ${dialect.quoteIdentifier(tableName)} ($colNames) VALUES ($previewValues)"
+        )
     }
 
     /**
      * 生成 UPDATE 语句
      * 使用主键作为 WHERE 条件，只更新有变化的列
      */
-    private fun generateUpdateSql(dialect: DialectAdapter, tableName: String, change: RowChange): String? {
+    private fun generateUpdateStatement(
+        dialect: DialectAdapter,
+        tableName: String,
+        change: RowChange
+    ): DataEditStatement? {
         if (change.primaryKeys.isEmpty()) return null
 
         // 只更新有变化的列（对比 values 和 oldValues）
@@ -53,18 +76,30 @@ class DataEditService {
         val whereClause = change.primaryKeys.entries.joinToString(" AND ") { (col, value) ->
             "${dialect.quoteIdentifier(col)} = ${dialect.escapeValue(value)}"
         }
-        return "UPDATE ${dialect.quoteIdentifier(tableName)} SET $setClause WHERE $whereClause"
+        return DataEditStatement(
+            sql = dialect.buildUpdateSql(tableName, changedCols.keys.toList(), change.primaryKeys.keys.toList()),
+            parameters = changedCols.values.toList() + change.primaryKeys.values.toList(),
+            previewSql = "UPDATE ${dialect.quoteIdentifier(tableName)} SET $setClause WHERE $whereClause"
+        )
     }
 
     /**
      * 生成 DELETE 语句
      */
-    private fun generateDeleteSql(dialect: DialectAdapter, tableName: String, change: RowChange): String? {
+    private fun generateDeleteStatement(
+        dialect: DialectAdapter,
+        tableName: String,
+        change: RowChange
+    ): DataEditStatement? {
         if (change.primaryKeys.isEmpty()) return null
 
         val whereClause = change.primaryKeys.entries.joinToString(" AND ") { (col, value) ->
             "${dialect.quoteIdentifier(col)} = ${dialect.escapeValue(value)}"
         }
-        return "DELETE FROM ${dialect.quoteIdentifier(tableName)} WHERE $whereClause"
+        return DataEditStatement(
+            sql = dialect.buildDeleteSql(tableName, change.primaryKeys.keys.toList()),
+            parameters = change.primaryKeys.values.toList(),
+            previewSql = "DELETE FROM ${dialect.quoteIdentifier(tableName)} WHERE $whereClause"
+        )
     }
 }

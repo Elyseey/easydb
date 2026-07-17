@@ -2,15 +2,12 @@ import React, { useEffect, useState, useRef } from 'react'
 import { Modal, Input } from 'antd'
 import { SearchOutlined, CodeOutlined } from '@ant-design/icons'
 import { useCommandStore } from '@/stores/commandStore'
-import { useThemeStore } from '@/stores/themeStore'
 
 export const CommandPalette: React.FC = () => {
   const { isOpen, toggleOpen, setOpen, commands, executeCommand } = useCommandStore()
   const [search, setSearch] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
-
-  const isDark = useThemeStore((s) => s.effectiveTheme) === 'dark'
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -28,7 +25,6 @@ export const CommandPalette: React.FC = () => {
     if (isOpen) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setSearch('')
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedIndex(0)
     }
   }, [isOpen])
@@ -63,20 +59,20 @@ export const CommandPalette: React.FC = () => {
       width={600}
       styles={{
         body: { padding: 0 },
-        mask: { backdropFilter: 'blur(4px)' }
+        mask: { backdropFilter: 'var(--glass-blur-sm)' }
       }}
       modalRender={(node) => (
         <div style={{
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
-          borderRadius: 12,
+          boxShadow: 'var(--glass-shadow-lg)',
+          borderRadius: 'var(--edb-radius-lg)',
           overflow: 'hidden',
-          border: `1px solid ${isDark ? '#334155' : '#E2E8F0'}`,
+          border: '1px solid var(--edb-border-default)',
         }}>
           {node}
         </div>
       )}
     >
-      <div style={{ padding: '16px 20px', borderBottom: `1px solid ${isDark ? '#334155' : '#E2E8F0'}` }}>
+      <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--edb-border-default)' }}>
         <Input
           autoFocus
           placeholder="搜索命令或操作..."
@@ -86,8 +82,8 @@ export const CommandPalette: React.FC = () => {
             setSelectedIndex(0)
           }}
           onKeyDown={handleKeyDown}
-          bordered={false}
-          prefix={<SearchOutlined style={{ color: '#94A3B8', fontSize: 18, marginRight: 8 }} />}
+          variant="borderless"
+          prefix={<SearchOutlined style={{ color: 'var(--edb-text-muted)', fontSize: 18, marginRight: 8 }} />}
           style={{ fontSize: 16, padding: 0, boxShadow: 'none' }}
         />
       </div>
@@ -98,11 +94,11 @@ export const CommandPalette: React.FC = () => {
           maxHeight: 350, 
           overflowY: 'auto', 
           padding: '8px 0',
-          background: isDark ? '#1E293B' : '#FFFFFF' 
+          background: 'var(--glass-popup)'
         }}
       >
         {filteredCommands.length === 0 ? (
-          <div style={{ padding: '32px 0', textAlign: 'center', color: '#94A3B8' }}>
+          <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--edb-text-muted)' }}>
             找不到匹配的命令
           </div>
         ) : (
@@ -119,15 +115,13 @@ export const CommandPalette: React.FC = () => {
                   alignItems: 'center',
                   justifyContent: 'space-between',
                   cursor: 'pointer',
-                  background: isSelected 
-                    ? (isDark ? '#334155' : '#F1F5F9') 
-                    : 'transparent',
+                  background: isSelected ? 'var(--glass-panel-selected)' : 'transparent',
                   transition: 'background 0.1s ease',
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <div style={{ 
-                    color: isSelected ? '#22C55E' : '#64748B',
+                    color: isSelected ? 'var(--edb-accent)' : 'var(--edb-text-secondary)',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center'
@@ -138,14 +132,14 @@ export const CommandPalette: React.FC = () => {
                     <div style={{ 
                       fontSize: 14, 
                       fontWeight: 500,
-                      color: isDark ? '#F8FAFC' : '#0F172A'
+                      color: 'var(--edb-text-primary)'
                     }}>
                       {cmd.title}
                     </div>
                     {cmd.category && (
                       <div style={{ 
                         fontSize: 12, 
-                        color: '#94A3B8',
+                        color: 'var(--edb-text-muted)',
                         marginTop: 2
                       }}>
                         {cmd.category}
@@ -159,12 +153,12 @@ export const CommandPalette: React.FC = () => {
                       <kbd 
                         key={key}
                         style={{
-                          background: isDark ? '#0F172A' : '#E2E8F0',
-                          border: `1px solid ${isDark ? '#475569' : '#CBD5E1'}`,
+                          background: 'var(--edb-bg-surface)',
+                          border: '1px solid var(--edb-border-default)',
                           borderRadius: 4,
                           padding: '2px 6px',
                           fontSize: 11,
-                          color: isDark ? '#94A3B8' : '#64748B',
+                          color: 'var(--edb-text-secondary)',
                           fontFamily: 'monospace'
                         }}
                       >

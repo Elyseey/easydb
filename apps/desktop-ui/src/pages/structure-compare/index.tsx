@@ -35,6 +35,8 @@ import { useConnectionStore } from '@/stores/connectionStore'
 import { useSqlEditorStore } from '@/stores/sqlEditorStore'
 import { connectionApi, metadataApi, compareApi } from '@/services/api'
 import { handleApiError, toast } from '@/utils/notification'
+import { supportsDatabaseTaskPair, supportsDatabaseTaskRole } from '@/utils/databaseTaskPairs'
+import { toDatabaseConnectionOptionGroups } from '@/utils/databaseConnectionGroups'
 
 const { Sider, Content } = Layout
 const { Text, Title } = Typography
@@ -100,6 +102,22 @@ export const StructureComparePage: React.FC = () => {
   const handleConnectionSelect = async (connId: string, type: 'source' | 'target') => {
     const conn = connections.find((c) => c.id === connId)
     if (!conn) return
+    const role = type === 'source' ? 'source' : 'target'
+    if (!supportsDatabaseTaskRole('structureCompare', conn.dbType, role)) {
+      toast.error('结构对比当前仅支持 MySQL→MySQL 或达梦→达梦')
+      return
+    }
+
+    const counterpartId = type === 'source' ? targetConnId : sourceConnId
+    const counterpart = connections.find((c) => c.id === counterpartId)
+    if (counterpart) {
+      const sourceType = type === 'source' ? conn.dbType : counterpart.dbType
+      const targetType = type === 'target' ? conn.dbType : counterpart.dbType
+      if (!supportsDatabaseTaskPair('structureCompare', sourceType, targetType)) {
+        toast.error('结构对比当前仅支持 MySQL→MySQL 或达梦→达梦')
+        return
+      }
+    }
 
     if (conn.status !== 'connected') {
       try {
@@ -121,7 +139,7 @@ export const StructureComparePage: React.FC = () => {
     }
   }
 
-  const connOptions = connections.map((c) => ({
+  const toConnOption = (c: ConnectionConfig) => ({
     value: c.id,
     label: (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -131,7 +149,27 @@ export const StructureComparePage: React.FC = () => {
         )}
       </div>
     )
-  }))
+  })
+  const selectedSourceConnection = connections.find((connection) => connection.id === sourceConnId)
+  const selectedTargetConnection = connections.find((connection) => connection.id === targetConnId)
+  const sourceConnOptions = toDatabaseConnectionOptionGroups(
+    connections.filter((connection) =>
+      supportsDatabaseTaskRole('structureCompare', connection.dbType, 'source') &&
+      (!selectedTargetConnection || supportsDatabaseTaskPair(
+        'structureCompare', connection.dbType, selectedTargetConnection.dbType
+      ))
+    ),
+    toConnOption,
+  )
+  const targetConnOptions = toDatabaseConnectionOptionGroups(
+    connections.filter((connection) =>
+      supportsDatabaseTaskRole('structureCompare', connection.dbType, 'target') &&
+      (!selectedSourceConnection || supportsDatabaseTaskPair(
+        'structureCompare', selectedSourceConnection.dbType, connection.dbType
+      ))
+    ),
+    toConnOption,
+  )
 
   // 加载连接列表
   useEffect(() => {
@@ -337,14 +375,14 @@ export const StructureComparePage: React.FC = () => {
             <Select
               style={{ width: 180 }} placeholder="选择源连接"
               value={sourceConnId} onChange={(v) => handleConnectionSelect(v, 'source')}
-              options={connOptions} listHeight={320} bordered={false}
+              options={sourceConnOptions} listHeight={320} variant="borderless"
             />
             <Divider type="vertical" />
             <Select
               style={{ width: 150 }} placeholder="源数据库"
               value={sourceDb} onChange={setSourceDb}
               options={sourceDbs.map((d) => ({ label: d, value: d }))}
-              disabled={!sourceConnId} showSearch bordered={false}
+              disabled={!sourceConnId} showSearch variant="borderless"
             />
           </div>
 
@@ -362,20 +400,23 @@ export const StructureComparePage: React.FC = () => {
             <Select
               style={{ width: 180 }} placeholder="选择目标连接"
               value={targetConnId} onChange={(v) => handleConnectionSelect(v, 'target')}
-              options={connOptions} listHeight={320} bordered={false}
+              options={targetConnOptions} listHeight={320} variant="borderless"
             />
             <Divider type="vertical" />
             <Select
               style={{ width: 150 }} placeholder="目标数据库"
               value={targetDb} onChange={setTargetDb}
               options={targetDbs.map((d) => ({ label: d, value: d }))}
-              disabled={!targetConnId} showSearch bordered={false}
+              disabled={!targetConnId} showSearch variant="borderless"
             />
           </div>
         </div>
 
         <Space size="middle">
-          <Popover content={optionsContent} title="对比高级设置" trigger="click" placement="bottomRight">
+          <Popover content={optionsContent} title="对比高级设置" trigger="click" placement="bottomRight"
+            overlayStyle={{ zIndex: 100 }}
+            overlayInnerStyle={{ background: 'var(--glass-popup)', backdropFilter: 'var(--glass-blur-heavy)' }}
+          >
             <Button size="large" icon={<SettingOutlined />}>高级选项</Button>
           </Popover>
           <Button

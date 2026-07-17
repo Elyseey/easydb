@@ -19,7 +19,7 @@
  * 首版使用 HTTP 通信（内核提供本地 HTTP 服务），后续可替换为 Tauri IPC
  */
 
-const KERNEL_BASE_URL = 'http://localhost:18080'
+import { downloadKernelFile, kernelFetch } from './kernelAuth'
 
 /** 内核启动中最大重试次数 */
 const MAX_RETRIES = 10
@@ -38,8 +38,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const res = await fetch(`${KERNEL_BASE_URL}${path}`, {
-        headers: { 'Content-Type': 'application/json' },
+      const res = await kernelFetch(path, {
         ...options,
       })
 
@@ -79,9 +78,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
         if (connectionId && attempt < MAX_RETRIES) {
           try {
             // 尝试重连
-            const reconnectRes = await fetch(`${KERNEL_BASE_URL}/api/connection/${connectionId}/open`, {
+            const reconnectRes = await kernelFetch(`/api/connection/${connectionId}/open`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
             })
             const reconnectJson = await reconnectRes.json()
             if (reconnectJson.success) {
@@ -114,8 +112,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 function extractConnectionId(path: string): string | null {
   // 元数据路径格式: /api/metadata/{connectionId}/...
   // SQL 路径格式: /api/sql/execute (body 中有 connectionId)
-  const match = path.match(/\/api\/metadata\/([^\/]+)/)
-  return match ? match[1] : null
+  const match = path.match(/\/api\/metadata\/([^/]+)/)
+  return match ? decodeURIComponent(match[1]) : null
 }
 
 /** 自定义 API 错误类型，携带错误码 */
@@ -127,6 +125,8 @@ class ApiError extends Error {
     this.code = code
   }
 }
+
+const pathSegment = (value: string) => encodeURIComponent(value)
 
 // ─── 连接管理 ───────────────────────────────────────────
 export const connectionApi = {
@@ -159,55 +159,61 @@ export const groupApi = {
 // ─── 元数据 ─────────────────────────────────────────────
 export const metadataApi = {
   databases: (connectionId: string) =>
-    request(`/api/metadata/${connectionId}/databases`),
+    request(`/api/metadata/${pathSegment(connectionId)}/databases`),
   objects: (connectionId: string, database: string) =>
-    request(`/api/metadata/${connectionId}/${database}/objects`),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/objects`),
   tableDefinition: (connectionId: string, database: string, table: string) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/definition`),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/definition`),
+  tableDesign: (connectionId: string, database: string, table: string) =>
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/design`),
+  tableInfo: (connectionId: string, database: string, table: string) =>
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/info`),
+  columns: (connectionId: string, database: string, table: string) =>
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/columns`),
   indexes: (connectionId: string, database: string, table: string) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/indexes`),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/indexes`),
   previewRows: (connectionId: string, database: string, table: string, params?: { where?: string; orderBy?: string; limit?: number; offset?: number }) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/preview`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/preview`, {
       method: 'POST',
       body: JSON.stringify(params || {}),
     }),
   ddl: (connectionId: string, database: string, table: string) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/ddl`),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/ddl`),
   editData: (connectionId: string, database: string, table: string, changes: unknown[], dryRun = false) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/edit`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/edit`, {
       method: 'POST',
       body: JSON.stringify({ connectionId, database, table, changes, dryRun }),
     }),
   charsets: (connectionId: string) =>
-    request(`/api/metadata/${connectionId}/charsets`),
-  createDatabase: (connectionId: string, name: string, charset: string, collation: string) =>
-    request(`/api/metadata/${connectionId}/create-database`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/charsets`),
+  createDatabase: (connectionId: string, name: string, charset?: string, collation?: string) =>
+    request(`/api/metadata/${pathSegment(connectionId)}/create-database`, {
       method: 'POST',
       body: JSON.stringify({ name, charset, collation }),
     }),
   dropDatabase: (connectionId: string, database: string) =>
-    request(`/api/metadata/${connectionId}/drop-database/${database}`, { method: 'DELETE' }),
+    request(`/api/metadata/${pathSegment(connectionId)}/drop-database/${pathSegment(database)}`, { method: 'DELETE' }),
   previewCreateTable: (connectionId: string, database: string, tableDef: unknown) =>
-    request(`/api/metadata/${connectionId}/${database}/preview-create-table`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/preview-create-table`, {
       method: 'POST',
       body: JSON.stringify(tableDef),
     }),
   createTable: (connectionId: string, database: string, tableDef: unknown) =>
-    request(`/api/metadata/${connectionId}/${database}/create-table`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/create-table`, {
       method: 'POST',
       body: JSON.stringify(tableDef),
     }),
   dropTable: (connectionId: string, database: string, table: string) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}`, { method: 'DELETE' }),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}`, { method: 'DELETE' }),
   truncateTable: (connectionId: string, database: string, table: string) =>
-    request(`/api/metadata/${connectionId}/${database}/tables/${table}/truncate`, { method: 'POST' }),
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/truncate`, { method: 'POST' }),
   alterDatabase: (connectionId: string, name: string, charset: string, collation: string) =>
-    request(`/api/metadata/${connectionId}/alter-database`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/alter-database`, {
       method: 'POST',
       body: JSON.stringify({ name, charset, collation }),
     }),
   renameTable: (connectionId: string, database: string, oldName: string, newName: string) =>
-    request(`/api/metadata/${connectionId}/${database}/rename-table`, {
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/rename-table`, {
       method: 'POST',
       body: JSON.stringify({ oldName, newName }),
     }),
@@ -273,6 +279,8 @@ export const exportApi = {
     request('/api/export/estimate', { method: 'POST', body: JSON.stringify(config) }),
   start: (config: unknown) =>
     request('/api/export/start', { method: 'POST', body: JSON.stringify(config) }),
+  download: (taskId: string) =>
+    downloadKernelFile(`/api/export/download/${pathSegment(taskId)}`, 'easydb-export.zip'),
 }
 
 // ─── 数据库备份 (Backup) ──────────────────────────────────
@@ -283,7 +291,10 @@ export const backupApi = {
     request('/api/backup/start', { method: 'POST', body: JSON.stringify(config) }),
   list: () =>
     request('/api/backup/list'),
-  downloadUrl: (path: string) => `${KERNEL_BASE_URL}/api/backup/download?path=${encodeURIComponent(path)}`,
+  downloadTask: (taskId: string) =>
+    downloadKernelFile(`/api/backup/download/${pathSegment(taskId)}`, 'easydb-backup.edbkp'),
+  downloadFile: (fileName: string) =>
+    downloadKernelFile(`/api/backup/download-file/${pathSegment(fileName)}`, fileName),
   deleteFile: (filePath: string) =>
     request('/api/backup/file', { method: 'DELETE', body: JSON.stringify({ filePath }) }),
   cleanup: (mode: string, days?: number) =>
@@ -317,6 +328,8 @@ export const taskApi = {
     request(`/api/task/${taskId}`, { method: 'DELETE' }),
   clearCompleted: () =>
     request('/api/task/clear-completed', { method: 'POST' }),
+  downloadLog: (taskId: string, fileName: string) =>
+    downloadKernelFile(`/api/task/${pathSegment(taskId)}/download-log`, fileName),
 }
 
 // ─── 结构对比 ────────────────────────────────────────────
@@ -424,4 +437,3 @@ export interface ProcedureExecuteResult {
   warningCount: number
   error: string | null
 }
-

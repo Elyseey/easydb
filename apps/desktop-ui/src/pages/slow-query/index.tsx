@@ -19,6 +19,7 @@ import type {
   SlowQuerySortField, SortOrder,
 } from '@/services/slowQueryApi'
 import type { ConnectionConfig, DatabaseInfo } from '@/types'
+import { filterConnectionsByDiagnosticCapability } from '@/utils/dbCapabilities'
 
 const { Text } = Typography
 
@@ -308,7 +309,7 @@ const SlowQueryDetailDrawer: React.FC<{
       width={760}
       open={open}
       onClose={onClose}
-      destroyOnClose
+      destroyOnHidden
       styles={{ body: { padding: '16px', overflowY: 'auto' } }}
     >
       {/* SQL 指纹 */}
@@ -515,6 +516,7 @@ export const SlowQueryPage: React.FC = () => {
 
   // 连接与能力状态
   const [connections, setConnections] = useState<ConnectionConfig[]>([])
+  const slowQueryConnections = filterConnectionsByDiagnosticCapability(connections, 'slowQuery')
   const [selectedConnId, setSelectedConnId] = useState<string>('')
   const [capability, setCapability] = useState<SlowQueryCapability | null>(null)
   const [checkingCap, setCheckingCap] = useState(false)
@@ -743,7 +745,7 @@ export const SlowQueryPage: React.FC = () => {
             value={selectedConnId || undefined}
             onChange={v => handleConnectionChange(v ?? '')}
             onClear={() => handleConnectionChange('')}
-            options={connections.map(c => ({
+            options={slowQueryConnections.map(c => ({
               value: c.id,
               label: (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>

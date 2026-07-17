@@ -2,13 +2,40 @@ import type { SqlResult, ColumnInfo, EditabilityStatus, EditabilityReason } from
 
 /**
  * 从 SQL 中提取表名
- * 使用正则匹配 FROM / UPDATE / INTO 后的表名
+ * 支持：FROM a, b, c 逗号分隔 / JOIN 语法 / 子查询
  */
 export function extractAllTableNames(sql: string): string[] {
   if (!sql) return []
-  const regex = /(?:FROM|UPDATE|INTO)\s+([`'"]?[a-zA-Z0-9_$.]+[`'"]?)/gi
-  const matches = [...sql.matchAll(regex)]
-  return matches.map(m => m[1].replace(/[`'"]/g, '').split('.').pop() ?? m[1])
+  const names: string[] = []
+  const seen = new Set<string>()
+
+  const addName = (raw: string) => {
+    const clean = raw.replace(/[`'"]/g, '').split('.').pop() ?? raw
+    if (clean && !seen.has(clean.toLowerCase())) {
+      seen.add(clean.toLowerCase())
+      names.push(clean)
+    }
+  }
+
+  // 匹配 FROM/UPDATE/INTO 后的表名（含别名），支持逗号分隔多表
+  const fromRegex = /(?:FROM|UPDATE|INTO)\s+([\s\S]*?)(?=\s+(?:WHERE|SET|ON|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|FETCH|FOR\s)|$)/gi
+  for (const fromMatch of sql.matchAll(fromRegex)) {
+    const clause = fromMatch[1]
+    // 按逗号拆分，每个段取第一个标识符为表名
+    const segments = clause.split(',')
+    for (const seg of segments) {
+      const m = seg.trim().match(/^[`'"]?([a-zA-Z0-9_$.]+)[`'"]?/)
+      if (m) addName(m[1])
+    }
+  }
+
+  // 匹配所有类型的 JOIN
+  const joinRegex = /(?:LEFT|RIGHT|INNER|OUTER|CROSS|FULL)?\s*JOIN\s+[`'"]?([a-zA-Z0-9_$.]+)[`'"]?/gi
+  for (const joinMatch of sql.matchAll(joinRegex)) {
+    addName(joinMatch[1])
+  }
+
+  return names
 }
 
 /**
@@ -27,9 +54,27 @@ function hasAggregateKeywords(sql: string): boolean {
 }
 
 /**
+ * 解析“复制为 INSERT”可使用的唯一目标表。
+ *
+ * 这里只接受结构明确的单表明细查询。CTE、子查询、集合查询和聚合查询即使
+ * 最终只返回一个结果集，也不能安全推断 INSERT 应写入哪个对象。
+ */
+export function resolveInsertTargetTableName(sql: string): string | null {
+  const normalized = sql.trim()
+  if (!/^(?:\/\*[\s\S]*?\*\/\s*|--[^\n]*(?:\n|$)\s*)*SELECT\b/i.test(normalized)) return null
+  if (/^\s*WITH\b/i.test(normalized)) return null
+  if (/\b(?:UNION|INTERSECT|EXCEPT)\b/i.test(normalized)) return null
+  if (/\bFROM\s*\(/i.test(normalized)) return null
+  if (hasAggregateKeywords(normalized)) return null
+
+  const tableNames = extractAllTableNames(normalized)
+  return tableNames.length === 1 ? tableNames[0] : null
+}
+
+/**
  * 获取不可编辑原因的友好文本
  */
-export function getEditabilityReasonText(reason: EditabilityReason): string {
+export function getEditabilityReasonText(reason: EditabilityReason, missingPrimaryKeys: string[] = []): string {
   const texts: Record<EditabilityReason, string> = {
     'not_query': '非 SELECT 查询',
     'preview_mode': '数据已截断，需先加载完整数据',
@@ -39,6 +84,9 @@ export function getEditabilityReasonText(reason: EditabilityReason): string {
     'aggregate': '聚合查询结果无主键',
     'view': '视图通常是只读的',
     'no_primary_key': '表没有主键，无法定位行',
+    'missing_primary_key_columns': missingPrimaryKeys.length > 0
+      ? `查询结果缺少主键列：${missingPrimaryKeys.join(', ')}。请在 SELECT 中包含完整主键后再编辑。`
+      : '查询结果缺少完整主键列，请在 SELECT 中包含所有主键后再编辑。',
     'metadata_error': '无法获取表元数据',
   }
   return texts[reason] || '查询结果不可编辑'
@@ -111,6 +159,18 @@ export async function analyzeEditability(
 
     if (primaryKeys.length === 0) {
       return { editable: false, reason: 'no_primary_key', tableName }
+    }
+
+    const resultColumns = new Set((result.columns ?? []).map(column => column.toLowerCase()))
+    const missingPrimaryKeys = primaryKeys.filter(primaryKey => !resultColumns.has(primaryKey.toLowerCase()))
+    if (missingPrimaryKeys.length > 0) {
+      return {
+        editable: false,
+        reason: 'missing_primary_key_columns',
+        tableName,
+        primaryKeys,
+        missingPrimaryKeys,
+      }
     }
 
     // Step 4: 返回成功

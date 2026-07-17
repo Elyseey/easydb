@@ -28,19 +28,12 @@ import io.ktor.server.routing.*
  *
  * 路由挂载点：/api/slow-query
  *
- * 路由风格：同步查询（参考 sqlRoutes），不引入 Task Center 异步化。
- * 一期所有调用属于短交互型请求，同步返回即可满足需求。
- *
- * API 列表：
- *   GET  /status               — 获取能力探测状态
- *   POST /digests/query        — 查询 Digest 聚合列表（分页 + 排序 + 筛选）
- *   GET  /digests/{digest}/samples — 获取某 Digest 的最近样本 SQL
- *   POST /explain              — 对单条 SQL 执行 EXPLAIN 分析
- *   POST /advise               — 规则诊断，输出 Advice 列表
+ * 通过 adapterRegistry 按 dbType 获取 SlowQueryAnalyzer。
+ * 如果数据库不支持慢查询分析（analyzer 为 null），返回 UNSUPPORTED_DB_FEATURE 错误。
  */
 fun Route.slowQueryRoutes() {
     val connMgr = ServiceRegistry.connectionManager
-    val adapter = ServiceRegistry.mysqlAdapter
+    val adapterRegistry = ServiceRegistry.adapterRegistry
 
     /**
      * 公共辅助：根据 connectionId query 参数获取会话，失败时写 fail 响应并返回 null
@@ -52,11 +45,26 @@ fun Route.slowQueryRoutes() {
             ?: run { call.fail("NOT_CONNECTED", "连接未打开，请先打开连接（connectionId=$connectionId）"); null }
     }
 
+    /**
+     * 获取慢查询分析器，不支持时返回 null 并写入 fail 响应
+     */
+    suspend fun getAnalyzer(session: DatabaseSession, call: ApplicationCall): SlowQueryAnalyzer? {
+        val analyzer = try {
+            adapterRegistry.get(session.config.dbType).slowQueryAnalyzer()
+        } catch (_: UnsupportedOperationException) {
+            null
+        }
+        if (analyzer == null) {
+            call.fail("UNSUPPORTED_DB_FEATURE", "当前数据库类型（${session.config.dbType}）不支持慢查询分析")
+            return null
+        }
+        return analyzer
+    }
+
     // ── GET /status?connectionId= ────────────────────────────
     get("/status") {
         val session = getSession(call) ?: return@get
-        val analyzer = adapter.slowQueryAnalyzer()
-            ?: return@get call.fail("NOT_SUPPORTED", "当前数据库类型不支持慢查询分析")
+        val analyzer = getAnalyzer(session, call) ?: return@get
 
         val capability = runCatching { analyzer.checkCapability(session) }
             .getOrElse { e ->
@@ -77,8 +85,7 @@ fun Route.slowQueryRoutes() {
         val session = connMgr.getSession(req.connectionId)
             ?: return@post call.fail("NOT_CONNECTED", "连接未打开（connectionId=${req.connectionId}）")
 
-        val analyzer = adapter.slowQueryAnalyzer()
-            ?: return@post call.fail("NOT_SUPPORTED", "当前数据库类型不支持慢查询分析")
+        val analyzer = getAnalyzer(session, call) ?: return@post
 
         val result = runCatching { analyzer.queryDigests(session, req) }
             .getOrElse { e ->
@@ -95,8 +102,7 @@ fun Route.slowQueryRoutes() {
         val session = getSession(call) ?: return@get
         val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 100) ?: 20
 
-        val analyzer = adapter.slowQueryAnalyzer()
-            ?: return@get call.fail("NOT_SUPPORTED", "当前数据库类型不支持慢查询分析")
+        val analyzer = getAnalyzer(session, call) ?: return@get
 
         val samples = runCatching { analyzer.getSamples(session, digest, limit) }
             .getOrElse { e ->
@@ -117,8 +123,7 @@ fun Route.slowQueryRoutes() {
         val session = connMgr.getSession(req.connectionId)
             ?: return@post call.fail("NOT_CONNECTED", "连接未打开（connectionId=${req.connectionId}）")
 
-        val analyzer = adapter.slowQueryAnalyzer()
-            ?: return@post call.fail("NOT_SUPPORTED", "当前数据库类型不支持慢查询分析")
+        val analyzer = getAnalyzer(session, call) ?: return@post
 
         val result = runCatching { analyzer.explain(session, req.database, req.sql, req.format) }
             .getOrElse { e ->
@@ -141,8 +146,7 @@ fun Route.slowQueryRoutes() {
         val session = connMgr.getSession(req.connectionId)
             ?: return@post call.fail("NOT_CONNECTED", "连接未打开（connectionId=${req.connectionId}）")
 
-        val analyzer = adapter.slowQueryAnalyzer()
-            ?: return@post call.fail("NOT_SUPPORTED", "当前数据库类型不支持慢查询分析")
+        val analyzer = getAnalyzer(session, call) ?: return@post
 
         val advices = runCatching { analyzer.advise(session, req.sql, req.explainResult) }
             .getOrElse { e ->

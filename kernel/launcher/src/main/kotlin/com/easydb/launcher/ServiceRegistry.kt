@@ -1,7 +1,10 @@
 package com.easydb.launcher
 
 import com.easydb.common.*
+import com.easydb.drivers.dameng.DamengDatabaseAdapter
+import com.easydb.drivers.dameng.DamengStructureCompareSqlGenerator
 import com.easydb.drivers.mysql.MysqlDatabaseAdapter
+import com.easydb.drivers.mysql.MysqlStructureCompareSqlGenerator
 import com.easydb.tunnel.SshTunnelManager
 
 /**
@@ -10,10 +13,49 @@ import com.easydb.tunnel.SshTunnelManager
  */
 object ServiceRegistry {
     val mysqlAdapter = MysqlDatabaseAdapter()
+    val damengAdapter = DamengDatabaseAdapter()
+    val adapterRegistry = DatabaseAdapterRegistry(listOf(mysqlAdapter, damengAdapter))
+    val migrationAdapterRegistry = MigrationAdapterRegistry(
+        listOf(
+            RegisteredMigrationAdapter("mysql", "mysql", mysqlAdapter.migrationAdapter()),
+            RegisteredMigrationAdapter("mysql", "dameng", MysqlToDamengMigrationAdapter()),
+            RegisteredMigrationAdapter("dameng", "mysql", DamengSourceMigrationAdapter.toMysql()),
+            RegisteredMigrationAdapter("dameng", "dameng", DamengSourceMigrationAdapter.toDameng())
+        )
+    )
+    val syncAdapterRegistry = SyncAdapterRegistry(
+        listOf(
+            RegisteredSyncAdapter("mysql", "mysql", mysqlAdapter.syncAdapter()),
+            RegisteredSyncAdapter("dameng", "dameng", damengAdapter.syncAdapter())
+        )
+    )
+    val compareAdapterRegistry = CompareAdapterRegistry(
+        listOf(
+            RegisteredCompareAdapter(
+                "mysql",
+                "mysql",
+                StructureCompareService(
+                    mysqlAdapter.metadataAdapter(),
+                    mysqlAdapter.metadataAdapter(),
+                    MysqlStructureCompareSqlGenerator()
+                )
+            ),
+            RegisteredCompareAdapter(
+                "dameng",
+                "dameng",
+                StructureCompareService(
+                    damengAdapter.metadataAdapter(),
+                    damengAdapter.metadataAdapter(),
+                    DamengStructureCompareSqlGenerator()
+                )
+            )
+        )
+    )
     val connectionManager = ConnectionManager()
     val sqlService = SqlExecutionService()
     val sqlQuerySessionManager = SqlQuerySessionManager()
-    val connectionStore = ConnectionStore()
+    val credentialVault: CredentialVault = LocalFileCredentialVault()
+    val connectionStore = ConnectionStore(vault = credentialVault)
     val groupStore = GroupStore()
     val taskManager = TaskManager()
     val sqlHistoryStore = SqlHistoryStore()

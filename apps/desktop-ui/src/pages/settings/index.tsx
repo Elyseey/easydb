@@ -15,22 +15,24 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 import React, { useState, useCallback } from 'react'
-import { Typography, Space, Switch, Button, Modal, Radio, Tabs, List, theme, Avatar, Progress, Spin, App, Select, Alert } from 'antd'
+import { Typography, Space, Switch, Button, Modal, Radio, Tabs, List, theme, Avatar, Progress, Spin, App, Select, Alert, Tag } from 'antd'
 import {
   SettingOutlined, InfoCircleOutlined, SyncOutlined, CheckCircleOutlined,
   CloudDownloadOutlined, BulbOutlined, DesktopOutlined, SafetyCertificateOutlined,
   CodeOutlined, RetweetOutlined, AppstoreOutlined,
   DatabaseOutlined, FileZipOutlined, FileTextOutlined, SettingFilled,
   DeleteOutlined, ClearOutlined, ExclamationCircleOutlined, SaveOutlined,
-  DownOutlined, UpOutlined, DownloadOutlined
+  DownOutlined, UpOutlined, DownloadOutlined, GithubOutlined, StarOutlined
 } from '@ant-design/icons'
 import {
-  checkForUpdate, getAutoCheckEnabled, setAutoCheckEnabled, APP_VERSION,
+  checkForUpdate, getAutoCheckEnabled, setAutoCheckEnabled, APP_VERSION, GITHUB_REPOSITORY_URL,
   type UpdateInfo,
 } from '@/utils/updater'
-import { useThemeStore, type ThemeMode } from '@/stores/themeStore'
+import { useThemeStore, type ThemeMode, type ThemeStyle } from '@/stores/themeStore'
 import { useAppSettingsStore } from '@/stores/appSettingsStore'
 import { storageApi, backupApi } from '@/services/api'
+import { BUILTIN_SQL_TEMPLATES } from '@/pages/sql-editor/sqlTemplates'
+import { openExternalUrl } from '@/utils/openExternalUrl'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -66,11 +68,15 @@ export const SettingsPage: React.FC = () => {
 
   const themeMode = useThemeStore((s) => s.themeMode)
   const setThemeMode = useThemeStore((s) => s.setThemeMode)
+  const themeStyle = useThemeStore((s) => s.themeStyle)
+  const setThemeStyle = useThemeStore((s) => s.setThemeStyle)
 
   const sqlHistoryEnabled          = useAppSettingsStore((s) => s.sqlHistoryEnabled)
   const sqlHistoryFilterByDatabase = useAppSettingsStore((s) => s.sqlHistoryFilterByDatabase)
+  const sqlTemplatesEnabled        = useAppSettingsStore((s) => s.sqlTemplatesEnabled)
   const setSqlHistoryEnabled          = useAppSettingsStore((s) => s.setSqlHistoryEnabled)
   const setSqlHistoryFilterByDatabase = useAppSettingsStore((s) => s.setSqlHistoryFilterByDatabase)
+  const setSqlTemplatesEnabled        = useAppSettingsStore((s) => s.setSqlTemplatesEnabled)
 
   // 存储管理状态
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null)
@@ -125,6 +131,19 @@ export const SettingsPage: React.FC = () => {
     }
   }, [])
 
+  // 加载备份文件列表
+  const loadBackupFiles = useCallback(async () => {
+    setBackupFilesLoading(true)
+    try {
+      const data = await backupApi.list() as BackupFileInfo[]
+      setBackupFiles(data)
+    } catch {
+      setBackupFiles([])
+    } finally {
+      setBackupFilesLoading(false)
+    }
+  }, [])
+
   // 执行清理
   const handleCleanup = useCallback(async (target: string, mode: string, days?: number) => {
     const targetLabels: Record<string, string> = { exports: '导出文件', logs: '任务日志', tasks: '任务记录', backups: '备份文件' }
@@ -159,20 +178,7 @@ export const SettingsPage: React.FC = () => {
         }
       },
     })
-  }, [modal, message, loadStorageInfo, showBackupFiles])
-
-  // 加载备份文件列表
-  const loadBackupFiles = useCallback(async () => {
-    setBackupFilesLoading(true)
-    try {
-      const data = await backupApi.list() as BackupFileInfo[]
-      setBackupFiles(data)
-    } catch {
-      setBackupFiles([])
-    } finally {
-      setBackupFilesLoading(false)
-    }
-  }, [])
+  }, [modal, message, loadStorageInfo, showBackupFiles, loadBackupFiles])
 
   // 切换备份文件列表展开状态
   const handleToggleBackupFiles = useCallback(() => {
@@ -194,13 +200,17 @@ export const SettingsPage: React.FC = () => {
         try {
           await backupApi.deleteFile(file.filePath)
           message.success(`已删除 ${file.fileName}`)
-          loadBackupFiles()
-          loadStorageInfo()
-        } catch {
-          message.error('删除失败')
+        } catch (err) {
+          message.error(err instanceof Error ? err.message : '删除失败')
+          return
         } finally {
           setDeletingBackup(null)
         }
+
+        await Promise.allSettled([
+          loadBackupFiles(),
+          loadStorageInfo(),
+        ])
       },
     })
   }, [modal, message, loadBackupFiles, loadStorageInfo])
@@ -223,6 +233,31 @@ export const SettingsPage: React.FC = () => {
           >
             <List.Item actions={[
               <Radio.Group
+                value={themeStyle}
+                onChange={(e) => setThemeStyle(e.target.value as ThemeStyle)}
+                optionType="button"
+                buttonStyle="solid"
+                size="middle"
+              >
+                <Radio.Button value="professional">简约专业</Radio.Button>
+                <Radio.Button value="glass">流光</Radio.Button>
+              </Radio.Group>
+            ]}>
+              <List.Item.Meta
+                avatar={(
+                  <Avatar
+                    size="large"
+                    icon={<AppstoreOutlined />}
+                    style={{ backgroundColor: token.colorPrimaryBg, color: token.colorPrimary }}
+                  />
+                )}
+                title={<Text strong>界面风格</Text>}
+                description="简约专业为默认风格，也可切换回原有流光主题"
+              />
+            </List.Item>
+
+            <List.Item actions={[
+              <Radio.Group
                 value={themeMode}
                 onChange={(e) => setThemeMode(e.target.value as ThemeMode)}
                 optionType="button"
@@ -236,8 +271,8 @@ export const SettingsPage: React.FC = () => {
             ]}>
               <List.Item.Meta 
                 avatar={<Avatar size="large" icon={<BulbOutlined />} style={{ backgroundColor: token.colorWarningBg, color: token.colorWarning }}/>}
-                title={<Text strong>外观与主题</Text>}
-                description="切换应用界面的全局色彩风格"
+                title={<Text strong>明暗模式</Text>}
+                description="选择浅色、深色，或跟随系统外观"
               />
             </List.Item>
 
@@ -283,6 +318,37 @@ export const SettingsPage: React.FC = () => {
                 avatar={<Avatar size="large" icon={<AppstoreOutlined />} style={{ backgroundColor: token.colorErrorBg, color: token.colorError }}/>}
                 title={<Text strong>语法动态高亮</Text>}
                 description="激活复杂的 SQL 语法着色以及关键字识别"
+              />
+            </List.Item>
+
+            <List.Item actions={[
+              <Switch
+                aria-label="启用常用 SQL 模板"
+                checked={sqlTemplatesEnabled}
+                onChange={setSqlTemplatesEnabled}
+              />
+            ]}>
+              <List.Item.Meta
+                avatar={<Avatar size="large" icon={<FileTextOutlined />} style={{ backgroundColor: token.colorPrimaryBg, color: token.colorPrimary }} />}
+                title={<Text strong>常用 SQL 模板</Text>}
+                description={(
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Text type="secondary">
+                      默认开启。可从 SQL 编辑器的「SQL 工具」中直接插入，也可输入缩写并选择补全建议；展开后按 Tab 切换占位符。
+                    </Text>
+                    <div aria-label="内置 SQL 模板列表" style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {BUILTIN_SQL_TEMPLATES.map((template) => (
+                        <Tag key={template.id} color={template.risk === 'write' ? 'warning' : undefined} style={{ marginInlineEnd: 0 }}>
+                          <span style={{ fontFamily: token.fontFamilyCode }}>{template.prefix}</span>
+                          {' · '}{template.label}
+                        </Tag>
+                      ))}
+                    </div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      条件更新和条件删除模板始终包含 WHERE 条件占位符；插入模板不会自动执行 SQL。
+                    </Text>
+                  </Space>
+                )}
               />
             </List.Item>
 
@@ -554,7 +620,7 @@ export const SettingsPage: React.FC = () => {
                                 <Button
                                   size="small"
                                   icon={<DownloadOutlined />}
-                                  href={backupApi.downloadUrl(f.filePath)}
+                                  onClick={() => backupApi.downloadFile(f.fileName).catch(err => message.error(err.message || '下载失败'))}
                                   style={{ flexShrink: 0 }}
                                 />
                                 <Button
@@ -678,10 +744,30 @@ export const SettingsPage: React.FC = () => {
           }}>
             <DesktopOutlined style={{ fontSize: 64, color: token.colorPrimary, marginBottom: 16 }} />
             <Title level={3} style={{ margin: 0 }}>EasyDB Pro</Title>
-            <Text type="secondary" style={{ marginTop: 8, marginBottom: 24 }}>版本号：v{APP_VERSION}-beta ✨</Text>
+            <Text type="secondary" style={{ marginTop: 8, marginBottom: 24 }}>版本号：v{APP_VERSION}-beta</Text>
+
+            <Paragraph type="secondary" style={{ maxWidth: 480, textAlign: 'center', marginBottom: 16 }}>
+              EasyDB 是免费开源项目。如果它对你有帮助，欢迎前往 GitHub 点一个 Star，帮助更多人发现它。
+            </Paragraph>
 
             <Button
               type="primary"
+              size="large"
+              shape="round"
+              icon={<StarOutlined />}
+              onClick={() => void openExternalUrl(GITHUB_REPOSITORY_URL)}
+              style={{ width: 240, marginBottom: 12 }}
+            >
+              在 GitHub 上支持 EasyDB
+            </Button>
+
+            <Text type="secondary" style={{ marginBottom: 20 }}>
+              <GithubOutlined style={{ marginRight: 6 }} />
+              qingwz1994/easydb
+            </Text>
+
+            <Button
+              type="default"
               size="large"
               shape="round"
               icon={checking ? <SyncOutlined spin /> : <CloudDownloadOutlined />}
@@ -711,9 +797,9 @@ export const SettingsPage: React.FC = () => {
                   <Button
                     type="default"
                     size="middle"
-                    onClick={() => window.open(updateInfo.downloadUrl, '_blank')}
+                    onClick={() => void openExternalUrl(updateInfo.downloadUrl)}
                   >
-                    🚀 立即前往发布页下载
+                    <DownloadOutlined /> 立即前往发布页下载
                   </Button>
                 </Space>
               </div>

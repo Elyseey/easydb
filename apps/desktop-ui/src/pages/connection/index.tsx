@@ -145,7 +145,15 @@ export const ConnectionPage: React.FC = () => {
     setTesting(true)
     setTestResult(null)
     try {
-      const result = await connectionApi.test(values) as { success: boolean; message: string }
+      // 编辑模式下，如果用户未修改密码，需要携带 passwordRef 以便后端从 vault 解析
+      const testData = { ...values }
+      if (editingConn?.passwordRef && !testData.password) {
+        testData.passwordRef = editingConn.passwordRef
+      }
+      if (editingConn?.ssh?.passwordRef && testData.ssh && !testData.ssh.password) {
+        testData.ssh = { ...testData.ssh, passwordRef: editingConn.ssh.passwordRef }
+      }
+      const result = await connectionApi.test(testData) as { success: boolean; message: string }
       setTestResult(result)
     } catch (e) {
       setTestResult({ success: false, message: e instanceof Error ? e.message : '测试失败' })
@@ -223,7 +231,7 @@ export const ConnectionPage: React.FC = () => {
   }
 
   const handleEnterWorkbench = (conn: ConnectionConfig) => {
-    addOpenConnection(conn.id, conn.name)
+    addOpenConnection(conn.id, conn.name, conn.dbType)
     navigate('/workbench')
   }
 
@@ -337,23 +345,23 @@ export const ConnectionPage: React.FC = () => {
         {selectedGroup === 'all' && (
           <Row gutter={16} style={{ marginBottom: 24 }}>
             <Col span={6}>
-              <Card size="small" bordered={false} style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
+              <Card size="small" variant="borderless" style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
                 <Statistic title="连接总数" value={stats.total} prefix={<ApiOutlined />} />
               </Card>
             </Col>
             <Col span={6}>
-              <Card size="small" bordered={false} style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
-                <Statistic title="已连接" value={stats.connected} valueStyle={{ color: 'var(--edb-success)' }} prefix={<CheckCircleOutlined />} />
+              <Card size="small" variant="borderless" style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
+                <Statistic title="已连接" value={stats.connected} styles={{ content: { color: 'var(--edb-success)' } }} prefix={<CheckCircleOutlined />} />
               </Card>
             </Col>
             <Col span={6}>
-              <Card size="small" bordered={false} style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
-                <Statistic title="未连接" value={stats.disconnected} valueStyle={{ color: 'var(--edb-text-secondary)' }} prefix={<DisconnectOutlined />} />
+              <Card size="small" variant="borderless" style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
+                <Statistic title="未连接" value={stats.disconnected} styles={{ content: { color: 'var(--edb-text-secondary)' } }} prefix={<DisconnectOutlined />} />
               </Card>
             </Col>
             <Col span={6}>
-              <Card size="small" bordered={false} style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
-                <Statistic title="异常" value={stats.error} valueStyle={{ color: 'var(--edb-error)' }} prefix={<ExclamationCircleOutlined />} />
+              <Card size="small" variant="borderless" style={{ background: 'var(--glass-panel)', backdropFilter: 'var(--glass-blur)', border: '1px solid var(--glass-border)', borderRadius: 'var(--edb-radius-lg)', boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)' }}>
+                <Statistic title="异常" value={stats.error} styles={{ content: { color: 'var(--edb-error)' } }} prefix={<ExclamationCircleOutlined />} />
               </Card>
             </Col>
           </Row>
@@ -406,6 +414,7 @@ export const ConnectionPage: React.FC = () => {
           onTest={handleTest}
           testResult={testResult}
           testing={testing}
+          defaultGroupId={(selectedGroup === 'all' || selectedGroup === 'ungrouped') ? undefined : selectedGroup}
         />
         
         {/* 新增/编辑 分组弹窗 */}
@@ -416,7 +425,7 @@ export const ConnectionPage: React.FC = () => {
            onCancel={() => setGroupModalOpen(false)}
            okText="保存"
            cancelText="取消"
-           destroyOnClose
+           destroyOnHidden
            width={400}
         >
            <Input 

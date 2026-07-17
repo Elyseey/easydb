@@ -5,6 +5,14 @@
  * it under the terms of the GNU Affero General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 package com.easydb.launcher
 
@@ -24,12 +32,27 @@ private val json = Json { prettyPrint = false; encodeDefaults = true }
 
 /**
  * 数据追踪路由
+ *
+ * 当前仅支持 MySQL（基于 binlog）。
+ * 非 MySQL 连接返回 UNSUPPORTED_DB_FEATURE 错误。
  */
 fun Route.trackerRoutes() {
     val tracker = ServiceRegistry.changeTracker
     val connMgr = ServiceRegistry.connectionManager
     val store = ServiceRegistry.connectionStore
-    val adapter = ServiceRegistry.mysqlAdapter
+    val adapterRegistry = ServiceRegistry.adapterRegistry
+
+    /** 检查连接是否为 MySQL，非 MySQL 返回错误响应 */
+    fun ApplicationCall.requireMysql(): Boolean {
+        val connectionId = request.queryParameters["connectionId"]
+            ?: request.queryParameters["connectionId"]
+        // 从 store 获取 config 以检查 dbType
+        val config = connectionId?.let { store.getById(it) }
+        if (config != null && config.dbType.lowercase() != "mysql") {
+            return false
+        }
+        return true
+    }
 
     // 检查服务端兼容性
     get("/server-check") {
@@ -39,6 +62,11 @@ fun Route.trackerRoutes() {
         val config = store.getById(connectionId)
             ?: return@get call.fail("NOT_FOUND", "Connection not found")
 
+        if (config.dbType.lowercase() != "mysql") {
+            return@get call.fail("UNSUPPORTED_DB_FEATURE", "数据追踪仅支持 MySQL，当前数据库类型：${config.dbType}")
+        }
+
+        val adapter = adapterRegistry.get(config.dbType)
         val session = connMgr.getSession(connectionId)
             ?: connMgr.openSession(adapter.connectionAdapter(), config)
 
@@ -54,6 +82,11 @@ fun Route.trackerRoutes() {
         val config = store.getById(connectionId)
             ?: return@get call.fail("NOT_FOUND", "Connection not found")
 
+        if (config.dbType.lowercase() != "mysql") {
+            return@get call.fail("UNSUPPORTED_DB_FEATURE", "数据追踪仅支持 MySQL，当前数据库类型：${config.dbType}")
+        }
+
+        val adapter = adapterRegistry.get(config.dbType)
         val session = connMgr.getSession(connectionId)
             ?: connMgr.openSession(adapter.connectionAdapter(), config)
 
@@ -67,6 +100,12 @@ fun Route.trackerRoutes() {
 
         val connConfig = store.getById(config.connectionId)
             ?: return@post call.fail("NOT_FOUND", "Connection not found")
+
+        if (connConfig.dbType.lowercase() != "mysql") {
+            return@post call.fail("UNSUPPORTED_DB_FEATURE", "数据追踪仅支持 MySQL，当前数据库类型：${connConfig.dbType}")
+        }
+
+        val adapter = adapterRegistry.get(connConfig.dbType)
 
         // 为 binlog 创建独立连接（不能复用查询连接）
         val session = connMgr.openSession(adapter.connectionAdapter(), connConfig)
@@ -115,6 +154,10 @@ fun Route.trackerRoutes() {
         call.ok(result)
     }
 
+    post("/events-ticket") {
+        call.ok(mapOf("ticket" to KernelSecurity.issueSseTicket()))
+    }
+
     // SSE 轻量通知（每秒推送计数更新，不推完整事件）
     get("/events") {
         val sessionId = call.request.queryParameters["sessionId"]
@@ -151,6 +194,11 @@ fun Route.trackerRoutes() {
         val connConfig = store.getById(request.connectionId)
             ?: return@post call.fail("NOT_FOUND", "Connection not found")
 
+        if (connConfig.dbType.lowercase() != "mysql") {
+            return@post call.fail("UNSUPPORTED_DB_FEATURE", "数据追踪仅支持 MySQL，当前数据库类型：${connConfig.dbType}")
+        }
+
+        val adapter = adapterRegistry.get(connConfig.dbType)
         val session = connMgr.getSession(request.connectionId)
             ?: connMgr.openSession(adapter.connectionAdapter(), connConfig)
 
@@ -170,6 +218,11 @@ fun Route.trackerRoutes() {
         val connConfig = store.getById(request.connectionId)
             ?: return@post call.fail("NOT_FOUND", "Connection not found")
 
+        if (connConfig.dbType.lowercase() != "mysql") {
+            return@post call.fail("UNSUPPORTED_DB_FEATURE", "数据追踪仅支持 MySQL，当前数据库类型：${connConfig.dbType}")
+        }
+
+        val adapter = adapterRegistry.get(connConfig.dbType)
         val session = connMgr.getSession(request.connectionId)
             ?: connMgr.openSession(adapter.connectionAdapter(), connConfig)
 

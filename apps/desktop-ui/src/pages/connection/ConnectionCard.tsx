@@ -26,8 +26,19 @@ interface ConnectionCardProps {
 // Vendor color mapping for DB type icon
 const VENDOR_COLORS: Record<string, string> = {
   mysql: '#E17E10',
-  postgresql: '#336791',
+  dameng: '#C23531',
   dm: '#C23531',
+  postgresql: '#336791',
+}
+
+const DB_TYPE_LABELS: Record<string, string> = {
+  mysql: 'MySQL',
+  dameng: '达梦',
+  dm: '达梦',
+  postgresql: 'PostgreSQL',
+  oracle: 'Oracle',
+  sqlserver: 'SQL Server',
+  sqlite: 'SQLite',
 }
 
 export const ConnectionCard: React.FC<ConnectionCardProps> = ({
@@ -84,7 +95,7 @@ export const ConnectionCard: React.FC<ConnectionCardProps> = ({
       {/* Status + DB Type */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
         <Tag
-          bordered={false}
+          variant="filled"
           style={{
             background: 'var(--glass-panel)',
             color: 'var(--edb-text-secondary)',
@@ -97,7 +108,7 @@ export const ConnectionCard: React.FC<ConnectionCardProps> = ({
             padding: '0 8px',
           }}
         >
-          {c.dbType.toUpperCase()}
+          {DB_TYPE_LABELS[c.dbType] ?? c.dbType.toUpperCase()}
         </Tag>
         <ConnectionStatusTag status={c.status} />
       </div>

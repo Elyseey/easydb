@@ -29,8 +29,9 @@ import type { SqlResult, ConnectionConfig } from '@/types'
 import { useWorkbenchStore } from '@/stores/workbenchStore'
 import { useConnectionStore } from '@/stores/connectionStore'
 import { useSqlEditorStore } from '@/stores/sqlEditorStore'
-import { sqlApi, metadataApi, connectionApi } from '@/services/api'
+import { sqlApi, connectionApi } from '@/services/api'
 import { useAppSettingsStore } from '@/stores/appSettingsStore'
+import { useThemeStore } from '@/stores/themeStore'
 import { EmptyState } from '@/components/EmptyState'
 import { SqlResultPanel } from '@/components/SqlResultPanel'
 import { handleApiError, toast } from '@/utils/notification'
@@ -41,11 +42,16 @@ import {
   MAX_SQL_PREVIEW_CELL_CHARS,
   mergeSqlPreviewResult,
   normalizeExecutableSql,
+  sqlAffectedRowsSummary,
+  sqlBatchSummary,
+  sqlSuccessToastMessage,
+  sqlUpdateResultText,
 } from './queryPreview'
 import { SaveScriptModal } from './SaveScriptModal'
 import { SavedScriptsModal } from './SavedScriptsModal'
 import { SqlHistoryDrawer } from './SqlHistoryDrawer'
 import { formatHotkey } from '@/utils/osUtils'
+import { ConnectionDatabaseSelect } from '@/components/ConnectionDatabaseSelect'
 
 const { Content } = Layout
 const { Text } = Typography
@@ -65,6 +71,7 @@ const extractAllTableNames = (sql: string): string[] => {
 
 export const SqlEditorPage: React.FC = () => {
   const { token } = theme.useToken()
+  const effectiveTheme = useThemeStore((s) => s.effectiveTheme)
   const sqlHistoryEnabled          = useAppSettingsStore((s) => s.sqlHistoryEnabled)
   const sqlHistoryFilterByDatabase = useAppSettingsStore((s) => s.sqlHistoryFilterByDatabase)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
@@ -90,7 +97,6 @@ export const SqlEditorPage: React.FC = () => {
   const [saveModalOpen, setSaveModalOpen] = useState(false)
   const [listModalOpen, setListModalOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [databases, setDatabases] = useState<string[]>([])
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null)
 
   const activeEditorTab = tabs.find((t) => t.key === activeTabKey) ?? tabs[0]
@@ -156,14 +162,6 @@ export const SqlEditorPage: React.FC = () => {
   // 仅在组件挂载时消费一次
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // 连接变化时加载数据库列表（从工具栏上下文读取）
-  useEffect(() => {
-    if (!currentConnId) { setDatabases([]); return }
-    metadataApi.databases(currentConnId).then((dbs) => {
-      setDatabases((dbs as Array<{name: string}>).map(d => d.name))
-    }).catch(() => setDatabases([]))
-  }, [currentConnId])
 
   const addTab = () => {
     storeAddTab(currentConnId, currentDatabase)
@@ -302,8 +300,7 @@ export const SqlEditorPage: React.FC = () => {
         if (hasQuery) {
           updateActiveTab({ results: newResults, currentBatch: enrichedResultList, resultTab: 'result-0' })
         } else {
-          const totalAffected = enrichedResultList.reduce((sum, r) => sum + (r.affectedRows ?? 0), 0)
-          toast.success(`执行成功，共影响 ${totalAffected} 行`)
+          toast.success(sqlSuccessToastMessage(enrichedResultList))
           updateActiveTab({ results: newResults, currentBatch: enrichedResultList, resultTab: 'messages' }) // 全是 update 的情况跳转到消息
         }
       }
@@ -378,6 +375,7 @@ export const SqlEditorPage: React.FC = () => {
   const currentBatch = activeEditorTab?.currentBatch ?? []
   const results = activeEditorTab?.results ?? []
   const totalDuration = currentBatch.reduce((sum, r) => sum + (r.duration || 0), 0)
+  const currentBatchSummary = sqlBatchSummary(currentBatch, totalDuration)
   const queryResults = currentBatch.filter((r) => r.type === 'query')
   const resultTableHeight = Math.max(240, (typeof window !== 'undefined' ? window.innerHeight : 900) - editorHeight - 250)
   const tableNameCounts: Record<string, number> = {}
@@ -448,16 +446,10 @@ export const SqlEditorPage: React.FC = () => {
                 }))}
                 listHeight={320}
               />
-              <Select
-                size="small"
-                variant="filled"
-                style={{ width: 160 }}
-                placeholder="选择数据库"
+              <ConnectionDatabaseSelect
+                connectionId={activeEditorTab.connectionId}
                 value={activeEditorTab.database}
                 onChange={handleDatabaseChange}
-                options={databases.map((db) => ({ label: db, value: db }))}
-                disabled={!activeEditorTab.connectionId}
-                showSearch
               />
             </Space>
             <Space>
@@ -501,7 +493,7 @@ export const SqlEditorPage: React.FC = () => {
                 key={activeTabKey}
                 height="100%"
                 language="sql"
-                theme="vs-dark"
+                theme={effectiveTheme === 'dark' ? 'vs-dark' : 'light'}
                 defaultValue={activeEditorTab.sql}
                 onChange={(value) => updateTabSql(activeTabKey, value ?? '')}
                 onMount={handleEditorMount}
@@ -551,9 +543,9 @@ export const SqlEditorPage: React.FC = () => {
                   size="small"
                   style={{ padding: '0 16px', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
                   tabBarExtraContent={
-                    currentBatch.length > 0 && !currentBatch.some(r => r.type === 'error') ? (
+                    currentBatchSummary ? (
                       <Text type="secondary" style={{ fontSize: 12 }}>
-                        共 {currentBatch.length} 条语句 · 耗时 {totalDuration}ms
+                        {currentBatchSummary}
                       </Text>
                     ) : null
                   }
@@ -576,7 +568,9 @@ export const SqlEditorPage: React.FC = () => {
                         label: displayLabel,
                         children: (
                           <SqlResultPanel
+                            key={`${r.executedAt}-readonly`}
                             result={r}
+                            dbType={connections.find((connection) => connection.id === r.connectionId)?.dbType}
                             displayLabel={displayLabel}
                             tableHeight={resultTableHeight}
                             loadMoreKey={`${activeEditorTab.key}-${idx}`}
@@ -596,7 +590,7 @@ export const SqlEditorPage: React.FC = () => {
                         <div style={{ padding: 24, textAlign: 'center' }}>
                           <Tag color="success">执行成功</Tag>
                           <Text type="secondary">
-                            影响 {currentBatch.reduce((sum, r) => sum + (r.affectedRows ?? 0), 0)} 行
+                            {sqlAffectedRowsSummary(currentBatch) ?? '影响行数不可用'}
                           </Text>
                         </div>
                       ) : (
@@ -624,7 +618,7 @@ export const SqlEditorPage: React.FC = () => {
                                   ? r.preview
                                     ? `✅ 预览加载 ${r.loadedRows ?? r.rows?.length ?? 0} 行${r.hasMore ? '（还有更多）' : ''} (${r.duration}ms)`
                                     : `✅ 查询返回 ${r.rows?.length ?? 0} 行 (${r.duration}ms)`
-                                  : `✅ 影响 ${r.affectedRows} 行 (${r.duration}ms)`
+                                  : `✅ ${sqlUpdateResultText(r)} (${r.duration}ms)`
                               }
                             </div>
                           ))}

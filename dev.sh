@@ -11,6 +11,7 @@ KERNEL_JAR="$KERNEL_DIR/launcher/build/libs/launcher-1.0.0-SNAPSHOT-all.jar"
 KERNEL_PORT=18080
 KERNEL_PID_FILE="$PROJECT_DIR/.kernel.pid"
 UI_PID_FILE="$PROJECT_DIR/.ui.pid"
+KERNEL_TOKEN_FILE="$PROJECT_DIR/.kernel-token"
 
 # 颜色
 GREEN='\033[0;32m'
@@ -21,6 +22,102 @@ NC='\033[0m'
 log()  { echo -e "${GREEN}[EasyDB]${NC} $1"; }
 warn() { echo -e "${YELLOW}[EasyDB]${NC} $1"; }
 err()  { echo -e "${RED}[EasyDB]${NC} $1"; }
+
+ensure_kernel_token() {
+    if [ -n "$EASYDB_KERNEL_TOKEN" ]; then
+        echo "$EASYDB_KERNEL_TOKEN"
+        return
+    fi
+
+    if [ -f "$KERNEL_TOKEN_FILE" ]; then
+        cat "$KERNEL_TOKEN_FILE"
+        return
+    fi
+
+    local token
+    if command -v openssl >/dev/null 2>&1; then
+        token=$(openssl rand -hex 32)
+    else
+        token=$(uuidgen | tr -d '-')
+    fi
+
+    umask 077
+    echo "$token" > "$KERNEL_TOKEN_FILE"
+    echo "$token"
+}
+
+resolve_path() {
+    local path="$1"
+    while [ -L "$path" ]; do
+        local link
+        link=$(readlink "$path") || return 1
+        case "$link" in
+            /*) path="$link" ;;
+            *)  path="$(dirname "$path")/$link" ;;
+        esac
+    done
+
+    local dir
+    dir=$(cd "$(dirname "$path")" && pwd -P) || return 1
+    echo "$dir/$(basename "$path")"
+}
+
+find_local_jre_home() {
+    local candidate
+
+    for candidate in "$EASYDB_JRE_HOME" "$JAVA_HOME"; do
+        if [ -n "$candidate" ] && [ -x "$candidate/bin/java" ]; then
+            cd "$candidate" && pwd -P
+            return 0
+        fi
+    done
+
+    local java_bin
+    java_bin=$(command -v java 2>/dev/null) || return 1
+    java_bin=$(resolve_path "$java_bin") || return 1
+
+    local detected_home
+    detected_home=$("$java_bin" -XshowSettings:properties -version 2>&1 | awk -F= '/^[[:space:]]*java.home =/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }')
+    if [ -n "$detected_home" ] && [ -x "$detected_home/bin/java" ]; then
+        cd "$detected_home" && pwd -P
+        return 0
+    fi
+
+    candidate="$(dirname "$java_bin")/.."
+    if [ -x "$candidate/bin/java" ]; then
+        cd "$candidate" && pwd -P
+        return 0
+    fi
+
+    return 1
+}
+
+embed_local_jre() {
+    local resources_dir="$1"
+    local jre_home
+    jre_home=$(find_local_jre_home) || {
+        err "❌ 找不到本机 JRE/JDK。请先激活 mise Java，或设置 EASYDB_JRE_HOME/JAVA_HOME。"
+        exit 1
+    }
+
+    local java_version
+    java_version=$("$jre_home/bin/java" -version 2>&1 | head -1)
+    if ! "$jre_home/bin/java" -version 2>&1 | grep -q 'version "21'; then
+        err "❌ 本机 Java 版本不是 21：$java_version"
+        err "   Kernel 使用 jvmTarget=21，请使用 JRE/JDK 21 打包。"
+        exit 1
+    fi
+
+    local target_jre="$resources_dir/jre"
+    log "☕ 嵌入本机 JRE/JDK：$jre_home"
+    rm -rf "$target_jre"
+    mkdir -p "$target_jre"
+    cp -R "$jre_home"/. "$target_jre/"
+    # Tauri updates resources in-place on subsequent package builds. Some JDK
+    # files are installed read-only, so make the staged copy owner-writable.
+    chmod -R u+rwX "$target_jre"
+    log "✅ JRE 已复制到 resources/jre ($java_version, $(du -sh "$target_jre" | cut -f1))"
+}
 
 # ─── 构建内核 ────────────────────────────────────────────
 do_build() {
@@ -57,8 +154,17 @@ do_package() {
     cp "$jar_file" "$resources_dir/easydb-kernel.jar"
     log "✅ 内核 JAR 已复制到 resources/ ($(du -h "$resources_dir/easydb-kernel.jar" | cut -f1))"
 
-    # 3. 构建 Tauri 应用
+    # 3. 复制本机 JRE/JDK 到 Tauri resources，保证安装包可独立启动内核
+    embed_local_jre "$resources_dir"
+
+    # 4. 构建 Tauri 应用
     log "🏗️  构建 Tauri 应用（首次可能需要 5-10 分钟）..."
+    # tauri-build preserves source permissions in target/release/resources.
+    # Repair a cache left by an earlier build before it tries to overwrite it.
+    local tauri_resource_cache="$UI_DIR/src-tauri/target/release/resources"
+    if [ -d "$tauri_resource_cache" ]; then
+        chmod -R u+rwX "$tauri_resource_cache"
+    fi
     cd "$UI_DIR" && npm run tauri build
     if [ $? -eq 0 ]; then
         log "✅ 打包完成！"
@@ -89,8 +195,11 @@ start_kernel() {
         do_build
     fi
 
+    local kernel_token
+    kernel_token=$(ensure_kernel_token)
+
     log "🚀 启动内核 (port $KERNEL_PORT)..."
-    cd "$KERNEL_DIR" && nohup java -jar "$KERNEL_JAR" > "$PROJECT_DIR/.kernel.log" 2>&1 &
+    cd "$KERNEL_DIR" && EASYDB_KERNEL_TOKEN="$kernel_token" nohup java -jar "$KERNEL_JAR" > "$PROJECT_DIR/.kernel.log" 2>&1 &
     echo $! > "$KERNEL_PID_FILE"
     sleep 2
 
@@ -108,8 +217,11 @@ start_ui() {
         return
     fi
 
+    local kernel_token
+    kernel_token=$(ensure_kernel_token)
+
     log "🌐 启动前端..."
-    cd "$UI_DIR" && nohup npm run dev > "$PROJECT_DIR/.ui.log" 2>&1 &
+    cd "$UI_DIR" && VITE_EASYDB_KERNEL_TOKEN="$kernel_token" nohup npm run dev > "$PROJECT_DIR/.ui.log" 2>&1 &
     echo $! > "$UI_PID_FILE"
     sleep 3
     log "✅ 前端已启动 → http://localhost:5173"

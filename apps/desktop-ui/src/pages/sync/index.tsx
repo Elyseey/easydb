@@ -37,7 +37,10 @@ import { useConnectionStore } from '@/stores/connectionStore'
 import { syncApi, metadataApi, connectionApi } from '@/services/api'
 import { toast, handleApiError } from '@/utils/notification'
 import { useNavigate } from 'react-router-dom'
-import type { ConnectionConfig } from '@/types'
+import type { ConnectionConfig, SyncConfig, SyncPreview } from '@/types'
+import { supportsDatabaseTaskPair, supportsDatabaseTaskRole } from '@/utils/databaseTaskPairs'
+import { toDatabaseConnectionOptionGroups } from '@/utils/databaseConnectionGroups'
+import '../databaseTask.css'
 
 const { Title, Text } = Typography
 
@@ -79,6 +82,22 @@ export const SyncPage: React.FC = () => {
   const handleConnectionSelect = async (connId: string, type: 'source' | 'target') => {
     const conn = connections.find((c) => c.id === connId)
     if (!conn) return
+    const role = type === 'source' ? 'source' : 'target'
+    if (!supportsDatabaseTaskRole('sync', conn.dbType, role)) {
+      toast.error('数据同步当前仅支持 MySQL→MySQL 或达梦→达梦')
+      return
+    }
+
+    const counterpartId = type === 'source' ? targetId : sourceId
+    const counterpart = connections.find((c) => c.id === counterpartId)
+    if (counterpart) {
+      const sourceType = type === 'source' ? conn.dbType : counterpart.dbType
+      const targetType = type === 'target' ? conn.dbType : counterpart.dbType
+      if (!supportsDatabaseTaskPair('sync', sourceType, targetType)) {
+        toast.error('数据同步当前仅支持 MySQL→MySQL 或达梦→达梦')
+        return
+      }
+    }
 
     if (conn.status !== 'connected') {
       try {
@@ -102,7 +121,7 @@ export const SyncPage: React.FC = () => {
   }
 
   // 格式化连接下拉项
-  const connOptions = connections.map((c) => ({
+  const toConnOption = (c: ConnectionConfig) => ({
     value: c.id,
     label: (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -112,7 +131,25 @@ export const SyncPage: React.FC = () => {
         )}
       </div>
     )
-  }))
+  })
+  const sourceConnection = connections.find((connection) => connection.id === sourceId)
+  const targetConnection = connections.find((connection) => connection.id === targetId)
+  const sourceConnOptions = toDatabaseConnectionOptionGroups(
+    connections.filter((connection) =>
+      supportsDatabaseTaskRole('sync', connection.dbType, 'source') &&
+      (!targetConnection || supportsDatabaseTaskPair('sync', connection.dbType, targetConnection.dbType))
+    ),
+    toConnOption,
+  )
+  const targetConnOptions = toDatabaseConnectionOptionGroups(
+    connections.filter((connection) =>
+      supportsDatabaseTaskRole('sync', connection.dbType, 'target') &&
+      (!sourceConnection || supportsDatabaseTaskPair('sync', sourceConnection.dbType, connection.dbType))
+    ),
+    toConnOption,
+  )
+  const sourceDbType = sourceConnection?.dbType
+  const isDamengSource = sourceDbType === 'dameng'
 
   // 监听源连接以加载数据库
   useEffect(() => {
@@ -155,8 +192,12 @@ export const SyncPage: React.FC = () => {
             comment: o.comment || ''
           }))
           setSourceObjects(list)
-          // 默认全选
-          setSelectedTables(list.map(o => o.name))
+          // 达梦一次性同步当前仅支持表；其他对象保留展示但不默认选中。
+          setSelectedTables(
+            list
+              .filter((object) => sourceDbType !== 'dameng' || object.type === 'table')
+              .map((object) => object.name)
+          )
         })
         .catch(e => handleApiError(e, '加载数据对象失败'))
         .finally(() => setLoadingObjects(false))
@@ -164,7 +205,7 @@ export const SyncPage: React.FC = () => {
       setSourceObjects([])
       setSelectedTables([])
     }
-  }, [sourceId, sourceDb])
+  }, [sourceId, sourceDb, sourceDbType])
 
   // 执行同步
   const handleStart = async () => {
@@ -173,15 +214,30 @@ export const SyncPage: React.FC = () => {
       return
     }
 
+    if (!sourceId || !targetId || !sourceDb || !targetDb) {
+      toast.error('请选择源连接、目标连接和数据库！')
+      return
+    }
+
+    const config: SyncConfig = {
+      sourceConnectionId: sourceId,
+      targetConnectionId: targetId,
+      sourceDatabase: sourceDb,
+      targetDatabase: targetDb,
+      tables: selectedTables as string[],
+    }
+
     setSubmitting(true)
     try {
-      await syncApi.start({
-        sourceConnectionId: sourceId,
-        targetConnectionId: targetId,
-        sourceDatabase: sourceDb,
-        targetDatabase: targetDb,
-        tables: selectedTables as string[],
-      })
+      const preview = await syncApi.preview(config) as SyncPreview
+      const blocked = preview.tables.filter((table) => !table.canSync)
+      if (blocked.length > 0) {
+        const first = blocked[0]
+        toast.error(`${first.tableName}：${first.reason ?? '当前对象不可安全同步'}`)
+        return
+      }
+
+      await syncApi.start(config)
       toast.success('同步任务已创建，可在任务中心查看进度')
       navigate('/task-center')
     } catch (e) {
@@ -195,23 +251,18 @@ export const SyncPage: React.FC = () => {
   const canNext = !!sourceId && !!targetId && !!sourceDb && !!targetDb && selectedTables.length > 0
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'transparent' }}>
+    <div className="database-task-page">
       {/* 核心双屏拓扑界面 */}
-      <div style={{ flex: 1, overflow: 'auto', padding: 32 }}>
+      <div className="database-task-page__content">
         
         <Title level={4} style={{ marginBottom: 24 }}>数据同步 (Data Sync)</Title>
 
-        <Row gutter={48} align="stretch" style={{ position: 'relative' }}>
+        <Row gutter={48} align="stretch" className="database-task-page__topology">
           {/* 左屏：数据源 */}
           <Col span={12}>
             <Card 
-              hoverable
+              className={`database-task-endpoint-card${sourceId ? ' database-task-endpoint-card--source' : ''}`}
               bodyStyle={{ padding: 24, height: '100%' }}
-              style={{ 
-                height: '100%', 
-                borderColor: sourceId ? token.colorPrimaryBorder : undefined,
-                boxShadow: sourceId ? '0 4px 12px rgba(0,0,0,0.05)' : undefined 
-              }}
             >
               <Title level={5} style={{ marginBottom: 24 }}><DatabaseOutlined style={{ color: token.colorPrimary, marginRight: 8 }}/>数据源 (Source)</Title>
               
@@ -220,7 +271,7 @@ export const SyncPage: React.FC = () => {
                   <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>选择源连接实例</Text>
                   <Select
                     value={sourceId} onChange={(v) => handleConnectionSelect(v, 'source')}
-                    options={connOptions} placeholder="选择源连接"
+                    options={sourceConnOptions} placeholder="选择源连接"
                     style={{ width: '100%' }}
                     size="large"
                     listHeight={320}
@@ -244,32 +295,15 @@ export const SyncPage: React.FC = () => {
           </Col>
 
           {/* 中央连接器 UI */}
-          <div style={{
-            position: 'absolute',
-            left: '50%',
-            top: 60,
-            transform: 'translateX(-50%)',
-            zIndex: 10,
-            background: 'var(--glass-panel)',
-            backdropFilter: 'var(--glass-blur-sm)',
-            padding: '8px',
-            borderRadius: '50%',
-            border: '1px solid var(--glass-border)',
-            boxShadow: 'var(--glass-shadow), var(--glass-inner-glow)'
-          }}>
+          <div className="database-task-connector">
             <SwapRightOutlined style={{ fontSize: 24, color: token.colorPrimary }} />
           </div>
 
           {/* 右屏：目标端 */}
           <Col span={12}>
             <Card 
-              hoverable
+              className={`database-task-endpoint-card${targetId ? ' database-task-endpoint-card--target' : ''}`}
               bodyStyle={{ padding: 24, height: '100%' }}
-              style={{ 
-                height: '100%', 
-                borderColor: targetId ? token.colorSuccessBorder : undefined,
-                boxShadow: targetId ? '0 4px 12px rgba(0,0,0,0.05)' : undefined 
-              }}
             >
               <Title level={5} style={{ marginBottom: 24 }}><DatabaseOutlined style={{ color: token.colorSuccess, marginRight: 8 }}/>目标端 (Target)</Title>
               
@@ -278,7 +312,7 @@ export const SyncPage: React.FC = () => {
                   <Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>选择目标连接实例</Text>
                   <Select
                     value={targetId} onChange={(v) => handleConnectionSelect(v, 'target')}
-                    options={connOptions} placeholder="选择目标连接"
+                    options={targetConnOptions} placeholder="选择目标连接"
                     style={{ width: '100%' }}
                     size="large"
                     listHeight={320}
@@ -305,7 +339,7 @@ export const SyncPage: React.FC = () => {
         {/* 第2层：精细对象选取 (双库选中后才显示) */}
         {sourceDb && targetDb && (
           <Card 
-            style={{ marginTop: 24, boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }} 
+            className="database-task-object-card"
             bodyStyle={{ padding: 24 }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -321,7 +355,11 @@ export const SyncPage: React.FC = () => {
               pagination={false}
               rowSelection={{
                 selectedRowKeys: selectedTables,
-                onChange: (keys) => setSelectedTables(keys)
+                onChange: (keys) => setSelectedTables(keys),
+                getCheckboxProps: (record) => ({
+                  disabled: isDamengSource && record.type !== 'table',
+                  title: isDamengSource && record.type !== 'table' ? '达梦一次性同步当前仅支持表' : undefined,
+                }),
               }}
               columns={[
                 { title: '对象名称', dataIndex: 'name', key: 'name', width: 250, render: (t: string) => <Text strong>{t}</Text> },
@@ -341,20 +379,13 @@ export const SyncPage: React.FC = () => {
       </div>
 
       {/* 底部吸附控制台 */}
-      <div style={{
-        padding: '16px 32px',
-        borderTop: '1px solid var(--glass-border)',
-        background: 'var(--glass-panel)',
-        backdropFilter: 'var(--glass-blur)',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        boxShadow: '0 -2px 10px rgba(0,0,0,0.02)'
-      }}>
+      <div className="database-task-page__footer">
         <Space size="large">
           <Alert
             message="操作确认提示"
-            description="表数据将按主键覆盖更新 (Upsert)，视图/存储过程/函数/触发器将覆盖式同步定义 (DROP + CREATE)。"
+            description={isDamengSource
+              ? '表数据将按非空主键或唯一键执行一次性 UPSERT；无可靠键表会被拒绝，暂不同步达梦视图、过程、函数和触发器。'
+              : '表数据将按非空主键或唯一键覆盖更新 (Upsert)，视图/存储过程/函数/触发器将覆盖式同步定义 (DROP + CREATE)。'}
             type="warning"
             showIcon
             icon={<WarningOutlined />}

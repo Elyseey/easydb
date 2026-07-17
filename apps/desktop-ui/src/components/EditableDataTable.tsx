@@ -16,32 +16,54 @@
  */
 import React, { useState, useMemo, useCallback, useRef, useEffect, useLayoutEffect } from 'react'
 import {
-  Table, Input, Button, Space, Tag, Typography, theme, Modal, AutoComplete, Select, Divider, Tooltip,
+  Table, Input, Button, Space, Tag, Typography, theme, Modal, AutoComplete, Select, Divider, Tooltip, Dropdown,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import type { MenuProps } from 'antd'
 import {
   PlusOutlined, DeleteOutlined, SaveOutlined, UndoOutlined,
   ExclamationCircleOutlined, FilterOutlined, CaretUpOutlined, CaretDownOutlined,
-  CopyOutlined, EditOutlined, CloseOutlined,
+  CopyOutlined, EditOutlined, DownloadOutlined,
 } from '@ant-design/icons'
-import type { ColumnInfo, RowChange, DataEditResult } from '@/types'
+import type { ColumnInfo, RowChange, DataEditResult, DbType } from '@/types'
 import { metadataApi } from '@/services/api'
 import { toast, handleApiError } from '@/utils/notification'
+import { startDeferredColumnResize } from '@/utils/columnResize'
+import { confirmDataExport } from '@/components/confirmDataExport'
+import { SelectedRowsActions } from '@/components/SelectedRowsActions'
+import { ResultContextMenu, type ResultContextMenuPosition } from '@/components/ResultContextMenu'
+import { rowsToSqlInsert } from '@/utils/exportUtils'
+import { rowsForSelection, useResultRowSelection } from '@/hooks/useResultRowSelection'
+import { useSelectedRowsExportActions } from '@/hooks/useSelectedRowsExportActions'
 
 const { Text } = Typography
 
+export interface EditableDataTableFilterState {
+  whereDraft?: string
+  appliedWhere?: string
+  sortColumn?: string | null
+  sortDirection?: 'ASC' | 'DESC' | null
+}
+
 interface EditableDataTableProps {
   connectionId: string
+  dbType?: DbType
   database: string
   tableName: string
   columns: ColumnInfo[]
+  visibleColumns?: string[] // SQL SELECT 中实际选中的列名，用于过滤显示
   dataSource: Record<string, unknown>[]
-  onRefresh: () => void
+  onRefresh: () => void | Promise<void>
   onFilter?: (params: { where?: string; orderBy?: string }) => void
   // 加载更多（preview 模式）
   hasMore?: boolean
   onLoadMore?: () => void
   loadingMore?: boolean
+  loading?: boolean
+  active?: boolean
+  onDirtyChange?: (dirty: boolean) => void
+  filterState?: EditableDataTableFilterState
+  onFilterStateChange?: (patch: Partial<EditableDataTableFilterState>) => void
 }
 
 type CellChange = {
@@ -57,13 +79,16 @@ type PendingRow = {
   data: Record<string, unknown>
 }
 
-type TableRow = Record<string, unknown> & {
+type TableRow = {
   _key: number
   _rowIndex: number
 }
 
 /** 虚拟滚动估算行高（px），用于计算滚动偏移 */
 const ESTIMATED_ROW_HEIGHT = 35
+const DEFAULT_DATA_COLUMN_WIDTH = 150
+const MIN_DATA_COLUMN_WIDTH = 80
+const MAX_DATA_COLUMN_WIDTH = 900
 
 /**
  * 浮层编辑器：不触发表格重渲染，直接在单元格上方覆盖 Input
@@ -77,6 +102,7 @@ const CellEditor: React.FC<{
 }> = ({ position, value, onConfirm, onCancel, onStepCell }) => {
   const [val, setVal] = useState(value)
   const closingRef = useRef(false)
+  const editorHeight = val.includes('\n') ? Math.max(position.height, 160) : position.height
 
   return (
     <div style={{
@@ -84,17 +110,13 @@ const CellEditor: React.FC<{
       left: position.left,
       top: position.top,
       width: position.width,
-      height: position.height,
+      height: editorHeight,
       zIndex: 100,
     }}>
-      <Input
+      <Input.TextArea
         size="small"
         value={val}
         onChange={(e) => setVal(e.target.value)}
-        onPressEnter={() => {
-          closingRef.current = true
-          onConfirm(val)
-        }}
         onBlur={() => {
           if (closingRef.current) return
           onConfirm(val)
@@ -110,6 +132,12 @@ const CellEditor: React.FC<{
             e.preventDefault()
             closingRef.current = true
             onStepCell(val, e.shiftKey ? -1 : 1)
+            return
+          }
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            closingRef.current = true
+            onConfirm(val)
           }
         }}
         autoFocus
@@ -121,6 +149,7 @@ const CellEditor: React.FC<{
           border: '1px solid var(--edb-accent)',
           color: 'var(--edb-text-primary)',
           caretColor: 'var(--edb-accent)',
+          resize: 'none',
         }}
       />
     </div>
@@ -129,15 +158,22 @@ const CellEditor: React.FC<{
 
 export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   connectionId,
+  dbType,
   database,
   tableName,
   columns,
+  visibleColumns,
   dataSource,
   onRefresh,
   onFilter,
   hasMore,
   onLoadMore,
   loadingMore,
+  loading = false,
+  active = true,
+  onDirtyChange,
+  filterState,
+  onFilterStateChange,
 }) => {
   const { token } = theme.useToken()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -147,17 +183,49 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   const selectedRowRef = useRef<number>(-1)
   const cellChangesRef = useRef<CellChange[]>([])
   const tableBodyRef = useRef<HTMLDivElement | null>(null)
+  const scrollTopRef = useRef(0)
+  const virtualRefreshFrameRef = useRef<number | null>(null)
   const autoLoadLockRef = useRef(false)
+  const onDirtyChangeRef = useRef(onDirtyChange)
   // 强制触发 virtual-list 的 onHolderResize，让其重算 height 依赖并重新渲染可见行
   const forceVirtualRefreshRef = useRef<() => void>(() => {})
   // Ant Design Table 的 scrollTo ref
   const tableRef = useRef<import('@rc-component/table').Reference>(null)
 
   // 筛选状态
+  const isFilterControlled = filterState !== undefined
   const [whereClause, setWhereClause] = useState('')
   const [appliedWhere, setAppliedWhere] = useState('')
   const [sortColumn, setSortColumn] = useState<string | null>(null)
   const [sortDirection, setSortDirection] = useState<'ASC' | 'DESC' | null>(null)
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false)
+  const enterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (!filterState) return
+    setWhereClause(filterState.whereDraft ?? '')
+    setAppliedWhere(filterState.appliedWhere ?? '')
+    setSortColumn(filterState.sortColumn ?? null)
+    setSortDirection(filterState.sortDirection ?? null)
+  }, [
+    filterState,
+  ])
+
+  const updateFilterState = useCallback((patch: Partial<EditableDataTableFilterState>) => {
+    if (Object.prototype.hasOwnProperty.call(patch, 'whereDraft')) {
+      setWhereClause(patch.whereDraft ?? '')
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'appliedWhere')) {
+      setAppliedWhere(patch.appliedWhere ?? '')
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'sortColumn')) {
+      setSortColumn(patch.sortColumn ?? null)
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'sortDirection')) {
+      setSortDirection(patch.sortDirection ?? null)
+    }
+    onFilterStateChange?.(patch)
+  }, [onFilterStateChange])
 
   // 编辑状态用 ref 追踪，只在确认编辑时触发渲染
   const [editorState, setEditorState] = useState<{
@@ -173,8 +241,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   const [cellChangeCount, setCellChangeCount] = useState(0)
   const [tableScrollY, setTableScrollY] = useState(240)
 
-  // 多行选择
-  const [selectedRowKeys, setSelectedRowKeys] = useState<number[]>([])
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
 
   // 批量改列 Modal
   const [batchEditOpen, setBatchEditOpen] = useState(false)
@@ -182,7 +249,10 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   const [batchEditValue, setBatchEditValue] = useState('')
 
   // 右键菜单
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<(ResultContextMenuPosition & { rowIndex: number }) | null>(null)
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
+  const [columnOrder, setColumnOrder] = useState<string[]>([])
+  const dragColumnRef = useRef<string | null>(null)
 
   const primaryKeys = useMemo(() =>
     columns.filter((c) => c.isPrimaryKey).map((c) => c.name),
@@ -204,8 +274,99 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     return result
   }, [dataSource, pendingRows, insertPositions])
 
+  const {
+    selectedRowKeys,
+    setSelectedRowKeys,
+    clearSelection,
+    selectForContextMenu,
+  } = useResultRowSelection(effectiveData.length)
+
   const hasChanges = cellChangeCount > 0 || pendingRows.length > 0
   const editableColumnNames = useMemo(() => columns.map((col) => col.name), [columns])
+
+  useEffect(() => {
+    onDirtyChangeRef.current = onDirtyChange
+  }, [onDirtyChange])
+
+  useEffect(() => {
+    onDirtyChangeRef.current?.(hasChanges)
+  }, [hasChanges])
+
+  const displayColumnNames = useMemo(() => (
+    visibleColumns
+      ? columns
+        .filter(col => visibleColumns.some(vc => vc.toLowerCase() === col.name.toLowerCase()))
+        .map(col => col.name)
+      : columns.map(col => col.name)
+  ), [columns, visibleColumns])
+  const exportColumnNames = visibleColumns ?? displayColumnNames
+  const selectedExportRows = useMemo(
+    () => rowsForSelection(dataSource, selectedRowKeys),
+    [dataSource, selectedRowKeys],
+  )
+  const selectedExportActions = useSelectedRowsExportActions({
+    columns: exportColumnNames,
+    rows: selectedExportRows,
+    filenameBase: tableName,
+    tableName,
+    dbType,
+    hasUnloadedRows: Boolean(hasMore),
+    excludesUnsavedChanges: hasChanges,
+  })
+
+  const handleCopyAsInsert = useCallback(async () => {
+    if (!dbType || dataSource.length === 0) return
+    try {
+      const sql = rowsToSqlInsert(tableName, exportColumnNames, dataSource, dbType)
+      await navigator.clipboard.writeText(sql)
+      toast.success(hasMore
+        ? `已复制当前加载的 ${dataSource.length} 行 INSERT`
+        : `已复制 ${dataSource.length} 行 INSERT`)
+    } catch (error) {
+      handleApiError(error, '复制 INSERT 失败')
+    }
+  }, [dataSource, dbType, exportColumnNames, hasMore, tableName])
+
+  const orderedDisplayColumns = useMemo(() => {
+    const order = columnOrder.length > 0 ? columnOrder : displayColumnNames
+    const names = [
+      ...order.filter((column) => displayColumnNames.includes(column)),
+      ...displayColumnNames.filter((column) => !order.includes(column)),
+    ]
+    return names
+      .map((name) => columns.find((col) => col.name === name))
+      .filter((col): col is ColumnInfo => Boolean(col))
+  }, [columnOrder, columns, displayColumnNames])
+
+  const beginColumnResize = useCallback((column: string, event: React.MouseEvent) => {
+    startDeferredColumnResize({
+      event,
+      startWidth: columnWidths[column] ?? DEFAULT_DATA_COLUMN_WIDTH,
+      minWidth: MIN_DATA_COLUMN_WIDTH,
+      maxWidth: MAX_DATA_COLUMN_WIDTH,
+      boundsElement: tableWrapperRef.current,
+      onCommit: (width) => {
+        setColumnWidths((prev) => {
+          if (prev[column] === width) return prev
+          return { ...prev, [column]: width }
+        })
+      },
+    })
+  }, [columnWidths])
+
+  const moveColumn = useCallback((source: string, target: string) => {
+    if (source === target) return
+    setColumnOrder((prev) => {
+      const current = prev.length > 0 ? prev : displayColumnNames
+      const from = current.indexOf(source)
+      const to = current.indexOf(target)
+      if (from < 0 || to < 0) return current
+      const next = [...current]
+      const [item] = next.splice(from, 1)
+      next.splice(to, 0, item)
+      return next
+    })
+  }, [displayColumnNames])
 
   // 加载更多逻辑
   const maybeLoadMore = useCallback(() => {
@@ -230,20 +391,26 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     cellChangesRef.current = []
     setCellChangeCount(0)
     setEditorState(null)
-    setWhereClause('')
-    setAppliedWhere('')
-    setSortColumn(null)
-    setSortDirection(null)
-  }, [connectionId, database, tableName])
+    setPendingRows([])
+    setInsertPositions([])
+    clearSelection()
+    setContextMenu(null)
+    if (!isFilterControlled) {
+      setWhereClause('')
+      setAppliedWhere('')
+      setSortColumn(null)
+      setSortDirection(null)
+    }
+  }, [clearSelection, connectionId, database, isFilterControlled, tableName])
 
   const applyFilter = useCallback(() => {
-    setAppliedWhere(whereClause)
+    updateFilterState({ appliedWhere: whereClause })
     const orderBy = sortColumn && sortDirection ? `\`${sortColumn}\` ${sortDirection}` : undefined
     onFilter?.({
       where: whereClause || undefined,
       orderBy,
     })
-  }, [whereClause, sortColumn, sortDirection, onFilter])
+  }, [onFilter, sortColumn, sortDirection, updateFilterState, whereClause])
 
   const handleSort = useCallback((colName: string) => {
     let newDir: 'ASC' | 'DESC' | null
@@ -254,14 +421,16 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     } else {
       newDir = null
     }
-    setSortColumn(newDir ? colName : null)
-    setSortDirection(newDir)
+    updateFilterState({
+      sortColumn: newDir ? colName : null,
+      sortDirection: newDir,
+    })
     const orderBy = newDir ? `\`${colName}\` ${newDir}` : undefined
     onFilter?.({
       where: appliedWhere || undefined,
       orderBy,
     })
-  }, [sortColumn, sortDirection, appliedWhere, onFilter])
+  }, [appliedWhere, onFilter, sortColumn, sortDirection, updateFilterState])
 
   const getCellValue = useCallback((rowIndex: number, column: string): string | null => {
     const changedCell = cellChangesRef.current.find((item) => item.rowIndex === rowIndex && item.column === column)
@@ -367,42 +536,71 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     syncSelectedRowClass(nextIndex)
   })
 
+  const updateMeasuredTableHeight = useCallback(() => {
+    const wrapperEl = tableWrapperRef.current
+    if (!wrapperEl) return
+    const wrapperHeight = wrapperEl.clientHeight
+    if (wrapperHeight === 0) return
+    const thead = wrapperEl.querySelector('.ant-table-thead')
+    const headerHeight = thead ? Math.ceil(thead.getBoundingClientRect().height) : 42
+    setTableScrollY(Math.max(220, wrapperHeight - headerHeight - 2))
+  }, [])
+
+  const forceVirtualRefresh = useCallback(() => {
+    const scrollBody = tableBodyRef.current
+    if (scrollBody) scrollBody.scrollTop = scrollTopRef.current
+    window.dispatchEvent(new Event('resize'))
+    if (!scrollBody) return
+    scrollBody.scrollTop = scrollTopRef.current
+    scrollBody.dispatchEvent(new Event('scroll'))
+  }, [])
+
+  const scheduleVirtualRefresh = useCallback(() => {
+    if (virtualRefreshFrameRef.current !== null) {
+      window.cancelAnimationFrame(virtualRefreshFrameRef.current)
+    }
+    virtualRefreshFrameRef.current = window.requestAnimationFrame(() => {
+      updateMeasuredTableHeight()
+      virtualRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        virtualRefreshFrameRef.current = null
+        forceVirtualRefresh()
+      })
+    })
+  }, [forceVirtualRefresh, updateMeasuredTableHeight])
+
   useLayoutEffect(() => {
     const wrapperEl = tableWrapperRef.current
     if (!wrapperEl) return undefined
 
-    const updateHeight = () => {
-      const wrapperHeight = wrapperEl.clientHeight
-      if (wrapperHeight === 0) return  // 容器尚未可见，跳过
-      // 动态测量表头实际高度，避免硬编码 40 导致末行被裁切
-      const thead = wrapperEl.querySelector('.ant-table-thead')
-      const headerHeight = thead ? Math.ceil(thead.getBoundingClientRect().height) : 42
-      // 2px 安全边距，确保最后一行完整可见
-      const next = Math.max(220, wrapperHeight - headerHeight - 2)
-      setTableScrollY(next)
-    }
-
     // 暴露给行变更操作调用：dispatch resize 事件，触发 rc-virtual-list 内部的 onHolderResize
     // 使其重测容器 height 并重算 visible-range，确保新行在 Tabs 场景下即时显示
-    forceVirtualRefreshRef.current = () => {
-      window.dispatchEvent(new Event('resize'))
-    }
+    forceVirtualRefreshRef.current = scheduleVirtualRefresh
 
-    updateHeight()
-    // mount 后再测一次：首次渲染时 .ant-table-thead 可能还不存在
-    requestAnimationFrame(updateHeight)
+    scheduleVirtualRefresh()
 
     // 直接观测 wrapper（flex:1），toolbar 和 container 尺寸变化都会传导到 wrapper
-    const observer = new ResizeObserver(updateHeight)
+    const observer = new ResizeObserver(scheduleVirtualRefresh)
     observer.observe(wrapperEl)
-    return () => observer.disconnect()
-  }, [])
+    return () => {
+      observer.disconnect()
+      forceVirtualRefreshRef.current = () => {}
+      if (virtualRefreshFrameRef.current !== null) {
+        window.cancelAnimationFrame(virtualRefreshFrameRef.current)
+        virtualRefreshFrameRef.current = null
+      }
+    }
+  }, [effectiveData.length, scheduleVirtualRefresh])
+
+  useEffect(() => {
+    if (!active) return
+    scheduleVirtualRefresh()
+  }, [active, scheduleVirtualRefresh])
 
 
   // 监听表格滚动，触发加载更多
   useEffect(() => {
     const container = containerRef.current
-    if (!container || !hasMore) return undefined
+    if (!container) return undefined
 
     // 找到表格滚动容器
     const nextTableBody = (
@@ -413,7 +611,12 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     tableBodyRef.current = nextTableBody
     if (!nextTableBody) return undefined
 
-    const handleScroll = () => maybeLoadMore()
+    scheduleVirtualRefresh()
+
+    const handleScroll = () => {
+      scrollTopRef.current = nextTableBody.scrollTop
+      maybeLoadMore()
+    }
     nextTableBody.addEventListener('scroll', handleScroll, { passive: true })
     window.requestAnimationFrame(maybeLoadMore)
 
@@ -423,7 +626,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
         tableBodyRef.current = null
       }
     }
-  }, [hasMore, maybeLoadMore, tableScrollY])
+  }, [effectiveData.length, maybeLoadMore, scheduleVirtualRefresh, tableScrollY])
 
   const openEditorAtPosition = useCallback((
     rowIndex: number,
@@ -567,16 +770,8 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
       const rowIndex = Number(row.dataset.rowKey)
       if (!Number.isFinite(rowIndex)) return
       handleRowSelect(rowIndex, { focusTable: false })
-      // 边界检测：防止菜单超出视口
-      const MENU_WIDTH = 200
-      const MENU_HEIGHT = 260 // 保守估算（含批量操作时更高）
-      const safeX = event.clientX + MENU_WIDTH > window.innerWidth
-        ? Math.max(8, event.clientX - MENU_WIDTH)
-        : event.clientX
-      const safeY = event.clientY + MENU_HEIGHT > window.innerHeight
-        ? Math.max(8, event.clientY - MENU_HEIGHT)
-        : event.clientY
-      setContextMenu({ x: safeX, y: safeY, rowIndex })
+      selectForContextMenu(rowIndex)
+      setContextMenu({ x: event.clientX, y: event.clientY, rowIndex })
     }
 
     container.addEventListener('click', handleNativeClick)
@@ -588,7 +783,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
       container.removeEventListener('dblclick', handleNativeDoubleClick)
       container.removeEventListener('contextmenu', handleContextMenu)
     }
-  }, [handleRowSelect, isEditable, openEditorAtPosition])
+  }, [handleRowSelect, isEditable, openEditorAtPosition, selectForContextMenu])
 
   const getAdjacentCell = useCallback((rowIndex: number, column: string, direction: 1 | -1) => {
     const columnIndex = editableColumnNames.indexOf(column)
@@ -646,6 +841,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   const handleEditCancel = useCallback(() => setEditorState(null), [])
 
   const addRow = useCallback(() => {
+    clearSelection()
     const emptyRow: Record<string, unknown> = {}
     columns.forEach((c) => { emptyRow[c.name] = c.defaultValue ?? null })
     const insertAfter = selectedRowRef.current
@@ -657,23 +853,24 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
       tableRef.current?.scrollTo({ index: newRowIndex })
       forceVirtualRefreshRef.current()
     })
-  }, [columns, handleRowSelect])
+  }, [clearSelection, columns, handleRowSelect])
 
   const deleteRow = useCallback((rowIndex: number) => {
+    clearSelection()
     setPendingRows((prev) => [...prev, { type: 'delete', rowIndex, data: effectiveData[rowIndex] as Record<string, unknown> }])
     requestAnimationFrame(() => {
       tableRef.current?.scrollTo({ index: Math.max(0, rowIndex - 1) })
       forceVirtualRefreshRef.current()
     })
-  }, [effectiveData])
+  }, [clearSelection, effectiveData])
 
   const undoAll = useCallback(() => {
     cellChangesRef.current = []
     setCellChangeCount(0)
     setPendingRows([])
     setInsertPositions([])
-    setSelectedRowKeys([])
-  }, [])
+    clearSelection()
+  }, [clearSelection])
 
   // ─── 批量操作 ────────────────────────────────────────────
 
@@ -686,7 +883,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
         setPendingRows(prev => [...prev, { type: 'delete', rowIndex, data: effectiveData[rowIndex] as Record<string, unknown> }])
       }
     }
-    setSelectedRowKeys([])
+    clearSelection()
     // 强制 virtual list 重算
     const firstKey = selectedRowKeys[0] ?? 0
     requestAnimationFrame(() => {
@@ -694,7 +891,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
       forceVirtualRefreshRef.current()
     })
     toast.success(`已标记 ${selectedRowKeys.length} 行待删除，请点击保存确认`)
-  }, [selectedRowKeys, pendingRows, effectiveData])
+  }, [clearSelection, selectedRowKeys, pendingRows, effectiveData])
 
   /** 批量克隆选中行（主键列置空，插入为新行） */
   const batchClone = useCallback(() => {
@@ -706,7 +903,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
       setInsertPositions(prev => [...prev, { afterIndex: effectiveData.length - 1, data: sourceRow }])
       setPendingRows(prev => [...prev, { type: 'insert', rowIndex: effectiveData.length, data: sourceRow }])
     }
-    setSelectedRowKeys([])
+    clearSelection()
     // 强制 virtual list 重算，滚动到末尾新增的复制行
     const targetIndex = effectiveData.length
     requestAnimationFrame(() => {
@@ -714,7 +911,23 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
       forceVirtualRefreshRef.current()
     })
     toast.success(`已复制 ${selectedRowKeys.length} 行到末尾，请修改后保存`)
-  }, [selectedRowKeys, effectiveData, primaryKeys])
+  }, [clearSelection, selectedRowKeys, effectiveData, primaryKeys])
+
+  const cloneRow = useCallback((rowIndex: number) => {
+    clearSelection()
+    const source = effectiveData[rowIndex]
+    if (!source) return
+    const sourceRow = { ...source }
+    for (const pk of primaryKeys) sourceRow[pk] = null
+    const targetIndex = effectiveData.length
+    setInsertPositions((prev) => [...prev, { afterIndex: effectiveData.length - 1, data: sourceRow }])
+    setPendingRows((prev) => [...prev, { type: 'insert', rowIndex: effectiveData.length, data: sourceRow }])
+    requestAnimationFrame(() => {
+      tableRef.current?.scrollTo({ index: targetIndex })
+      forceVirtualRefreshRef.current()
+    })
+    toast.success('已复制到末尾')
+  }, [clearSelection, effectiveData, primaryKeys])
 
   /** 确认批量改列 */
   const confirmBatchEdit = useCallback(() => {
@@ -744,9 +957,9 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     setBatchEditOpen(false)
     setBatchEditColumn(null)
     setBatchEditValue('')
-    setSelectedRowKeys([])
+    clearSelection()
     toast.success(`已批量修改 ${changedCount} 行的「${col}」字段`)
-  }, [batchEditColumn, batchEditValue, selectedRowKeys, effectiveData, syncCellVisual])
+  }, [batchEditColumn, batchEditValue, clearSelection, selectedRowKeys, effectiveData, syncCellVisual])
 
   const buildChanges = useCallback((): RowChange[] => {
     const changes: RowChange[] = []
@@ -788,6 +1001,10 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     let sqlPreview = ''
     try {
       const result = await metadataApi.editData(connectionId, database, tableName, changes, true) as DataEditResult
+      if (!result.success) {
+        toast.error(`无法生成安全的保存语句：${result.errors.join('; ')}`)
+        return
+      }
       sqlPreview = result.sqlStatements.join(';\n') || '无变更'
     } catch (e) {
       handleApiError(e, '生成 SQL 失败')
@@ -824,7 +1041,11 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
           if (result.success) {
             toast.success(`保存成功，影响 ${result.affectedRows} 行`)
             undoAll()
-            onRefresh()
+            try {
+              await onRefresh()
+            } catch {
+              toast.warning('数据已保存，但自动刷新失败，请手动刷新结果集')
+            }
           } else {
             toast.error(`保存失败：${result.errors.join('; ')}`)
           }
@@ -836,23 +1057,70 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
 
   // 表格列（不包含编辑状态判断，render 纯展示）
   const tableColumns = useMemo<ColumnsType<TableRow>>(() => {
-    const cols: ColumnsType<TableRow> = columns.map((col) => ({
+    const cols: ColumnsType<TableRow> = orderedDisplayColumns.map((col) => ({
       title: (
         <div
-          style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', userSelect: 'none' }}
-          onClick={() => handleSort(col.name)}
+          draggable
+          onDragStart={(event) => {
+            dragColumnRef.current = col.name
+            event.dataTransfer.effectAllowed = 'move'
+            event.dataTransfer.setData('text/plain', col.name)
+          }}
+          onDragOver={(event) => {
+            event.preventDefault()
+            event.dataTransfer.dropEffect = 'move'
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            const source = dragColumnRef.current || event.dataTransfer.getData('text/plain')
+            dragColumnRef.current = null
+            if (source) moveColumn(source, col.name)
+          }}
+          onDragEnd={() => { dragColumnRef.current = null }}
+          style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'grab', userSelect: 'none', minWidth: 0 }}
+          title="拖动表头调整列顺序"
         >
-          <Space size={2}>
-            {col.name}
-            {col.isPrimaryKey && <Tag color="gold" style={{ fontSize: 10, lineHeight: '14px', padding: '0 3px' }}>PK</Tag>}
-          </Space>
-          {sortColumn === col.name && sortDirection === 'ASC' && <CaretUpOutlined style={{ fontSize: 10, color: token.colorPrimary }} />}
-          {sortColumn === col.name && sortDirection === 'DESC' && <CaretDownOutlined style={{ fontSize: 10, color: token.colorPrimary }} />}
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              handleSort(col.name)
+            }}
+            style={{
+              all: 'unset',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              minWidth: 0,
+              flex: 1,
+              cursor: 'pointer',
+            }}
+            title="点击排序"
+          >
+            <Space size={2} style={{ minWidth: 0 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{col.name}</span>
+              {col.isPrimaryKey && <Tag color="gold" style={{ fontSize: 10, lineHeight: '14px', padding: '0 3px' }}>PK</Tag>}
+            </Space>
+            {sortColumn === col.name && sortDirection === 'ASC' && <CaretUpOutlined style={{ fontSize: 10, color: token.colorPrimary }} />}
+            {sortColumn === col.name && sortDirection === 'DESC' && <CaretDownOutlined style={{ fontSize: 10, color: token.colorPrimary }} />}
+          </button>
+          <span
+            aria-hidden
+            onMouseDown={(event) => beginColumnResize(col.name, event)}
+            style={{
+              width: 8,
+              height: 24,
+              cursor: 'col-resize',
+              borderRight: `2px solid ${token.colorBorderSecondary}`,
+              flex: '0 0 auto',
+            }}
+            title="拖动调整列宽"
+          />
         </div>
       ),
       dataIndex: col.name,
       key: col.name,
-      width: 150,
+      width: columnWidths[col.name] ?? DEFAULT_DATA_COLUMN_WIDTH,
       ellipsis: true,
       onCell: (record: TableRow) => ({
         'data-row-key': record._key,
@@ -874,18 +1142,122 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
             </span>
           )
         }
-        return <span data-cell-display data-column={col.name} style={{ display: 'block', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(displayValue)}</span>
+        return <span data-cell-display data-column={col.name} style={{ display: 'block', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{String(displayValue)}</span>
       },
     }))
 
-    // 移除“操作”列，行级删除改为右键菜单操作
+    // 移除”操作”列，行级删除改为右键菜单操作
     return cols
-  }, [columns, isEditable, token, hasCellChange, getCellValue, handleSort, sortColumn, sortDirection])
+  }, [
+    beginColumnResize,
+    columnWidths,
+    isEditable,
+    token,
+    hasCellChange,
+    getCellValue,
+    handleSort,
+    moveColumn,
+    orderedDisplayColumns,
+    sortColumn,
+    sortDirection,
+  ])
 
   const tableData = useMemo<TableRow[]>(
-    () => effectiveData.map((r, i) => ({ ...r, _key: i, _rowIndex: i })),
+    () => effectiveData.map((_, i) => ({ _key: i, _rowIndex: i })),
     [effectiveData]
   )
+
+  const tableScrollX = useMemo(
+    () => Math.max(
+      900,
+      orderedDisplayColumns.reduce(
+        (sum, col) => sum + (columnWidths[col.name] ?? DEFAULT_DATA_COLUMN_WIDTH),
+        36
+      )
+    ),
+    [columnWidths, orderedDisplayColumns]
+  )
+
+  const contextMenuItems = useMemo<MenuProps['items']>(() => {
+    if (!contextMenu || selectedRowKeys.length === 0) return []
+    const count = selectedRowKeys.length
+    const items: MenuProps['items'] = [
+      {
+        key: 'export-selected',
+        icon: <DownloadOutlined />,
+        label: count === 1 ? '导出此行' : `导出所选 ${count} 行`,
+        children: [
+          { key: 'export-selected-csv', label: 'CSV', onClick: () => selectedExportActions.exportSelected('csv') },
+          { key: 'export-selected-json', label: 'JSON', onClick: () => selectedExportActions.exportSelected('json') },
+          ...(selectedExportActions.canUseSql
+            ? [{ key: 'export-selected-sql', label: 'SQL INSERT', onClick: () => selectedExportActions.exportSelected('sql') }]
+            : []),
+        ],
+      },
+      ...(selectedExportActions.canUseSql
+        ? [{
+            key: 'copy-selected-insert',
+            icon: <CopyOutlined />,
+            label: count === 1 ? '复制此行为 INSERT' : `复制所选 ${count} 行为 INSERT`,
+            onClick: selectedExportActions.copySelectedInsert,
+          }]
+        : []),
+      { type: 'divider' },
+    ]
+
+    if (isEditable && count > 1) {
+      items.push(
+        { key: 'delete-selected', label: `删除已选 ${count} 行`, icon: <DeleteOutlined />, danger: true, onClick: batchDelete },
+        { key: 'clone-selected', label: `复制已选 ${count} 行到末尾`, icon: <CopyOutlined />, onClick: batchClone },
+        {
+          key: 'edit-selected',
+          label: '批量改列…',
+          icon: <EditOutlined />,
+          onClick: () => {
+            setBatchEditColumn(null)
+            setBatchEditValue('')
+            setBatchEditOpen(true)
+          },
+        },
+        { type: 'divider' },
+      )
+    }
+
+    if (isEditable) {
+      items.push(
+        { key: 'add-row', label: '新增一行', icon: <PlusOutlined />, onClick: addRow },
+        {
+          key: 'delete-row',
+          label: '删除此行',
+          icon: <DeleteOutlined />,
+          danger: true,
+          onClick: () => {
+            const alreadyDeleted = pendingRows.some((pending) => (
+              pending.type === 'delete' && pending.rowIndex === contextMenu.rowIndex
+            ))
+            if (!alreadyDeleted) deleteRow(contextMenu.rowIndex)
+          },
+        },
+        { key: 'clone-row', label: '复制此行到末尾', icon: <CopyOutlined />, onClick: () => cloneRow(contextMenu.rowIndex) },
+        { type: 'divider' },
+      )
+    }
+
+    items.push({ key: 'clear-selection', label: '清除选择', onClick: clearSelection })
+    return items
+  }, [
+    addRow,
+    batchClone,
+    batchDelete,
+    clearSelection,
+    cloneRow,
+    contextMenu,
+    deleteRow,
+    isEditable,
+    pendingRows,
+    selectedExportActions,
+    selectedRowKeys.length,
+  ])
 
 
   return (
@@ -975,7 +1347,8 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
             size="small"
             style={{ flex: 1 }}
             value={whereClause}
-            onChange={(val) => setWhereClause(val)}
+            onChange={(val) => updateFilterState({ whereDraft: val })}
+            onDropdownVisibleChange={setSuggestionsOpen}
             options={(() => {
               // 提取光标位置前的最后一个单词
               const input = document.activeElement as HTMLInputElement | null
@@ -1004,9 +1377,27 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
                 }))
               return [...colSuggestions, ...kwSuggestions]
             })()}
+            onSelect={() => {
+              // 用户从下拉框选中了建议 → 取消待执行的筛选
+              if (enterTimerRef.current) {
+                clearTimeout(enterTimerRef.current)
+                enterTimerRef.current = null
+              }
+            }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.defaultPrevented) {
-                setTimeout(() => applyFilter(), 0)
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                if (suggestionsOpen) {
+                  // 下拉框开着，延迟 120ms 看是否会触发 onSelect
+                  // 如果触发 → onSelect 会取消 timer → 不执行筛选（用户只是选建议）
+                  // 如果未触发 → timer 到期 → 执行筛选（用户想提交）
+                  enterTimerRef.current = setTimeout(() => {
+                    enterTimerRef.current = null
+                    applyFilter()
+                  }, 120)
+                } else {
+                  applyFilter()
+                }
               }
             }}
           >
@@ -1019,35 +1410,52 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
           <Button size="small" type="primary" onClick={applyFilter}>筛选</Button>
           {appliedWhere && (
             <Button size="small" onClick={() => {
-              setWhereClause('')
-              setAppliedWhere('')
-              setSortColumn(null)
-              setSortDirection(null)
+              updateFilterState({
+                whereDraft: '',
+                appliedWhere: '',
+                sortColumn: null,
+                sortDirection: null,
+              })
               onFilter?.({})
             }}>重置</Button>
           )}
         </div>
       )}
       {/* 图标工具栏 */}
-      {isEditable && (
-        <div
-          ref={toolbarRef}
-          style={{
-            marginBottom: 8,
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 8,
-          }}
-        >
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {selectedRowKeys.length > 0 ? `已选 ${selectedRowKeys.length} 行` : '单击选中，双击编辑，右键更多操作'}
-          </Text>
-          <Space size={2}>
-            {/* 批量操作区 — 有多行选中时出现 */}
-            {selectedRowKeys.length > 0 && (
-              <>
+      <div
+        ref={toolbarRef}
+        style={{
+          marginBottom: 8,
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+        }}
+      >
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {selectedRowKeys.length > 0
+            ? `已选 ${selectedRowKeys.length} 行`
+            : isEditable
+              ? '单击选中，双击编辑，右键更多操作'
+              : '勾选行后可导出所选数据'}
+        </Text>
+        <Space size={2}>
+          {/* 选择集操作区 */}
+          {selectedRowKeys.length > 0 && (
+            <>
+              <SelectedRowsActions
+                selectedCount={selectedExportRows.length}
+                canUseSql={selectedExportActions.canUseSql}
+                onExport={selectedExportActions.exportSelected}
+                onCopyInsert={selectedExportActions.copySelectedInsert}
+                onClear={clearSelection}
+                compact
+                showCount={false}
+              />
+              {isEditable && (
+                <>
+                  <Divider type="vertical" style={{ margin: '0 4px' }} />
                 <Tooltip title={`删除已选 ${selectedRowKeys.length} 行`} placement="bottom">
                   <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={batchDelete} />
                 </Tooltip>
@@ -1060,13 +1468,68 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
                     onClick={() => { setBatchEditColumn(null); setBatchEditValue(''); setBatchEditOpen(true) }}
                   />
                 </Tooltip>
-                <Tooltip title="取消多行选择" placement="bottom">
-                  <Button size="small" type="text" icon={<CloseOutlined />} onClick={() => setSelectedRowKeys([])} />
-                </Tooltip>
+                </>
+              )}
                 <Divider type="vertical" style={{ margin: '0 4px' }} />
-              </>
-            )}
-            {/* 常驻操作 */}
+            </>
+          )}
+          {/* 常驻操作 */}
+          <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: 'csv',
+                    label: hasMore ? '导出全部已加载为 CSV' : '导出全部为 CSV',
+                    onClick: () => confirmDataExport({
+                      columns: exportColumnNames,
+                      rows: dataSource,
+                      format: 'csv',
+                      filenameBase: tableName,
+                      loadedOnly: Boolean(hasMore),
+                    }),
+                  },
+                  {
+                    key: 'json',
+                    label: hasMore ? '导出全部已加载为 JSON' : '导出全部为 JSON',
+                    onClick: () => confirmDataExport({
+                      columns: exportColumnNames,
+                      rows: dataSource,
+                      format: 'json',
+                      filenameBase: tableName,
+                      loadedOnly: Boolean(hasMore),
+                    }),
+                  },
+                ],
+              }}
+              trigger={['click']}
+              onOpenChange={setExportMenuOpen}
+            >
+              <Tooltip
+                title={hasChanges ? '导出全部最近一次查询结果，不包含未保存修改' : '导出全部当前查询结果'}
+                placement="bottom"
+                open={exportMenuOpen ? false : undefined}
+              >
+                <Button size="small" type="text" icon={<DownloadOutlined />} />
+              </Tooltip>
+          </Dropdown>
+            <Tooltip
+              title={hasChanges
+                ? '复制全部最近一次查询结果为 INSERT，不包含未保存修改'
+                : hasMore
+                  ? '复制全部当前已加载数据为 INSERT（仍有未加载数据）'
+                  : '复制全部当前查询结果为 INSERT'}
+              placement="bottom"
+            >
+              <Button
+                size="small"
+                type="text"
+                icon={<CopyOutlined />}
+                onClick={handleCopyAsInsert}
+                disabled={!dbType || dataSource.length === 0}
+              />
+            </Tooltip>
+          {isEditable && (
+            <>
             <Tooltip title="新增一行" placement="bottom">
               <Button size="small" type="text" icon={<PlusOutlined />} onClick={addRow} />
             </Tooltip>
@@ -1083,9 +1546,10 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
                 disabled={!hasChanges}
               />
             </Tooltip>
-          </Space>
-        </div>
-      )}
+            </>
+          )}
+        </Space>
+      </div>
       {/* 批量改列 Modal */}
       <Modal
         title={`批量修改 ${selectedRowKeys.length} 行的某列值`}
@@ -1127,88 +1591,10 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
 
       {/* 右键菜单 */}
       {contextMenu && (
-        <div
-          style={{
-            position: 'fixed',
-            left: contextMenu.x,
-            top: contextMenu.y,
-            zIndex: 1000,
-            background: 'var(--glass-popup, rgba(30,30,40,0.92))',
-            border: '1px solid var(--glass-border)',
-            borderRadius: 10,
-            boxShadow: '0 12px 40px rgba(0,0,0,0.3)',
-            backdropFilter: 'blur(20px)',
-            padding: '4px 0',
-            minWidth: 180,
-          }}
-          onClick={e => e.stopPropagation()}
-        >
-          {[...(
-            selectedRowKeys.length > 1
-              ? [
-                  { label: `删除已选 ${selectedRowKeys.length} 行`, icon: <DeleteOutlined />, danger: true, action: () => { batchDelete(); setContextMenu(null) } },
-                  { label: `复制已选 ${selectedRowKeys.length} 行`, icon: <CopyOutlined />, action: () => { batchClone(); setContextMenu(null) } },
-                  { label: '批量改列…', icon: <EditOutlined />, action: () => { setBatchEditColumn(null); setBatchEditValue(''); setBatchEditOpen(true); setContextMenu(null) } },
-                  'divider' as const,
-                ]
-              : []
-          ),
-            { label: '新增一行', icon: <PlusOutlined />, action: () => { addRow(); setContextMenu(null) } },
-            { label: '删除此行', icon: <DeleteOutlined />, danger: true, action: () => {
-              const alreadyDeleted = pendingRows.some(p => p.type === 'delete' && p.rowIndex === contextMenu.rowIndex)
-              if (!alreadyDeleted) deleteRow(contextMenu.rowIndex)
-              setContextMenu(null)
-            }},
-            { label: '复制此行', icon: <CopyOutlined />, action: () => {
-              const sourceRow = { ...effectiveData[contextMenu.rowIndex] }
-              for (const pk of primaryKeys) sourceRow[pk] = null
-              const targetIndex = effectiveData.length
-              setInsertPositions(prev => [...prev, { afterIndex: effectiveData.length - 1, data: sourceRow }])
-              setPendingRows(prev => [...prev, { type: 'insert', rowIndex: effectiveData.length, data: sourceRow }])
-              requestAnimationFrame(() => {
-                tableRef.current?.scrollTo({ index: targetIndex })
-                forceVirtualRefreshRef.current()
-              })
-              toast.success('已复制到末尾')
-              setContextMenu(null)
-            }},
-          ].map((item, i) => {
-            if (item === 'divider') return (
-              <div key={i} style={{ height: 1, background: 'var(--glass-border)', margin: '4px 0' }} />
-            )
-            return (
-              <div
-                key={i}
-                onClick={item.action}
-                style={{
-                  padding: '7px 14px',
-                  cursor: 'pointer',
-                  fontSize: 13,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  color: item.danger ? 'var(--ant-color-error, #ff4d4f)' : 'inherit',
-                  transition: 'background 0.12s',
-                  borderRadius: 6,
-                  margin: '0 4px',
-                }}
-                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      {/* 点击任意处关闭右键菜单 */}
-      {contextMenu && (
-        <div
-          style={{ position: 'fixed', inset: 0, zIndex: 999 }}
-          onClick={() => setContextMenu(null)}
-          onContextMenu={() => setContextMenu(null)}
+        <ResultContextMenu
+          position={contextMenu}
+          items={contextMenuItems}
+          onClose={() => setContextMenu(null)}
         />
       )}
 
@@ -1220,9 +1606,11 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
           columns={tableColumns}
           dataSource={tableData}
           rowKey="_key"
+          loading={loading}
           pagination={false}
           size="small"
-          scroll={{ x: 'max-content', y: tableScrollY }}
+          scroll={{ x: tableScrollX, y: tableScrollY }}
+          locale={{ emptyText: loading ? '加载中...' : '暂无数据' }}
           rowClassName={(record) => {
             const classes: string[] = []
             const rowIndex = record._rowIndex as number
@@ -1231,12 +1619,12 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
             if (selectedRowKeys.includes(rowIndex)) classes.push('row-multi-selected')
             return classes.join(' ')
           }}
-          rowSelection={isEditable ? {
+          rowSelection={{
             type: 'checkbox',
             selectedRowKeys,
-            onChange: (keys) => setSelectedRowKeys(keys as number[]),
+            onChange: setSelectedRowKeys,
             columnWidth: 36,
-          } : undefined}
+          }}
         />
       </div>
 

@@ -15,7 +15,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 import React, { useEffect } from 'react'
-import { Layout, Menu, Typography, Space, Breadcrumb } from 'antd'
+import { Layout, Menu, Breadcrumb, Button, Tooltip } from 'antd'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   ApiOutlined,
@@ -31,26 +31,34 @@ import {
   BgColorsOutlined,
   ThunderboltOutlined,
   SearchOutlined,
+  GithubOutlined,
 } from '@ant-design/icons'
 import { useWorkbenchStore } from '@/stores/workbenchStore'
 import { useCommandStore } from '@/stores/commandStore'
 import { useThemeStore } from '@/stores/themeStore'
-import { ConnectionStatusTag } from '@/components/StatusTag'
 import { CommandPalette } from '@/components/CommandPalette'
+import { GITHUB_REPOSITORY_URL } from '@/utils/updater'
+import { openExternalUrl } from '@/utils/openExternalUrl'
 
 const { Sider, Content, Header } = Layout
-const { Text } = Typography
 
-const menuItems = [
-  { key: '/connection', icon: <ApiOutlined />, label: '连接管理' },
-  { key: '/workbench', icon: <DatabaseOutlined />, label: '工作台' },
-  { key: '/migration', icon: <SwapOutlined />, label: '数据迁移' },
-  { key: '/sync', icon: <SyncOutlined />, label: '数据同步' },
-  { key: '/structure-compare', icon: <DiffOutlined />, label: '结构对比' },
-  { key: '/task-center', icon: <UnorderedListOutlined />, label: '任务中心' },
-  { key: '/data-tracker', icon: <ThunderboltOutlined />, label: '数据追踪' },
-  { key: '/slow-query',   icon: <SearchOutlined />,      label: '慢查询分析' },
-  { key: '/settings', icon: <SettingOutlined />, label: '设置' },
+interface NavigationItem {
+  key: string
+  commandId: string
+  icon: React.ReactNode
+  label: string
+}
+
+const allMenuItems: NavigationItem[] = [
+  { key: '/connection', commandId: 'nav-conn', icon: <ApiOutlined />, label: '连接管理' },
+  { key: '/workbench', commandId: 'nav-wb', icon: <DatabaseOutlined />, label: '工作台' },
+  { key: '/migration', commandId: 'nav-mig', icon: <SwapOutlined />, label: '数据迁移' },
+  { key: '/sync', commandId: 'nav-sync', icon: <SyncOutlined />, label: '数据同步' },
+  { key: '/structure-compare', commandId: 'nav-comp', icon: <DiffOutlined />, label: '结构对比' },
+  { key: '/task-center', commandId: 'nav-task', icon: <UnorderedListOutlined />, label: '任务中心' },
+  { key: '/data-tracker', commandId: 'nav-tracker', icon: <ThunderboltOutlined />, label: '数据追踪' },
+  { key: '/slow-query', commandId: 'nav-slow-query', icon: <SearchOutlined />, label: '慢查询分析' },
+  { key: '/settings', commandId: 'nav-sett', icon: <SettingOutlined />, label: '设置' },
 ]
 
 const pageTitle: Record<string, string> = {
@@ -75,28 +83,31 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
   const themeMode = useThemeStore((s) => s.themeMode)
   const setThemeMode = useThemeStore((s) => s.setThemeMode)
+  const themeStyle = useThemeStore((s) => s.themeStyle)
+  const setThemeStyle = useThemeStore((s) => s.setThemeStyle)
   const registerCommand = useCommandStore((s) => s.registerCommand)
   const unregisterCommand = useCommandStore((s) => s.unregisterCommand)
 
-  const activeConnectionName = useWorkbenchStore((s) => s.activeConnectionName)
-  const activeDatabase = useWorkbenchStore((s) => s.activeDatabase)
   const siderCollapsed = useWorkbenchStore((s) => s.siderCollapsed)
   const setSiderCollapsed = useWorkbenchStore((s) => s.setSiderCollapsed)
 
   const currentTitle = pageTitle[location.pathname] ?? ''
 
+  const menuItems = allMenuItems.map(({ key, icon, label }) => ({ key, icon, label }))
+
   useEffect(() => {
+    const navigationCommands = allMenuItems
+      .map(item => ({
+        id: item.commandId,
+        title: `前往 ${item.label}`,
+        category: 'Navigation',
+        icon: item.icon,
+        action: () => navigate(item.key),
+      }))
     const defaultCommands = [
-      { id: 'nav-conn', title: '前往 连接管理', category: 'Navigation', icon: <ApiOutlined />, action: () => navigate('/connection') },
-      { id: 'nav-wb', title: '前往 工作台', category: 'Navigation', icon: <DatabaseOutlined />, action: () => navigate('/workbench') },
-      { id: 'nav-mig', title: '前往 数据迁移', category: 'Navigation', icon: <SwapOutlined />, action: () => navigate('/migration') },
-      { id: 'nav-sync', title: '前往 数据同步', category: 'Navigation', icon: <SyncOutlined />, action: () => navigate('/sync') },
-      { id: 'nav-comp', title: '前往 结构对比', category: 'Navigation', icon: <DiffOutlined />, action: () => navigate('/structure-compare') },
-      { id: 'nav-task', title: '前往 任务中心', category: 'Navigation', icon: <UnorderedListOutlined />, action: () => navigate('/task-center') },
-      { id: 'nav-tracker', title: '前往 数据追踪', category: 'Navigation', icon: <ThunderboltOutlined />, action: () => navigate('/data-tracker') },
-      { id: 'nav-slow-query', title: '前往 慢查询分析', category: 'Navigation', icon: <SearchOutlined />, action: () => navigate('/slow-query') },
-      { id: 'nav-sett', title: '前往 设置', category: 'Navigation', icon: <SettingOutlined />, action: () => navigate('/settings') },
+      ...navigationCommands,
       { id: 'theme-toggle', title: '切换 深色/浅色 主题', category: 'Preferences', icon: <BgColorsOutlined />, action: () => setThemeMode(themeMode === 'dark' ? 'light' : 'dark') },
+      { id: 'theme-style-toggle', title: '切换 简约专业/流光 风格', category: 'Preferences', icon: <BgColorsOutlined />, action: () => setThemeStyle(themeStyle === 'professional' ? 'glass' : 'professional') },
       { id: 'run-sql', title: '执行选中的 SQL (如果可用)', category: 'Editor', icon: <PlayCircleOutlined />, shortcut: ['Cmd', 'Enter'], action: () => {
           document.dispatchEvent(new CustomEvent('easydb-run-sql'))
       }}
@@ -107,14 +118,9 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     return () => {
       defaultCommands.forEach(c => unregisterCommand(c.id))
     }
-  }, [navigate, themeMode, setThemeMode, registerCommand, unregisterCommand])
+  }, [navigate, themeMode, themeStyle, setThemeMode, setThemeStyle, registerCommand, unregisterCommand])
 
-  // 面包屑项
-  const breadcrumbItems = [
-    { title: currentTitle },
-    ...(activeConnectionName ? [{ title: activeConnectionName }] : []),
-    ...(activeDatabase ? [{ title: activeDatabase }] : []),
-  ]
+  const breadcrumbItems = [{ title: currentTitle }]
 
   return (
     <Layout style={{ height: '100vh', overflow: 'hidden' }}>
@@ -163,47 +169,67 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           selectedKeys={[location.pathname]}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
-          style={{ borderRight: 0, paddingTop: 8 }}
+          style={{
+            borderRight: 0,
+            paddingTop: 8,
+            paddingBottom: siderCollapsed ? 96 : 56,
+          }}
           inlineCollapsed={siderCollapsed}
         />
 
-        {/* 折叠按钮 */}
+        {/* 侧栏底部操作区 */}
         <div
           style={{
             position: 'absolute',
-            bottom: 16,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            width: 36,
-            height: 36,
+            bottom: 0,
+            left: 0,
+            right: 0,
             display: 'flex',
+            flexDirection: siderCollapsed ? 'column' : 'row',
             alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            color: 'var(--edb-text-muted)',
-            borderRadius: 'var(--edb-radius-md)',
+            gap: 4,
+            padding: 8,
+            borderTop: '1px solid var(--edb-border-subtle)',
             background: 'var(--glass-panel)',
-            border: '1px solid var(--glass-border)',
-            boxShadow: 'var(--glass-inner-glow)',
-            backdropFilter: 'var(--glass-blur-sm)',
-            transition: 'all var(--edb-transition-fast)',
-          }}
-          onClick={() => setSiderCollapsed(!siderCollapsed)}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'var(--glass-panel-hover)'
-            e.currentTarget.style.color = 'var(--edb-text-primary)'
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'var(--glass-panel)'
-            e.currentTarget.style.color = 'var(--edb-text-muted)'
           }}
         >
-          {siderCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+          <Tooltip title="GitHub 开源仓库 · 欢迎 Star" placement="right">
+            <Button
+              type="text"
+              icon={<GithubOutlined />}
+              aria-label="打开 EasyDB GitHub 仓库"
+              onClick={() => void openExternalUrl(GITHUB_REPOSITORY_URL)}
+              style={{
+                width: siderCollapsed ? 36 : 'auto',
+                flex: siderCollapsed ? 'none' : 1,
+                height: 36,
+                justifyContent: siderCollapsed ? 'center' : 'flex-start',
+                color: 'var(--edb-text-secondary)',
+              }}
+            >
+              {siderCollapsed ? null : 'GitHub'}
+            </Button>
+          </Tooltip>
+
+          <Tooltip title={siderCollapsed ? '展开侧栏' : '收起侧栏'} placement="right">
+            <Button
+              type="text"
+              icon={siderCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              aria-label={siderCollapsed ? '展开侧栏' : '收起侧栏'}
+              onClick={() => setSiderCollapsed(!siderCollapsed)}
+              style={{
+                width: 36,
+                height: 36,
+                flex: 'none',
+                color: 'var(--edb-text-secondary)',
+              }}
+            />
+          </Tooltip>
         </div>
       </Sider>
 
       <Layout>
-        {/* 顶部上下文栏 */}
+        {/* 顶部页面标题栏 */}
         <Header
           style={{
             height: 48,
@@ -216,29 +242,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
             padding: '0 24px',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between',
             zIndex: 9,
           }}
         >
           <Breadcrumb items={breadcrumbItems} />
-
-          {/* 右侧：当前连接状态 */}
-          <Space size={12}>
-            {activeConnectionName ? (
-              <>
-                <Text type="secondary" style={{ fontSize: 13 }}>
-                  <DatabaseOutlined style={{ marginRight: 4 }} />
-                  {activeConnectionName}
-                  {activeDatabase && ` / ${activeDatabase}`}
-                </Text>
-                <ConnectionStatusTag status="connected" />
-              </>
-            ) : (
-              <Text type="secondary" style={{ fontSize: 13 }}>
-                未连接
-              </Text>
-            )}
-          </Space>
         </Header>
 
         {/* 主内容区 */}

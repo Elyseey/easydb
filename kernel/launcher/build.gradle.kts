@@ -9,6 +9,7 @@ dependencies {
     implementation(project(":common"))
     implementation(project(":api"))
     implementation(project(":drivers:mysql"))
+    implementation(project(":drivers:dameng"))
     implementation(project(":metadata"))
     implementation(project(":dialect"))
     implementation(project(":sync-engine"))

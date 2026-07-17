@@ -4,16 +4,15 @@ package com.easydb.common
  * 数据结构对比服务
  * 分析两端数据库的表结构差异，生成让目标向源靠齐的 SQL
  */
-class StructureCompareService {
+class StructureCompareService(
+    private val sourceMetadata: MetadataAdapter,
+    private val targetMetadata: MetadataAdapter,
+    private val sqlGenerator: StructureCompareSqlGenerator
+) : CompareAdapter {
 
-    fun compare(
-        sourceMetadata: MetadataAdapter,
-        targetMetadata: MetadataAdapter,
-        sourceDialect: DialectAdapter,
-        sourceSession: DatabaseSession,
-        targetSession: DatabaseSession,
-        config: CompareConfig
-    ): CompareResult {
+    override fun compare(config: CompareConfig, sessions: SessionPair): CompareResult {
+        val sourceSession = sessions.source
+        val targetSession = sessions.target
         val options = config.options
 
         // 1. 获取两端表列表
@@ -35,7 +34,12 @@ class StructureCompareService {
             when {
                 tableName in sourceTableNames && tableName !in targetTableNames -> {
                     // 仅源存在 → CREATE TABLE
-                    val ddl = sourceMetadata.getDdl(sourceSession, config.sourceDatabase, tableName)
+                    val ddl = sqlGenerator.createTableSql(
+                        sourceMetadata.getDdl(sourceSession, config.sourceDatabase, tableName),
+                        config.sourceDatabase,
+                        config.targetDatabase,
+                        tableName
+                    )
                     TableCompareResult(
                         tableName = tableName,
                         status = "only_in_source",
@@ -47,12 +51,13 @@ class StructureCompareService {
 
                 tableName !in sourceTableNames && tableName in targetTableNames -> {
                     // 仅目标存在
-                    val q = sourceDialect.quoteIdentifier(tableName)
                     TableCompareResult(
                         tableName = tableName,
                         status = "only_in_target",
                         risk = if (options.includeDropStatements) "high" else "low",
-                        sql = if (options.includeDropStatements) "DROP TABLE $q;" else "",
+                        sql = if (options.includeDropStatements) {
+                            sqlGenerator.dropTableSql(config.targetDatabase, tableName)
+                        } else "",
                         summary = if (options.includeDropStatements)
                             "源连接不存在该表，已生成 DROP TABLE（高风险）"
                         else
@@ -63,7 +68,7 @@ class StructureCompareService {
                 else -> {
                     // 两端都存在 → 逐字段/索引对比
                     compareTables(
-                        sourceMetadata, targetMetadata, sourceDialect,
+                        sourceMetadata, targetMetadata, sqlGenerator,
                         sourceSession, targetSession,
                         config.sourceDatabase, config.targetDatabase,
                         tableName, options
@@ -178,7 +183,7 @@ class StructureCompareService {
     private fun compareTables(
         sourceMetadata: MetadataAdapter,
         targetMetadata: MetadataAdapter,
-        dialect: DialectAdapter,
+        sqlGenerator: StructureCompareSqlGenerator,
         sourceSession: DatabaseSession,
         targetSession: DatabaseSession,
         sourceDatabase: String,
@@ -189,7 +194,7 @@ class StructureCompareService {
         val sourceDef = sourceMetadata.getTableDefinition(sourceSession, sourceDatabase, tableName)
         val targetDef = targetMetadata.getTableDefinition(targetSession, targetDatabase, tableName)
 
-        val columnDiffs = compareColumns(sourceDef.columns, targetDef.columns, options)
+        val columnDiffs = compareColumns(sourceDef.columns, targetDef.columns, options, sqlGenerator)
         val indexDiffs = compareIndexes(
             sourceMetadata.getIndexes(sourceSession, sourceDatabase, tableName),
             targetMetadata.getIndexes(targetSession, targetDatabase, tableName)
@@ -200,7 +205,14 @@ class StructureCompareService {
         val isIdentical = !hasColumnDiff && !hasIndexDiff
 
         val sql = if (!isIdentical) {
-            generateAlterSql(dialect, tableName, sourceDef.columns, columnDiffs, indexDiffs, options)
+            sqlGenerator.alterTableSql(
+                targetDatabase,
+                tableName,
+                sourceDef.columns,
+                columnDiffs,
+                indexDiffs,
+                options
+            )
         } else ""
 
         val summaryParts = mutableListOf<String>()
@@ -236,11 +248,11 @@ class StructureCompareService {
     private fun compareColumns(
         sourceColumns: List<ColumnInfo>,
         targetColumns: List<ColumnInfo>,
-        options: CompareOptions
+        options: CompareOptions,
+        sqlGenerator: StructureCompareSqlGenerator
     ): List<ColumnDiff> {
         val sourceMap = sourceColumns.associateBy { it.name }
         val targetMap = targetColumns.associateBy { it.name }
-        val allNames = (sourceMap.keys + targetMap.keys).toList()
         // 按源端顺序优先
         val ordered = sourceColumns.map { it.name } + (targetMap.keys - sourceMap.keys)
 
@@ -268,7 +280,7 @@ class StructureCompareService {
 
                 src != null && tgt != null -> {
                     val diffs = mutableListOf<String>()
-                    if (src.type != tgt.type) diffs.add("类型: ${src.type} → ${tgt.type}")
+                    if (!sqlGenerator.typesEquivalent(src.type, tgt.type)) diffs.add("类型: ${src.type} → ${tgt.type}")
                     if (src.nullable != tgt.nullable) diffs.add("可空: ${src.nullable} → ${tgt.nullable}")
                     if (src.defaultValue != tgt.defaultValue) diffs.add("默认值: ${src.defaultValue} → ${tgt.defaultValue}")
                     if (!options.ignoreComment && src.comment != tgt.comment) diffs.add("注释不同")
@@ -297,25 +309,29 @@ class StructureCompareService {
         sourceIndexes: List<IndexInfo>,
         targetIndexes: List<IndexInfo>
     ): List<IndexDiff> {
-        val sourceMap = sourceIndexes.associateBy { it.name }
-        val targetMap = targetIndexes.associateBy { it.name }
-        val allNames = (sourceMap.keys + targetMap.keys).sorted()
+        fun identity(index: IndexInfo): String = if (index.isPrimary) PRIMARY_INDEX_ID else index.name
+        val sourceMap = sourceIndexes.associateBy(::identity)
+        val targetMap = targetIndexes.associateBy(::identity)
+        val allIdentities = (sourceMap.keys + targetMap.keys).sorted()
 
-        return allNames.map { name ->
-            val src = sourceMap[name]
-            val tgt = targetMap[name]
+        return allIdentities.map { indexIdentity ->
+            val src = sourceMap[indexIdentity]
+            val tgt = targetMap[indexIdentity]
+            val displayName = if (indexIdentity == PRIMARY_INDEX_ID) "PRIMARY" else indexIdentity
             when {
                 src != null && tgt == null -> IndexDiff(
-                    indexName = name, status = "added",
+                    indexName = displayName, status = "added",
                     sourceColumns = src.columns,
                     sourceUnique = src.isUnique,
+                    sourcePrimary = src.isPrimary,
                     details = "仅源连接存在"
                 )
 
                 src == null && tgt != null -> IndexDiff(
-                    indexName = name, status = "removed",
+                    indexName = displayName, status = "removed",
                     targetColumns = tgt.columns,
                     targetUnique = tgt.isUnique,
+                    targetPrimary = tgt.isPrimary,
                     details = "仅目标连接存在"
                 )
 
@@ -323,121 +339,30 @@ class StructureCompareService {
                     val diffs = mutableListOf<String>()
                     if (src.columns != tgt.columns) diffs.add("列: ${src.columns} → ${tgt.columns}")
                     if (src.isUnique != tgt.isUnique) diffs.add("唯一: ${src.isUnique} → ${tgt.isUnique}")
+                    if (src.isPrimary != tgt.isPrimary) diffs.add("主键: ${src.isPrimary} → ${tgt.isPrimary}")
 
                     if (diffs.isEmpty()) {
-                        IndexDiff(indexName = name, status = "identical",
-                            sourceColumns = src.columns, targetColumns = tgt.columns)
+                        IndexDiff(indexName = displayName, status = "identical",
+                            sourceColumns = src.columns, targetColumns = tgt.columns,
+                            sourcePrimary = src.isPrimary, targetPrimary = tgt.isPrimary)
                     } else {
                         IndexDiff(
-                            indexName = name, status = "modified",
+                            indexName = displayName, status = "modified",
                             sourceColumns = src.columns, targetColumns = tgt.columns,
                             sourceUnique = src.isUnique, targetUnique = tgt.isUnique,
+                            sourcePrimary = src.isPrimary, targetPrimary = tgt.isPrimary,
                             details = diffs.joinToString("；")
                         )
                     }
                 }
 
-                else -> IndexDiff(indexName = name, status = "identical")
+                else -> IndexDiff(indexName = displayName, status = "identical")
             }
         }
     }
 
-    private fun generateAlterSql(
-        dialect: DialectAdapter,
-        tableName: String,
-        sourceColumns: List<ColumnInfo>,
-        columnDiffs: List<ColumnDiff>,
-        indexDiffs: List<IndexDiff>,
-        options: CompareOptions
-    ): String {
-        val qt = dialect.quoteIdentifier(tableName)
-        val statements = mutableListOf<String>()
-
-        // 字段变更
-        for (diff in columnDiffs) {
-            val qc = dialect.quoteIdentifier(diff.columnName)
-            when (diff.status) {
-                "added" -> {
-                    val colDef = buildColumnDefinition(dialect, diff.columnName, diff.sourceType!!, diff.sourceNullable, diff.sourceDefault, diff.sourceComment)
-                    // 找到前一列用于 AFTER
-                    val prevCol = findPreviousColumn(sourceColumns, diff.columnName)
-                    val afterClause = if (prevCol != null) " AFTER ${dialect.quoteIdentifier(prevCol)}" else " FIRST"
-                    statements.add("ALTER TABLE $qt ADD COLUMN $colDef$afterClause;")
-                }
-
-                "removed" -> {
-                    if (options.includeDropStatements) {
-                        statements.add("ALTER TABLE $qt DROP COLUMN $qc;")
-                    }
-                }
-
-                "modified" -> {
-                    val colDef = buildColumnDefinition(dialect, diff.columnName, diff.sourceType!!, diff.sourceNullable, diff.sourceDefault, diff.sourceComment)
-                    statements.add("ALTER TABLE $qt MODIFY COLUMN $colDef;")
-                }
-            }
-        }
-
-        // 索引变更
-        for (diff in indexDiffs) {
-            val qi = dialect.quoteIdentifier(diff.indexName)
-            when (diff.status) {
-                "added" -> {
-                    val cols = diff.sourceColumns!!.joinToString(", ") { dialect.quoteIdentifier(it) }
-                    val unique = if (diff.sourceUnique == true && diff.indexName != "PRIMARY") "UNIQUE " else ""
-                    if (diff.indexName == "PRIMARY") {
-                        statements.add("ALTER TABLE $qt ADD PRIMARY KEY ($cols);")
-                    } else {
-                        statements.add("ALTER TABLE $qt ADD ${unique}INDEX $qi ($cols);")
-                    }
-                }
-
-                "removed" -> {
-                    if (options.includeDropStatements) {
-                        if (diff.indexName == "PRIMARY") {
-                            statements.add("ALTER TABLE $qt DROP PRIMARY KEY;")
-                        } else {
-                            statements.add("ALTER TABLE $qt DROP INDEX $qi;")
-                        }
-                    }
-                }
-
-                "modified" -> {
-                    // 先删后建
-                    val cols = diff.sourceColumns!!.joinToString(", ") { dialect.quoteIdentifier(it) }
-                    val unique = if (diff.sourceUnique == true && diff.indexName != "PRIMARY") "UNIQUE " else ""
-                    if (diff.indexName == "PRIMARY") {
-                        statements.add("ALTER TABLE $qt DROP PRIMARY KEY;")
-                        statements.add("ALTER TABLE $qt ADD PRIMARY KEY ($cols);")
-                    } else {
-                        statements.add("ALTER TABLE $qt DROP INDEX $qi;")
-                        statements.add("ALTER TABLE $qt ADD ${unique}INDEX $qi ($cols);")
-                    }
-                }
-            }
-        }
-
-        return statements.joinToString("\n")
+    private companion object {
+        const val PRIMARY_INDEX_ID = "__easydb_primary__"
     }
 
-    private fun buildColumnDefinition(
-        dialect: DialectAdapter,
-        name: String,
-        type: String,
-        nullable: Boolean?,
-        defaultValue: String?,
-        comment: String?
-    ): String {
-        val qn = dialect.quoteIdentifier(name)
-        val parts = mutableListOf("$qn $type")
-        if (nullable == false) parts.add("NOT NULL")
-        if (defaultValue != null) parts.add("DEFAULT $defaultValue")
-        if (!comment.isNullOrBlank()) parts.add("COMMENT '${comment.replace("'", "\\'")}'")
-        return parts.joinToString(" ")
-    }
-
-    private fun findPreviousColumn(columns: List<ColumnInfo>, columnName: String): String? {
-        val index = columns.indexOfFirst { it.name == columnName }
-        return if (index > 0) columns[index - 1].name else null
-    }
 }

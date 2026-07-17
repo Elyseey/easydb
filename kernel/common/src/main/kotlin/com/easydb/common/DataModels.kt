@@ -75,7 +75,9 @@ data class TableDefinition(
     val table: TableInfo,
     val columns: List<ColumnInfo>,
     val indexes: List<IndexInfo>,
-    val ddl: String? = null
+    val ddl: String? = null,
+    /** "native" = 数据库原生 DDL；"synthesized" = EasyDB 拼装的降级 DDL；null = 未提供 */
+    val ddlSource: String? = null
 )
 
 // ─── SQL 执行模型 ────────────────────────────────────────
@@ -155,7 +157,8 @@ data class SqlResult(
     val duration: Long,
     val sql: String,
     val executedAt: String,
-    val error: String? = null
+    val error: String? = null,
+    val warning: String? = null
 )
 
 // ─── 迁移模型 ─────────────────────────────────────────────
@@ -299,6 +302,8 @@ data class IndexDiff(
     val targetColumns: List<String>? = null,
     val sourceUnique: Boolean? = null,
     val targetUnique: Boolean? = null,
+    val sourcePrimary: Boolean? = null,
+    val targetPrimary: Boolean? = null,
     val details: String = ""
 )
 

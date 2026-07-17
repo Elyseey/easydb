@@ -15,7 +15,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 import { create } from 'zustand'
-import type { DatabaseInfo, TableInfo, ColumnInfo, IndexInfo } from '@/types'
+import type { DatabaseInfo, TableInfo, ColumnInfo, IndexInfo, DbType } from '@/types'
 
 /**
  * 工作台上下文 Store
@@ -28,6 +28,17 @@ import type { DatabaseInfo, TableInfo, ColumnInfo, IndexInfo } from '@/types'
 interface OpenConnection {
   id: string
   name: string
+  dbType: DbType
+}
+
+/** 表数据查询状态 */
+export interface TableDataQuery {
+  where?: string
+  orderBy?: string
+  whereDraft?: string
+  appliedWhere?: string
+  sortColumn?: string | null
+  sortDirection?: 'ASC' | 'DESC' | null
 }
 
 /** 表详情 Tab 状态 */
@@ -43,12 +54,14 @@ export interface TableTabState {
   indexes: IndexInfo[]
   ddl: string
   previewRows: Record<string, unknown>[]
+  dataQuery: TableDataQuery
   /** 是否还有更多数据可加载（用于滚动加载） */
   hasMoreRows: boolean
   /** 是否正在加载更多数据 */
   loadingMoreRows: boolean
   detailTab: 'data' | 'design' | 'ddl'
   loadedTabs: string[]
+  loadingTabs: string[]
 }
 
 /** 数据库概览 Tab 状态 */
@@ -108,6 +121,8 @@ interface WorkbenchState {
   activeConnectionId: string | null
   /** 当前活跃连接名称 */
   activeConnectionName: string | null
+  /** 当前活跃连接的数据库类型 */
+  activeDbType: DbType | null
   /** 当前选中数据库 */
   activeDatabase: string | null
   /** 当前选中表 */
@@ -130,7 +145,7 @@ interface WorkbenchState {
   selectedCtx: SelectedContext | null
 
   // --- 操作方法 ---
-  addOpenConnection: (id: string, name: string) => void
+  addOpenConnection: (id: string, name: string, dbType: DbType) => void
   removeOpenConnection: (id: string) => void
   setActiveConnection: (id: string | null, name?: string | null) => void
   setActiveDatabase: (db: string | null) => void
@@ -141,7 +156,7 @@ interface WorkbenchState {
   setActiveTableTabKey: (key: string | null) => void
   /** 原子批量更新 — 一次 set 合并多个字段变更，减少重渲染 */
   batchUpdate: (partial: Partial<Pick<WorkbenchState,
-    'activeConnectionId' | 'activeConnectionName' | 'activeDatabase' | 'activeTable' |
+    'activeConnectionId' | 'activeConnectionName' | 'activeDbType' | 'activeDatabase' | 'activeTable' |
     'selectedCtx' | 'activeTableTabKey' | 'openTableTabs'
   >>) => void
 
@@ -156,6 +171,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set) => ({
   openConnections: [],
   activeConnectionId: null,
   activeConnectionName: null,
+  activeDbType: null,
   activeDatabase: null,
   activeTable: null,
   openTableTabs: {},
@@ -168,13 +184,14 @@ export const useWorkbenchStore = create<WorkbenchState>((set) => ({
   objectsMap: {},
   selectedCtx: null,
 
-  addOpenConnection: (id, name) =>
+  addOpenConnection: (id, name, dbType) =>
     set((state) => {
       if (state.openConnections.some((c) => c.id === id)) return state
       return {
-        openConnections: [...state.openConnections, { id, name }],
+        openConnections: [...state.openConnections, { id, name, dbType }],
         activeConnectionId: id,
         activeConnectionName: name,
+        activeDbType: dbType,
       }
     }),
 
@@ -211,6 +228,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set) => ({
           ? {
               activeConnectionId: newList.length > 0 ? newList[newList.length - 1].id : null,
               activeConnectionName: newList.length > 0 ? newList[newList.length - 1].name : null,
+              activeDbType: newList.length > 0 ? newList[newList.length - 1].dbType : null,
               activeDatabase: null,
               activeTable: null,
             }
@@ -224,19 +242,22 @@ export const useWorkbenchStore = create<WorkbenchState>((set) => ({
         return {
           activeConnectionId: null,
           activeConnectionName: null,
+          activeDbType: null,
           activeDatabase: null,
           activeTable: null,
         }
       }
-      const alreadyOpen = state.openConnections.some((c) => c.id === id)
+      const found = state.openConnections.find((c) => c.id === id)
+      const alreadyOpen = !!found
       return {
         activeConnectionId: id,
         activeConnectionName: name,
+        activeDbType: found?.dbType ?? null,
         activeDatabase: null,
         activeTable: null,
         ...(alreadyOpen
           ? {}
-          : { openConnections: [...state.openConnections, { id, name: name ?? id }] }),
+          : { openConnections: [...state.openConnections, { id, name: name ?? id, dbType: 'mysql' as DbType }] }),
       }
     }),
 
@@ -254,6 +275,7 @@ export const useWorkbenchStore = create<WorkbenchState>((set) => ({
       openConnections: [],
       activeConnectionId: null,
       activeConnectionName: null,
+      activeDbType: null,
       activeDatabase: null,
       activeTable: null,
       openTableTabs: {},
@@ -290,5 +312,11 @@ export const useWorkbenchStore = create<WorkbenchState>((set) => ({
     set({ activeTableTabKey: key }),
 
   batchUpdate: (partial) =>
-    set(partial),
+    set((state) => {
+      if (partial.activeConnectionId && !('activeDbType' in partial)) {
+        const conn = state.openConnections.find(c => c.id === partial.activeConnectionId)
+        return { ...partial, activeDbType: conn?.dbType ?? state.activeDbType }
+      }
+      return partial
+    }),
 }))

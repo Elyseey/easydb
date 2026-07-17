@@ -16,7 +16,7 @@
  */
 import React, { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { ConfigProvider, theme, Modal, App as AntApp } from 'antd'
+import { ConfigProvider, theme, App as AntApp } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import { MainLayout } from '@/layouts/MainLayout'
 import { ConnectionPage } from '@/pages/connection'
@@ -30,13 +30,14 @@ import { DataTrackerPage } from '@/pages/data-tracker'
 import { SlowQueryPage } from '@/pages/slow-query'
 import { checkForUpdate, getAutoCheckEnabled } from '@/utils/updater'
 import { useThemeStore } from '@/stores/themeStore'
+import { getEasyDbThemeConfig } from '@/theme/themeConfig'
+import { configureFeedbackApis } from '@/utils/notification'
+import { openExternalUrl } from '@/utils/openExternalUrl'
 
-const fontFamily = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-const fontFamilyCode = "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace"
+const AppContent: React.FC = () => {
+  const { message, notification, modal } = AntApp.useApp()
 
-const App: React.FC = () => {
-  const effectiveTheme = useThemeStore((s) => s.effectiveTheme)
-  const isDark = effectiveTheme === 'dark'
+  configureFeedbackApis({ message, notification })
 
   // 启动时自动检查更新
   useEffect(() => {
@@ -46,13 +47,13 @@ const App: React.FC = () => {
       try {
         const info = await checkForUpdate()
         if (info.hasUpdate) {
-          Modal.confirm({
+          modal.confirm({
             title: `发现新版本 v${info.latestVersion}`,
             content: (
               <div>
                 <p>当前版本：v{info.currentVersion}</p>
                 {info.releaseNotes && (
-                  <p style={{ fontSize: 12, color: '#666', maxHeight: 120, overflow: 'auto' }}>
+                  <p style={{ fontSize: 12, color: 'var(--edb-text-secondary)', maxHeight: 120, overflow: 'auto' }}>
                     {info.releaseNotes.slice(0, 300)}
                   </p>
                 )}
@@ -61,7 +62,7 @@ const App: React.FC = () => {
             okText: '前往下载',
             cancelText: '稍后再说',
             onOk: () => {
-              window.open(info.downloadUrl, '_blank')
+              void openExternalUrl(info.downloadUrl)
             },
           })
         }
@@ -70,47 +71,45 @@ const App: React.FC = () => {
       }
     }, 3000)
     return () => clearTimeout(timer)
-  }, [])
+  }, [modal])
+
+  return (
+    <BrowserRouter>
+      <MainLayout>
+        <Routes>
+          <Route path="/" element={<Navigate to="/connection" replace />} />
+          <Route path="/connection" element={<ConnectionPage />} />
+          <Route path="/workbench" element={<WorkbenchPage />} />
+          <Route path="/sql-editor" element={<Navigate to="/workbench" replace />} />
+          <Route path="/migration" element={<MigrationPage />} />
+          <Route path="/sync" element={<SyncPage />} />
+          <Route path="/task-center" element={<TaskCenterPage />} />
+          <Route path="/structure-compare" element={<StructureComparePage />} />
+          <Route path="/data-tracker" element={<DataTrackerPage />} />
+          <Route path="/slow-query" element={<SlowQueryPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Routes>
+      </MainLayout>
+    </BrowserRouter>
+  )
+}
+
+const App: React.FC = () => {
+  const effectiveTheme = useThemeStore((s) => s.effectiveTheme)
+  const themeStyle = useThemeStore((s) => s.themeStyle)
+  const isDark = effectiveTheme === 'dark'
+  const antdTheme = getEasyDbThemeConfig(
+    themeStyle,
+    effectiveTheme,
+    isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
+  )
 
   return (
     <ConfigProvider
       locale={zhCN}
-      theme={{
-        algorithm: isDark ? theme.darkAlgorithm : theme.defaultAlgorithm,
-        token: {
-          colorPrimary: isDark ? '#818CF8' : '#7C3AED',
-          colorBgBase: isDark ? '#0f0c29' : '#e8d5f5',
-          colorBgContainer: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.40)',
-          colorBgElevated: isDark ? 'rgba(255,255,255,0.10)' : 'rgba(255,255,255,0.55)',
-          colorBgLayout: 'transparent',
-          colorBorder: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.50)',
-          colorBorderSecondary: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.35)',
-          colorText: isDark ? 'rgba(255,255,255,0.95)' : 'rgba(0,0,0,0.85)',
-          colorTextSecondary: isDark ? 'rgba(255,255,255,0.65)' : 'rgba(0,0,0,0.55)',
-          borderRadius: 12,
-          fontSize: 13,
-          fontFamily,
-          fontFamilyCode,
-        },
-      }}>
+      theme={antdTheme}>
       <AntApp>
-        <BrowserRouter>
-          <MainLayout>
-            <Routes>
-              <Route path="/" element={<Navigate to="/connection" replace />} />
-              <Route path="/connection" element={<ConnectionPage />} />
-              <Route path="/workbench" element={<WorkbenchPage />} />
-              <Route path="/sql-editor" element={<Navigate to="/workbench" replace />} />
-              <Route path="/migration" element={<MigrationPage />} />
-              <Route path="/sync" element={<SyncPage />} />
-              <Route path="/task-center" element={<TaskCenterPage />} />
-              <Route path="/structure-compare" element={<StructureComparePage />} />
-              <Route path="/data-tracker" element={<DataTrackerPage />} />
-              <Route path="/slow-query" element={<SlowQueryPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Routes>
-          </MainLayout>
-        </BrowserRouter>
+        <AppContent />
       </AntApp>
     </ConfigProvider>
   )

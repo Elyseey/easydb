@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import {
   Modal, Form, Input, InputNumber, Select, Tabs, Switch, Typography,
 } from 'antd'
-import type { ConnectionConfig, ConnectionGroup } from '@/types'
+import type { ConnectionConfig, ConnectionGroup, DbType } from '@/types'
 
 const { Text } = Typography
 
@@ -16,6 +16,7 @@ interface ConnectionModalProps {
   testResult: { success: boolean; message: string } | null
   testing: boolean
   existingGroups: ConnectionGroup[]
+  defaultGroupId?: string
 }
 
 
@@ -23,32 +24,72 @@ interface ConnectionModalProps {
 export const ConnectionModal: React.FC<ConnectionModalProps> = ({
   open, editingConnection, confirmLoading,
   onSave, onCancel, onTest,
-  testResult, testing, existingGroups,
+  testResult, testing, existingGroups, defaultGroupId,
 }) => {
   const [form] = Form.useForm()
   const [sshEnabled, setSshEnabled] = useState(false)
   const [sslEnabled, setSslEnabled] = useState(false)
   const [sshAuthType, setSshAuthType] = useState<'password' | 'privateKey'>('password')
 
+  const dbType = Form.useWatch('dbType', form)
+
+  const DB_DEFAULTS: Record<DbType, { port: number; username: string; databasePlaceholder: string }> = {
+    mysql: { port: 3306, username: 'root', databasePlaceholder: '可选，连接后自动切换' },
+    dameng: { port: 5236, username: 'SYSDBA', databasePlaceholder: '可选，默认 schema' },
+    postgresql: { port: 5432, username: 'postgres', databasePlaceholder: '可选' },
+    oracle: { port: 1521, username: 'system', databasePlaceholder: '可选' },
+    sqlserver: { port: 1433, username: 'sa', databasePlaceholder: '可选' },
+    sqlite: { port: 0, username: '', databasePlaceholder: '文件路径' },
+  }
+
   // 弹窗打开时重置表单
   React.useEffect(() => {
     if (open) {
       if (editingConnection) {
-        form.setFieldsValue(editingConnection)
+        // 编辑模式：不预填已存储密码，避免 *** 回传
+        const hasStoredPassword = !!editingConnection.passwordRef
+        const hasStoredSshPassword = !!editingConnection.ssh?.passwordRef
+        form.setFieldsValue({
+          ...editingConnection,
+          password: '',  // 清空，由 placeholder 提示
+          ssh: editingConnection.ssh ? {
+            ...editingConnection.ssh,
+            password: '',  // 清空 SSH 密码同理
+          } : undefined,
+        })
         setSshEnabled(!!editingConnection.ssh?.enabled)
         setSslEnabled(!!editingConnection.ssl?.enabled)
         setSshAuthType((editingConnection.ssh?.authType as 'password' | 'privateKey') ?? 'password')
+        // 保存原始 passwordRef，用于判断 save 时是否修改了密码
+        ;(form as any).__hasStoredPassword = hasStoredPassword
+        ;(form as any).__hasStoredSshPassword = hasStoredSshPassword
       } else {
         form.resetFields()
         form.setFieldsValue({
           dbType: 'mysql', host: '127.0.0.1', port: 3306, username: 'root',
+          groupId: defaultGroupId,
         })
         setSshEnabled(false)
         setSslEnabled(false)
         setSshAuthType('password')
+        ;(form as any).__hasStoredPassword = false
+        ;(form as any).__hasStoredSshPassword = false
       }
     }
-  }, [open, editingConnection, form])
+  }, [open, editingConnection, form, defaultGroupId])
+
+  // 切换数据库类型时更新默认值（仅新建模式）
+  React.useEffect(() => {
+    if (open && !editingConnection && dbType) {
+      const defaults = DB_DEFAULTS[dbType as DbType]
+      if (defaults) {
+        form.setFieldsValue({
+          port: defaults.port,
+          username: defaults.username,
+        })
+      }
+    }
+  }, [dbType, open, editingConnection, form])
 
   const handleSave = () => {
     form.validateFields().then((values) => {
@@ -110,7 +151,7 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                 <>
                   <div style={{ display: 'flex', gap: 12 }}>
                     <Form.Item name="name" label="连接名称" style={{ flex: 1 }} rules={[{ required: true, message: '请输入连接名称' }]}>
-                      <Input placeholder="我的 MySQL 连接" />
+                      <Input />
                     </Form.Item>
                     <Form.Item name="groupId" label="分组" style={{ flex: 1 }}>
                       <Select
@@ -128,6 +169,7 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                     <Select
                       options={[
                         { value: 'mysql', label: 'MySQL' },
+                        { value: 'dameng', label: '达梦' },
                         { value: 'postgresql', label: 'PostgreSQL', disabled: true },
                       ]}
                     />
@@ -145,11 +187,13 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                       <Input placeholder="root" />
                     </Form.Item>
                     <Form.Item name="password" label="密码" style={{ flex: 1 }}>
-                      <Input.Password placeholder="密码" />
+                      <Input.Password
+                        placeholder={editingConnection?.passwordRef ? '密码已存储，留空保持不变' : '密码'}
+                      />
                     </Form.Item>
                   </div>
                   <Form.Item name="database" label="默认数据库">
-                    <Input placeholder="可选，连接后自动切换" />
+                    <Input placeholder={DB_DEFAULTS[dbType as DbType]?.databasePlaceholder ?? '可选'} />
                   </Form.Item>
                 </>
               ),
@@ -187,7 +231,9 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                       {/* 密码认证 */}
                       {sshAuthType === 'password' && (
                         <Form.Item name={['ssh', 'password']} label="SSH 密码">
-                          <Input.Password placeholder="SSH 密码" />
+                          <Input.Password
+                            placeholder={editingConnection?.ssh?.passwordRef ? '密码已存储，留空保持不变' : 'SSH 密码'}
+                          />
                         </Form.Item>
                       )}
                       {/* 私钥认证：输入私钥文件路径 */}

@@ -1,9 +1,19 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react'
-import { Layout, Button, Space, Typography, Tabs, Select, Spin, theme, Tooltip } from 'antd'
-import { PlayCircleOutlined, ClearOutlined, StarOutlined, FolderOpenOutlined, HistoryOutlined } from '@ant-design/icons'
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { Layout, Button, Space, Typography, Tabs, Select, Spin, theme, Tooltip, Dropdown } from 'antd'
+import {
+  PlayCircleOutlined,
+  ClearOutlined,
+  StarOutlined,
+  FolderOpenOutlined,
+  HistoryOutlined,
+  FormatPainterOutlined,
+  CompressOutlined,
+  FileTextOutlined,
+  DownOutlined,
+} from '@ant-design/icons'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
-import type { SqlResult, EditabilityStatus } from '@/types'
+import type { SqlResult, EditabilityStatus, TableInfo } from '@/types'
 import { useSqlEditorStore, type EditorTab } from '@/stores/sqlEditorStore'
 import { useConnectionStore } from '@/stores/connectionStore'
 import { sqlApi, connectionApi, metadataApi } from '@/services/api'
@@ -16,6 +26,7 @@ import { SaveScriptModal } from '../pages/sql-editor/SaveScriptModal'
 import { SavedScriptsModal } from '../pages/sql-editor/SavedScriptsModal'
 import { SqlHistoryDrawer } from '../pages/sql-editor/SqlHistoryDrawer'
 import { useAppSettingsStore } from '@/stores/appSettingsStore'
+import { useThemeStore } from '@/stores/themeStore'
 import { formatHotkey } from '@/utils/osUtils'
 import {
   DEFAULT_SQL_PREVIEW_PAGE_SIZE,
@@ -23,45 +34,184 @@ import {
   MAX_SQL_PREVIEW_CELL_CHARS,
   mergeSqlPreviewResult,
   normalizeExecutableSql,
+  refreshSqlPreviewResult,
+  sqlBatchSummary,
+  sqlSuccessToastMessage,
+  sqlUpdateResultText,
 } from '../pages/sql-editor/queryPreview'
 import { EmptyState } from '@/components/EmptyState'
+import { beautifySql, compactSql } from '@/utils/sqlTransform'
+import { getSqlTemplates, insertSqlTemplate, type SqlTemplate } from '@/pages/sql-editor/sqlTemplates'
+import { ConnectionDatabaseSelect } from '@/components/ConnectionDatabaseSelect'
+import {
+  buildOpenObjectDetailRequest,
+  type OpenObjectDetailRequest,
+} from '@/utils/openObjectDetail'
 
 const { Content } = Layout
 const { Text } = Typography
 
 interface QueryEditorPaneProps {
   queryId: string
+  active?: boolean
   /** 开启高级 SQL 工具（收藏脚本、SQL 历史等）。默认开启。 */
   showAdvancedTools?: boolean
+  /** 打开工作台对象详情页。 */
+  onOpenObjectDetail?: (request: OpenObjectDetailRequest) => void
+  /** 将查询页签内部的连接上下文同步到工作台页签。 */
+  onContextChange?: (context: { queryId: string; connectionId?: string; database?: string }) => void
 }
 
-export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showAdvancedTools = true }) => {
+const SQL_KEYWORDS = new Set([
+  'SELECT', 'FROM', 'WHERE', 'JOIN', 'LEFT', 'RIGHT', 'INNER', 'OUTER', 'FULL', 'ON',
+  'AND', 'OR', 'GROUP', 'ORDER', 'BY', 'HAVING', 'LIMIT', 'OFFSET', 'INSERT', 'UPDATE',
+  'DELETE', 'CREATE', 'ALTER', 'DROP', 'TABLE', 'VIEW', 'INDEX', 'INTO', 'VALUES', 'SET',
+])
+
+const OBJECT_TOKEN_CHARS = /[A-Za-z0-9_$#.`"[\]-]/
+
+function stripIdentifierQuote(value: string): string {
+  const trimmed = value.trim()
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith('`') && trimmed.endsWith('`')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']'))
+  ) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
+function splitQualifiedIdentifier(raw: string): string[] {
+  const parts: string[] = []
+  let current = ''
+  let quote: '"' | '`' | '[' | null = null
+
+  for (const ch of raw.trim()) {
+    if (quote) {
+      current += ch
+      if ((quote === '[' && ch === ']') || (quote !== '[' && ch === quote)) quote = null
+      continue
+    }
+    if (ch === '"' || ch === '`' || ch === '[') {
+      quote = ch
+      current += ch
+      continue
+    }
+    if (ch === '.') {
+      if (current.trim()) parts.push(stripIdentifierQuote(current))
+      current = ''
+      continue
+    }
+    current += ch
+  }
+
+  if (current.trim()) parts.push(stripIdentifierQuote(current))
+  return parts
+}
+
+function extractObjectTokenAtPosition(model: editor.ITextModel, position: { lineNumber: number; column: number }): string | null {
+  const line = model.getLineContent(position.lineNumber)
+  let left = Math.max(0, position.column - 2)
+  let right = Math.max(0, position.column - 1)
+
+  while (left >= 0 && OBJECT_TOKEN_CHARS.test(line[left])) left--
+  while (right < line.length && OBJECT_TOKEN_CHARS.test(line[right])) right++
+
+  const token = line.slice(left + 1, right).trim().replace(/^[,;()]+|[,;()]+$/g, '')
+  if (!token) return null
+
+  const parts = splitQualifiedIdentifier(token)
+  const last = parts[parts.length - 1]
+  if (!last || SQL_KEYWORDS.has(last.toUpperCase())) return null
+  return token
+}
+
+function resolveObjectName(rawToken: string, currentDatabase: string): { database: string; objectName: string } | null {
+  const parts = splitQualifiedIdentifier(rawToken).filter(Boolean)
+  if (parts.length === 0) return null
+  const objectName = parts[parts.length - 1]
+  if (!objectName || SQL_KEYWORDS.has(objectName.toUpperCase())) return null
+  return {
+    database: parts.length >= 2 ? parts[parts.length - 2] : currentDatabase,
+    objectName,
+  }
+}
+
+function findObjectByName(objects: TableInfo[], objectName: string): TableInfo | undefined {
+  return objects.find((obj) => obj.name === objectName) ??
+    objects.find((obj) => obj.name.toLowerCase() === objectName.toLowerCase())
+}
+
+const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({
+  queryId,
+  active = true,
+  showAdvancedTools = true,
+  onOpenObjectDetail,
+  onContextChange,
+}) => {
   const { token } = theme.useToken()
+  const effectiveTheme = useThemeStore((s) => s.effectiveTheme)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null)
   const completionDisposableRef = useRef<{ dispose: () => void } | null>(null)
+  const editorModelPath = useMemo(() => `inmemory://easydb/sql/${encodeURIComponent(queryId)}.sql`, [queryId])
 
   const connections = useConnectionStore((s) => s.connections)
   const updateConnection = useConnectionStore((s) => s.updateConnection)
   
   const activeEditorTab = useSqlEditorStore(useCallback(s => s.tabs.find(t => t.key === queryId), [queryId]))
   const storeUpdateTab = useSqlEditorStore((s) => s.updateTab)
+  const activeEditorTabRef = useRef<typeof activeEditorTab>(activeEditorTab)
+  const onOpenObjectDetailRef = useRef(onOpenObjectDetail)
+  const onContextChangeRef = useRef(onContextChange)
 
   // Advanced tools state
   const sqlHistoryEnabled          = useAppSettingsStore((s) => s.sqlHistoryEnabled)
   const sqlHistoryFilterByDatabase = useAppSettingsStore((s) => s.sqlHistoryFilterByDatabase)
+  const sqlTemplatesEnabled        = useAppSettingsStore((s) => s.sqlTemplatesEnabled)
   const [saveModalOpen, setSaveModalOpen] = useState(false)
   const [listModalOpen, setListModalOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [sqlFormatMenuOpen, setSqlFormatMenuOpen] = useState(false)
   
   const [executing, setExecuting] = useState(false)
   const [loadingMoreKey, setLoadingMoreKey] = useState<string | null>(null)
-  const [databases, setDatabases] = useState<string[]>([])
   const [editabilityMap, setEditabilityMap] = useState<Map<number, EditabilityStatus>>(new Map())
   const [analyzingEditability, setAnalyzingEditability] = useState(false)
 
   const [editorHeight, setEditorHeight] = useState(300)
   const isDraggingRef = useRef(false)
+
+  useEffect(() => {
+    activeEditorTabRef.current = activeEditorTab
+    onOpenObjectDetailRef.current = onOpenObjectDetail
+    onContextChangeRef.current = onContextChange
+  }, [activeEditorTab, onContextChange, onOpenObjectDetail])
+
+  useEffect(() => {
+    onContextChangeRef.current?.({
+      queryId,
+      connectionId: activeEditorTab?.connectionId,
+      database: activeEditorTab?.database,
+    })
+  }, [activeEditorTab?.connectionId, activeEditorTab?.database, queryId])
+
+  useEffect(() => {
+    if (!active) return
+    const frame = window.requestAnimationFrame(() => {
+      editorRef.current?.layout()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [active, activeEditorTab?.database, editorHeight])
+
+  useEffect(() => {
+    if (active && activeEditorTab?.connectionId && activeEditorTab.database) return
+    editorRef.current = null
+    monacoRef.current = null
+    completionDisposableRef.current?.dispose()
+    completionDisposableRef.current = null
+  }, [active, activeEditorTab?.connectionId, activeEditorTab?.database])
 
   useEffect(() => {
     const handleMouseMove = (e: globalThis.MouseEvent) => {
@@ -89,13 +239,18 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
     }
   }, [queryId, storeUpdateTab, activeEditorTab])
 
-  // Fetch DBs whenever connection changes within this tab
-  useEffect(() => {
-    if (!activeEditorTab?.connectionId) { setDatabases([]); return }
-    metadataApi.databases(activeEditorTab.connectionId).then((dbs) => {
-      setDatabases((dbs as Array<{name: string}>).map(d => d.name))
-    }).catch(() => setDatabases([]))
-  }, [activeEditorTab?.connectionId])
+  const activeConnectionDbType = useMemo(
+    () => connections.find((connection) => connection.id === activeEditorTab?.connectionId)?.dbType,
+    [connections, activeEditorTab?.connectionId],
+  )
+  const sqlCompletionOptions = useMemo(() => ({
+    dbType: activeConnectionDbType,
+    templatesEnabled: sqlTemplatesEnabled,
+  }), [activeConnectionDbType, sqlTemplatesEnabled])
+  const availableSqlTemplates = useMemo(
+    () => activeConnectionDbType ? getSqlTemplates(activeConnectionDbType, sqlTemplatesEnabled) : [],
+    [activeConnectionDbType, sqlTemplatesEnabled],
+  )
 
   const handleConnectionChange = async (connId: string) => {
     const conn = connections.find((c) => c.id === connId)
@@ -122,10 +277,131 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = monacoRef.current.languages.registerCompletionItemProvider(
         'sql',
-        createSqlCompletionProvider(activeEditorTab.connectionId, db, monacoRef.current)
+        createSqlCompletionProvider(activeEditorTab.connectionId, db, monacoRef.current, sqlCompletionOptions)
       )
     }
   }
+
+  const handleOpenObjectAtPosition = useCallback(async (
+    position?: { lineNumber: number; column: number },
+    showWarnings = true,
+  ) => {
+    const editor = editorRef.current
+    const model = editor?.getModel()
+    const targetPosition = position ?? editor?.getPosition()
+    const currentTab = activeEditorTabRef.current
+    if (!editor || !model || !targetPosition || !currentTab?.connectionId || !currentTab.database) return
+
+    const rawToken = extractObjectTokenAtPosition(model, targetPosition)
+    if (!rawToken) {
+      if (showWarnings) toast.warning('当前光标位置不是可跳转的数据库对象')
+      return
+    }
+
+    const resolved = resolveObjectName(rawToken, currentTab.database)
+    if (!resolved) {
+      if (showWarnings) toast.warning('当前光标位置不是可跳转的数据库对象')
+      return
+    }
+
+    try {
+      const objects = await metadataApi.objects(currentTab.connectionId, resolved.database) as TableInfo[]
+      const object = findObjectByName(objects, resolved.objectName)
+      const request = object
+        ? buildOpenObjectDetailRequest(currentTab.connectionId, resolved.database, object)
+        : null
+      if (!request) {
+        if (showWarnings) toast.warning(`未找到对象「${resolved.objectName}」`)
+        return
+      }
+
+      onOpenObjectDetailRef.current?.(request)
+    } catch (error) {
+      handleApiError(error, '打开对象详情失败')
+    }
+  }, [])
+
+  const handleOpenObjectAtCursor = useCallback(() => {
+    return handleOpenObjectAtPosition(undefined, true)
+  }, [handleOpenObjectAtPosition])
+
+  const handleSqlTransform = useCallback(async (mode: 'beautify' | 'compact') => {
+    const editorInstance = editorRef.current
+    const model = editorInstance?.getModel()
+    const currentTab = activeEditorTabRef.current
+    if (!editorInstance || !model || !currentTab) return
+
+    const selection = editorInstance.getSelection()
+    const hasSelection = Boolean(selection && !selection.isEmpty())
+    const targetRange = hasSelection && selection ? selection : model.getFullModelRange()
+    const source = model.getValueInRange(targetRange)
+    const sourceVersion = model.getVersionId()
+    if (!source.trim()) return
+
+    try {
+      const connection = useConnectionStore.getState().connections.find(
+        (candidate) => candidate.id === currentTab.connectionId,
+      )
+      if (!connection) {
+        toast.error(`SQL ${mode === 'beautify' ? '美化' : '压缩'}失败：无法确定当前数据库类型`)
+        return
+      }
+
+      let transformed: string
+      if (mode === 'beautify') {
+        transformed = await beautifySql(source, connection.dbType)
+      } else {
+        transformed = compactSql(source, connection.dbType)
+      }
+
+      if (editorInstance.getModel() !== model || model.getVersionId() !== sourceVersion) {
+        toast.warning('SQL 内容已发生变化，请重新执行格式处理')
+        return
+      }
+
+      if (transformed === source) {
+        toast.info(mode === 'beautify' ? '当前 SQL 已是美化格式' : '当前 SQL 已是紧凑格式')
+        editorInstance.focus()
+        return
+      }
+
+      const startOffset = model.getOffsetAt(targetRange.getStartPosition())
+      editorInstance.pushUndoStop()
+      editorInstance.executeEdits(`easydb-sql-${mode}`, [{
+        range: targetRange,
+        text: transformed,
+        forceMoveMarkers: true,
+      }])
+      editorInstance.pushUndoStop()
+
+      if (hasSelection) {
+        const endPosition = model.getPositionAt(startOffset + transformed.length)
+        editorInstance.setSelection({
+          startLineNumber: targetRange.startLineNumber,
+          startColumn: targetRange.startColumn,
+          endLineNumber: endPosition.lineNumber,
+          endColumn: endPosition.column,
+        })
+      }
+
+      storeUpdateTab(queryId, { sql: model.getValue() })
+      editorInstance.focus()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'SQL 处理失败')
+    }
+  }, [queryId, storeUpdateTab])
+
+  const handleInsertSqlTemplate = useCallback((template: SqlTemplate) => {
+    const editorInstance = editorRef.current
+    const model = editorInstance?.getModel()
+    if (!editorInstance || !model || !sqlTemplatesEnabled) return
+
+    if (!insertSqlTemplate(editorInstance, template)) {
+      toast.error('SQL 模板插入失败，请重新打开查询页后重试')
+      return
+    }
+    storeUpdateTab(queryId, { sql: model.getValue() })
+  }, [queryId, sqlTemplatesEnabled, storeUpdateTab])
 
   const handleEditorMount: OnMount = (editorInstance, monaco) => {
     editorRef.current = editorInstance
@@ -136,15 +412,53 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
       run: () => handleExecute(),
     })
+    editorInstance.addAction({
+      id: 'open-object-detail',
+      label: '打开对象详情',
+      contextMenuGroupId: 'navigation',
+      contextMenuOrder: 1.5,
+      run: () => handleOpenObjectAtCursor(),
+    })
+    editorInstance.addAction({
+      id: 'beautify-sql',
+      label: '美化 SQL',
+      keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
+      contextMenuGroupId: 'modification',
+      contextMenuOrder: 1.1,
+      run: () => handleSqlTransform('beautify'),
+    })
+    editorInstance.addAction({
+      id: 'compact-sql',
+      label: '压缩 SQL',
+      contextMenuGroupId: 'modification',
+      contextMenuOrder: 1.2,
+      run: () => handleSqlTransform('compact'),
+    })
+    editorInstance.onMouseDown((event) => {
+      const mouseEvent = event.event as unknown as {
+        leftButton?: boolean
+        metaKey?: boolean
+        ctrlKey?: boolean
+        preventDefault?: () => void
+      }
+      if (!event.target.position || !mouseEvent.leftButton || (!mouseEvent.metaKey && !mouseEvent.ctrlKey)) return
+      mouseEvent.preventDefault?.()
+      handleOpenObjectAtPosition(event.target.position, false)
+    })
 
     if (activeEditorTab?.connectionId && activeEditorTab?.database) {
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = monaco.languages.registerCompletionItemProvider(
         'sql',
-        createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monaco)
+        createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monaco, sqlCompletionOptions)
       )
     }
-    editorInstance.focus()
+    if (active) {
+      window.requestAnimationFrame(() => {
+        editorInstance.layout()
+        editorInstance.focus()
+      })
+    }
   }
 
   // --- 自动重新注册 CompletionProvider ---
@@ -153,13 +467,13 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = monacoRef.current.languages.registerCompletionItemProvider(
         'sql',
-        createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monacoRef.current)
+        createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monacoRef.current, sqlCompletionOptions)
       )
     }
     return () => {
       completionDisposableRef.current?.dispose()
     }
-  }, [activeEditorTab?.connectionId, activeEditorTab?.database])
+  }, [activeEditorTab?.connectionId, activeEditorTab?.database, sqlCompletionOptions])
 
   useEffect(() => {
     return () => {
@@ -239,8 +553,7 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
         if (hasQuery) {
           updateActiveTab({ results: newResults, currentBatch: adjustedResults, resultTab: 'result-0' })
         } else {
-          const totalAffected = resultList.reduce((sum, r) => sum + (r.affectedRows ?? 0), 0)
-          toast.success(`执行成功，共影响 ${totalAffected} 行`)
+          toast.success(sqlSuccessToastMessage(resultList))
           updateActiveTab({ results: newResults, currentBatch: adjustedResults, resultTab: 'messages' })
         }
       }
@@ -306,6 +619,22 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
     })
   }, [activeEditorTab?.currentBatch, updateActiveTab])
 
+  const handleRefreshResult = useCallback(async (batchIndex: number) => {
+    const target = activeEditorTab?.currentBatch?.[batchIndex]
+    if (!target) {
+      throw new Error('无法确定需要刷新的原始查询')
+    }
+    const enrichedResult = await refreshSqlPreviewResult(
+      target,
+      async (request) => sqlApi.queryPreview(request) as Promise<SqlResult>,
+    )
+    updateActiveTab({
+      currentBatch: (activeEditorTab.currentBatch ?? []).map((result, idx) => (
+        idx === batchIndex ? enrichedResult : result
+      )),
+    })
+  }, [activeEditorTab, updateActiveTab])
+
   // 分析查询结果的可编辑性
   useEffect(() => {
     const currentBatch = activeEditorTab?.currentBatch ?? []
@@ -356,6 +685,7 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
   const currentBatch = activeEditorTab.currentBatch ?? []
   const results = activeEditorTab.results ?? []
   const totalDuration = currentBatch.reduce((sum, r) => sum + (r.duration || 0), 0)
+  const currentBatchSummary = sqlBatchSummary(currentBatch, totalDuration)
   const resultTableHeight = Math.max(240, (typeof window !== 'undefined' ? window.innerHeight : 900) - editorHeight - 230)
   const tableNameCounts: Record<string, number> = {}
   let queryIndex = 0
@@ -389,19 +719,65 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
             }))}
             listHeight={320}
           />
-          <Select
-            size="small"
-            variant="filled"
-            style={{ width: 160 }}
-            placeholder="选择数据库"
+          <ConnectionDatabaseSelect
+            connectionId={activeEditorTab.connectionId}
             value={activeEditorTab.database}
             onChange={handleDatabaseChange}
-            options={databases.map((db) => ({ label: db, value: db }))}
-            disabled={!activeEditorTab.connectionId}
-            showSearch
           />
         </Space>
         <Space>
+          <Dropdown
+            trigger={['click']}
+            onOpenChange={setSqlFormatMenuOpen}
+            menu={{
+              items: [
+                {
+                  key: 'templates',
+                  icon: <FileTextOutlined />,
+                  label: sqlTemplatesEnabled ? '常用 SQL 模板' : '常用 SQL 模板（设置中已关闭）',
+                  disabled: availableSqlTemplates.length === 0,
+                  children: availableSqlTemplates.map((template) => ({
+                    key: `template-${template.id}`,
+                    danger: template.risk === 'write',
+                    label: (
+                      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 24, minWidth: 176 }}>
+                        <span>{template.label}</span>
+                        <Text code style={{ fontSize: 11 }}>{template.prefix}</Text>
+                      </span>
+                    ),
+                    onClick: () => handleInsertSqlTemplate(template),
+                  })),
+                },
+                { type: 'divider' },
+                {
+                  key: 'beautify',
+                  icon: <FormatPainterOutlined />,
+                  label: '美化 SQL',
+                  disabled: !activeEditorTab.sql.trim(),
+                  onClick: () => { void handleSqlTransform('beautify') },
+                },
+                {
+                  key: 'compact',
+                  icon: <CompressOutlined />,
+                  label: '压缩 SQL',
+                  disabled: !activeEditorTab.sql.trim(),
+                  onClick: () => { void handleSqlTransform('compact') },
+                },
+              ],
+            }}
+          >
+            <Tooltip
+              title="插入常用模板，或美化、压缩当前 SQL"
+              open={sqlFormatMenuOpen ? false : undefined}
+            >
+              <Button
+                size="small"
+                icon={<FormatPainterOutlined />}
+              >
+                SQL 工具 <DownOutlined style={{ fontSize: 10 }} />
+              </Button>
+            </Tooltip>
+          </Dropdown>
           {showAdvancedTools && (
             <>
               <Button size="small" icon={<FolderOpenOutlined />} onClick={() => setListModalOpen(true)}>
@@ -446,12 +822,14 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
           />
         ) : !activeEditorTab.database ? (
           <EmptyState description="请在上方选择我们要查询的数据库" />
-        ) : (
+        ) : !active ? null : (
           <Editor
             key={`editor-${queryId}`}
             height="100%"
             language="sql"
-            theme="vs-dark"
+            theme={effectiveTheme === 'dark' ? 'vs-dark' : 'light'}
+            path={editorModelPath}
+            keepCurrentModel
             defaultValue={activeEditorTab.sql}
             onChange={(value) => updateActiveTab({ sql: value ?? '' })}
             onMount={handleEditorMount}
@@ -466,6 +844,7 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
               tabSize: 2,
               suggestOnTriggerCharacters: true,
               quickSuggestions: true,
+              tabCompletion: sqlTemplatesEnabled ? 'on' : 'off',
               folding: true,
               renderLineHighlight: 'line',
               selectionHighlight: true,
@@ -502,9 +881,9 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
           style={{ padding: '0 16px', flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
           tabBarStyle={{ marginBottom: 0 }}
           tabBarExtraContent={
-            currentBatch.length > 0 && !currentBatch.some(r => r.type === 'error') ? (
+            currentBatchSummary ? (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                共 {currentBatch.length} 条语句 · 耗时 {totalDuration}ms
+                {currentBatchSummary}
               </Text>
             ) : null
           }
@@ -542,12 +921,16 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
                   if (editability?.editable && editability.tableName && editability.columns) {
                     return (
                       <EditableDataTable
+                        key={`${r.executedAt}-editable`}
                         connectionId={r.connectionId!}
+                        dbType={connections.find((connection) => connection.id === r.connectionId)?.dbType}
                         database={r.database!}
                         tableName={editability.tableName}
                         columns={editability.columns}
+                        visibleColumns={r.columns}
                         dataSource={r.rows ?? []}
-                        onRefresh={() => handleExecute()}
+                        onRefresh={() => handleRefreshResult(idx)}
+                        active={active}
                         hasMore={r.preview && r.hasMore}
                         onLoadMore={r.preview && r.hasMore ? () => handleLoadMore(idx) : undefined}
                         loadingMore={loadingMoreKey === `${queryId}-${idx}`}
@@ -558,14 +941,18 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
                   // 不可编辑或预览模式：渲染 SqlResultPanel
                   return (
                     <SqlResultPanel
+                      key={`${r.executedAt}-readonly`}
                       result={r}
+                      dbType={connections.find((connection) => connection.id === r.connectionId)?.dbType}
                       displayLabel={displayLabel}
                       tableHeight={resultTableHeight}
+                      active={active}
                       loadMoreKey={`${queryId}-${idx}`}
                       currentLoadKey={loadingMoreKey}
                       onLoadMore={r.preview && r.hasMore ? () => handleLoadMore(idx) : undefined}
                       onResultMetaChange={(patch) => handleResultMetaChange(idx, patch)}
                       editabilityReason={editability?.reason}
+                      missingPrimaryKeys={editability?.missingPrimaryKeys}
                     />
                   )
                 })()
@@ -590,7 +977,7 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
                           ? r.preview
                             ? `[OK] 预览加载 ${r.loadedRows ?? r.rows?.length ?? 0} 行${r.hasMore ? '（还有更多）' : ''}. (耗时 ${r.duration}ms)`
                             : `[OK] 查询返回 ${r.loadedRows ?? r.rows?.length ?? 0} 行${r.hasMore ? '（结果已截断，请添加 LIMIT 限制查询范围）' : ''}. (耗时 ${r.duration}ms)`
-                          : `[OK] 影响 ${r.affectedRows} 行. (耗时 ${r.duration}ms)`}
+                          : `[OK] ${sqlUpdateResultText(r)}. (耗时 ${r.duration}ms)`}
                       <div style={{ color: token.colorTextQuaternary, fontSize: 12, marginTop: 2, whiteSpace: 'pre-wrap' }}>{r.sql}</div>
                     </div>
                   ))}
@@ -644,3 +1031,6 @@ export const QueryEditorPane: React.FC<QueryEditorPaneProps> = ({ queryId, showA
   </>
   )
 }
+
+export const QueryEditorPane = React.memo(QueryEditorPaneComponent)
+QueryEditorPane.displayName = 'QueryEditorPane'

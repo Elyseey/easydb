@@ -5,7 +5,6 @@ plugins {
 
 dependencies {
     implementation(project(":common"))
-    implementation(project(":drivers:mysql"))
     implementation(project(":metadata"))
     implementation(project(":dialect"))
     implementation(project(":task-center"))

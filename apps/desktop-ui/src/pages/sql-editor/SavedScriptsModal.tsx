@@ -55,7 +55,7 @@ export const SavedScriptsModal: React.FC<SavedScriptsModalProps> = ({ open, onCa
         <Space>
           <CodeOutlined style={{ color: '#22c55e' }} />
           <Text strong>{text}</Text>
-          {record.database && <Tag color="blue" bordered={false}>{record.database}</Tag>}
+          {record.database && <Tag color="blue" variant="filled">{record.database}</Tag>}
         </Space>
       ),
     },

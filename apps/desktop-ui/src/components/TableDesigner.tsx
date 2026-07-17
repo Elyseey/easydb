@@ -1,8 +1,9 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { Input, Button, Tabs, Table, Select, Checkbox, Space, Typography, Tooltip, theme, Modal } from 'antd'
 import { PlusOutlined, DeleteOutlined, ArrowUpOutlined, ArrowDownOutlined, SaveOutlined } from '@ant-design/icons'
-import { metadataApi } from '@/services/api'
+import { metadataApi, sqlApi } from '@/services/api'
 import { handleApiError, toast } from '@/utils/notification'
+import type { DbType } from '@/types'
 
 const { Text } = Typography
 
@@ -40,8 +41,37 @@ const MYSQL_TYPES = [
   ]},
 ]
 
+const DAMENG_TYPES = [
+  { label: '数值', options: [
+    { label: 'INT', value: 'INT' },
+    { label: 'BIGINT', value: 'BIGINT' },
+    { label: 'SMALLINT', value: 'SMALLINT' },
+    { label: 'NUMBER', value: 'NUMBER' },
+    { label: 'DECIMAL', value: 'DECIMAL' },
+    { label: 'FLOAT', value: 'FLOAT' },
+    { label: 'DOUBLE', value: 'DOUBLE' },
+  ]},
+  { label: '字符串', options: [
+    { label: 'VARCHAR2', value: 'VARCHAR2' },
+    { label: 'VARCHAR', value: 'VARCHAR' },
+    { label: 'CHAR', value: 'CHAR' },
+    { label: 'CLOB', value: 'CLOB' },
+  ]},
+  { label: '日期时间', options: [
+    { label: 'TIMESTAMP', value: 'TIMESTAMP' },
+    { label: 'DATE', value: 'DATE' },
+    { label: 'TIME', value: 'TIME' },
+  ]},
+  { label: '二进制', options: [
+    { label: 'BLOB', value: 'BLOB' },
+    { label: 'BINARY', value: 'BINARY' },
+    { label: 'VARBINARY', value: 'VARBINARY' },
+  ]},
+]
+
 // 需要长度参数的类型
 const TYPES_WITH_LENGTH = new Set(['VARCHAR', 'CHAR', 'DECIMAL', 'INT', 'BIGINT', 'SMALLINT', 'TINYINT', 'FLOAT', 'DOUBLE', 'BIT', 'ENUM'])
+const DAMENG_TYPES_WITH_LENGTH = new Set(['VARCHAR', 'VARCHAR2', 'CHAR', 'DECIMAL', 'NUMBER', 'BINARY', 'VARBINARY'])
 
 // 从完整类型字符串中解析出基础类型和长度
 function parseType(fullType: string): { baseType: string; length: string } {
@@ -71,13 +101,20 @@ interface IndexRow {
   _original?: string // 编辑模式下原始索引名
 }
 
+export interface TableDesignerSaveResult {
+  tableName: string
+  previousTableName?: string
+  renamed: boolean
+}
+
 interface TableDesignerProps {
   connectionId: string
   connectionName: string
   database: string
   /** 编辑模式下传入已有表名 */
   editTableName?: string
-  onSuccess: () => void
+  dbType?: DbType
+  onSuccess: (result: TableDesignerSaveResult) => void
   onCancel: () => void
 }
 
@@ -85,15 +122,18 @@ let colCounter = 0
 let idxCounter = 0
 
 export const TableDesigner: React.FC<TableDesignerProps> = ({
-  connectionId, connectionName, database, editTableName, onSuccess, onCancel,
+  connectionId, connectionName, database, editTableName, dbType = 'mysql', onSuccess, onCancel,
 }) => {
   const { token } = theme.useToken()
   const isEditMode = !!editTableName
+  const isDameng = dbType === 'dameng'
+  const typeOptions = isDameng ? DAMENG_TYPES : MYSQL_TYPES
+  const typesWithLength = isDameng ? DAMENG_TYPES_WITH_LENGTH : TYPES_WITH_LENGTH
   const [tableName, setTableName] = useState(editTableName || '')
   const [tableComment, setTableComment] = useState('')
   const [columns, setColumns] = useState<ColumnRow[]>(() =>
     isEditMode ? [] : [
-      { key: `col_${++colCounter}`, name: 'id', type: 'BIGINT', length: '20', nullable: false, defaultValue: '', isPrimaryKey: true, isAutoIncrement: true, comment: '主键' },
+      { key: `col_${++colCounter}`, name: 'id', type: 'BIGINT', length: isDameng ? '' : '20', nullable: false, defaultValue: '', isPrimaryKey: true, isAutoIncrement: !isDameng, comment: '主键' },
     ]
   )
   const [indexes, setIndexes] = useState<IndexRow[]>([])
@@ -107,14 +147,16 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
   const originalColumnsRef = useRef<ColumnRow[]>([])
   const originalIndexesRef = useRef<IndexRow[]>([])
   const originalCommentRef = useRef('')
+  const originalTableNameRef = useRef(editTableName || '')
 
   // 编辑模式：加载现有表结构
   useEffect(() => {
     if (!isEditMode || !editTableName) return
+    originalTableNameRef.current = editTableName
     setLoading(true)
-    metadataApi.tableDefinition(connectionId, database, editTableName)
+    metadataApi.tableDesign(connectionId, database, editTableName)
       .then((def: unknown) => {
-        const d = def as { table: { name: string; comment?: string }; columns: Array<{ name: string; type: string; nullable: boolean; defaultValue?: string; isPrimaryKey: boolean; isAutoIncrement: boolean; comment?: string }>; indexes: Array<{ name: string; columns: string[]; isUnique: boolean; isPrimary: boolean }> }
+        const d = def as { table: { name?: string; comment?: string }; columns: Array<{ name: string; type: string; nullable: boolean; defaultValue?: string; isPrimaryKey: boolean; isAutoIncrement: boolean; comment?: string }>; indexes: Array<{ name: string; columns: string[]; isUnique: boolean; isPrimary: boolean }> }
         setTableComment(d.table.comment || '')
         originalCommentRef.current = d.table.comment || ''
 
@@ -160,10 +202,10 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
 
   const addColumn = useCallback(() => {
     setColumns(prev => [...prev, {
-      key: `col_${++colCounter}`, name: '', type: 'VARCHAR', length: '255',
+      key: `col_${++colCounter}`, name: '', type: isDameng ? 'VARCHAR2' : 'VARCHAR', length: '255',
       nullable: true, defaultValue: '', isPrimaryKey: false, isAutoIncrement: false, comment: '',
     }])
-  }, [])
+  }, [isDameng])
 
   const removeColumn = useCallback((key: string) => {
     setColumns(prev => prev.filter(c => c.key !== key))
@@ -195,36 +237,59 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
     setIndexes(prev => prev.filter(i => i.key !== key))
   }, [])
 
+  const escapeSqlString = (value: string) => value.replace(/'/g, "''")
+
   // 构建类型全名
   const fullType = (col: ColumnRow) => {
-    if (TYPES_WITH_LENGTH.has(col.type) && col.length) return `${col.type}(${col.length})`
+    if (typesWithLength.has(col.type) && col.length) return `${col.type}(${col.length})`
     return col.type
   }
 
   // 引用标识符
-  const qi = (name: string) => `\`${name}\``
+  const qi = (name: string) => (
+    isDameng
+      ? `"${name.replace(/"/g, '""')}"`
+      : `\`${name.replace(/`/g, '``')}\``
+  )
+
+  const normalizeTypeForDialect = (col: ColumnRow) => {
+    if (!isDameng) return fullType(col)
+
+    const type = col.type.toUpperCase()
+    if (type === 'VARCHAR') return col.length ? `VARCHAR2(${col.length})` : 'VARCHAR2(255)'
+    if (type === 'VARCHAR2') return col.length ? `VARCHAR2(${col.length})` : 'VARCHAR2(255)'
+    if (['INT', 'INTEGER', 'BIGINT', 'SMALLINT'].includes(type)) return type
+    if (type === 'DECIMAL' || type === 'NUMBER') return col.length ? `NUMBER(${col.length})` : 'NUMBER'
+    return fullType(col)
+  }
+
+  const defaultClause = (col: ColumnRow) => {
+    if (!col.defaultValue || col.isAutoIncrement) return ''
+    const dv = col.defaultValue.trim()
+    const upper = dv.toUpperCase()
+    if (['CURRENT_TIMESTAMP', 'NULL', 'NOW()', 'SYSDATE'].includes(upper) || dv.startsWith("'")) {
+      return ` DEFAULT ${isDameng && upper === 'NOW()' ? 'CURRENT_TIMESTAMP' : dv}`
+    }
+    return ` DEFAULT '${escapeSqlString(dv)}'`
+  }
 
   // 构建列定义子句
-  const colDef = (col: ColumnRow) => {
-    let def = `${qi(col.name)} ${fullType(col)}`
-    if (!col.nullable) def += ' NOT NULL'
-    if (col.defaultValue && !col.isAutoIncrement) {
-      const dv = col.defaultValue.trim()
-      if (['CURRENT_TIMESTAMP', 'NULL', 'NOW()'].includes(dv.toUpperCase()) || dv.startsWith("'")) {
-        def += ` DEFAULT ${dv}`
-      } else {
-        def += ` DEFAULT '${dv}'`
-      }
-    }
-    if (col.isAutoIncrement) def += ' AUTO_INCREMENT'
-    if (col.comment) def += ` COMMENT '${col.comment}'`
+  const colDef = (col: ColumnRow, includeNullability = true) => {
+    let def = `${qi(col.name)} ${normalizeTypeForDialect(col)}`
+    if (includeNullability && !col.nullable) def += ' NOT NULL'
+    def += defaultClause(col)
+    if (col.isAutoIncrement) def += isDameng ? ' IDENTITY(1,1)' : ' AUTO_INCREMENT'
+    if (!isDameng && col.comment) def += ` COMMENT '${escapeSqlString(col.comment)}'`
     return def
   }
+
+  const damengColumnTarget = (targetTableName: string, columnName: string) => `${qi(targetTableName)}.${qi(columnName)}`
 
   // 生成 ALTER TABLE SQL（编辑模式）
   const generateAlterSql = useCallback(() => {
     const stmts: string[] = []
-    const t = qi(tableName)
+    const targetTableName = originalTableNameRef.current
+    const t = qi(targetTableName)
 
     // 1. 删除的列
     for (const orig of originalColumnsRef.current) {
@@ -245,10 +310,28 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
       if (!col._original) continue
       const orig = originalColumnsRef.current.find(o => o._original === col._original)
       if (!orig) continue
-      if (col.name !== orig.name || fullType(col) !== fullType(orig) ||
-          col.nullable !== orig.nullable || col.defaultValue !== orig.defaultValue ||
-          col.isAutoIncrement !== orig.isAutoIncrement || col.comment !== orig.comment) {
+      const definitionChanged = normalizeTypeForDialect(col) !== normalizeTypeForDialect(orig) ||
+        col.defaultValue !== orig.defaultValue ||
+        col.isAutoIncrement !== orig.isAutoIncrement
+      const nullableChanged = col.nullable !== orig.nullable
+      const columnChanged = definitionChanged || nullableChanged
+      const nameChanged = col.name !== orig.name
+      const commentChanged = col.comment !== orig.comment
+      if (!isDameng && (nameChanged || columnChanged || commentChanged)) {
         stmts.push(`ALTER TABLE ${t} CHANGE COLUMN ${qi(orig.name)} ${colDef(col)};`)
+      } else if (isDameng) {
+        if (nameChanged) {
+          stmts.push(`ALTER TABLE ${t} RENAME COLUMN ${qi(orig.name)} TO ${qi(col.name)};`)
+        }
+        if (definitionChanged) {
+          stmts.push(`ALTER TABLE ${t} MODIFY ${colDef(col, false)};`)
+        }
+        if (nullableChanged) {
+          stmts.push(`ALTER TABLE ${t} ALTER COLUMN ${qi(col.name)} SET ${col.nullable ? 'NULL' : 'NOT NULL'};`)
+        }
+        if (commentChanged) {
+          stmts.push(`COMMENT ON COLUMN ${damengColumnTarget(targetTableName, col.name)} IS '${escapeSqlString(col.comment)}';`)
+        }
       }
     }
 
@@ -263,7 +346,7 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
     // 5. 删除的索引
     for (const orig of originalIndexesRef.current) {
       if (!indexes.find(i => i._original === orig._original)) {
-        stmts.push(`ALTER TABLE ${t} DROP INDEX ${qi(orig.name)};`)
+        stmts.push(isDameng ? `DROP INDEX ${qi(orig.name)};` : `ALTER TABLE ${t} DROP INDEX ${qi(orig.name)};`)
       }
     }
 
@@ -271,7 +354,10 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
     for (const idx of indexes) {
       if (!idx._original && idx.name.trim() && idx.columns.length > 0) {
         const unique = idx.isUnique ? 'UNIQUE ' : ''
-        stmts.push(`ALTER TABLE ${t} ADD ${unique}INDEX ${qi(idx.name)} (${idx.columns.map(qi).join(', ')});`)
+        stmts.push(isDameng
+          ? `CREATE ${unique}INDEX ${qi(idx.name)} ON ${t} (${idx.columns.map(qi).join(', ')});`
+          : `ALTER TABLE ${t} ADD ${unique}INDEX ${qi(idx.name)} (${idx.columns.map(qi).join(', ')});`
+        )
       }
     }
 
@@ -282,22 +368,40 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
       if (!orig) continue
       if (idx.name !== orig.name || idx.isUnique !== orig.isUnique ||
           JSON.stringify(idx.columns) !== JSON.stringify(orig.columns)) {
-        stmts.push(`ALTER TABLE ${t} DROP INDEX ${qi(orig.name)};`)
+        stmts.push(isDameng ? `DROP INDEX ${qi(orig.name)};` : `ALTER TABLE ${t} DROP INDEX ${qi(orig.name)};`)
         if (idx.name.trim() && idx.columns.length > 0) {
           const unique = idx.isUnique ? 'UNIQUE ' : ''
-          stmts.push(`ALTER TABLE ${t} ADD ${unique}INDEX ${qi(idx.name)} (${idx.columns.map(qi).join(', ')});`)
+          stmts.push(isDameng
+            ? `CREATE ${unique}INDEX ${qi(idx.name)} ON ${t} (${idx.columns.map(qi).join(', ')});`
+            : `ALTER TABLE ${t} ADD ${unique}INDEX ${qi(idx.name)} (${idx.columns.map(qi).join(', ')});`
+          )
         }
       }
     }
 
     // 8. 表注释变更
     if (tableComment !== originalCommentRef.current) {
-      stmts.push(`ALTER TABLE ${t} COMMENT = '${tableComment}';`)
+      stmts.push(isDameng
+        ? `COMMENT ON TABLE ${t} IS '${escapeSqlString(tableComment)}';`
+        : `ALTER TABLE ${t} COMMENT = '${escapeSqlString(tableComment)}';`
+      )
     }
 
     return stmts.join('\n')
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tableName, tableComment, columns, indexes])
+  }, [tableComment, columns, indexes])
+
+  const generateRenamePreviewSql = useCallback(() => {
+    if (!isEditMode) return ''
+    const originalTableName = originalTableNameRef.current
+    const nextTableName = tableName.trim()
+    if (!nextTableName || nextTableName === originalTableName) return ''
+
+    return isDameng
+      ? `ALTER TABLE ${qi(database)}.${qi(originalTableName)} RENAME TO ${qi(nextTableName)};`
+      : `RENAME TABLE ${qi(database)}.${qi(originalTableName)} TO ${qi(database)}.${qi(nextTableName)};`
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [database, isEditMode, tableName])
 
   // 构建请求体（新建模式）
   const buildTableDef = useCallback(() => ({
@@ -317,7 +421,8 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
   useEffect(() => {
     if (activeTab !== 'ddl') return
     if (isEditMode) {
-      const sql = generateAlterSql()
+      if (!tableName.trim()) { setDdlPreview('-- 请先输入表名'); return }
+      const sql = [generateAlterSql(), generateRenamePreviewSql()].filter(Boolean).join('\n')
       setDdlPreview(sql || '-- 无变更')
       return
     }
@@ -330,31 +435,60 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
       } catch { setDdlPreview('-- 生成预览失败') }
     }, 300)
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [activeTab, tableName, tableComment, columns, indexes, connectionId, database, buildTableDef, isEditMode, generateAlterSql])
+  }, [activeTab, tableName, tableComment, columns, indexes, connectionId, database, buildTableDef, isEditMode, generateAlterSql, generateRenamePreviewSql])
 
   // 保存
   const handleSave = async () => {
-    if (!tableName.trim()) { toast.error('请输入表名'); return }
+    const nextTableName = tableName.trim()
+    if (!nextTableName) { toast.error('请输入表名'); return }
     if (columns.filter(c => c.name.trim()).length === 0) { toast.error('请至少添加一个字段'); return }
+    let completedStructuralStatements = 0
+    let totalStructuralStatements = 0
+    let renameAttempted = false
     setSaving(true)
     try {
       if (isEditMode) {
+        const originalTableName = originalTableNameRef.current
         const sql = generateAlterSql()
-        if (!sql.trim()) { toast.warning('无变更'); setSaving(false); return }
+        const renamed = nextTableName !== originalTableName
+        if (!sql.trim() && !renamed) { toast.warning('无变更'); return }
         // 通过 SQL 执行接口执行 ALTER TABLE
-        const { sqlApi } = await import('@/services/api')
-        await sqlApi.execute(connectionId, database, sql)
-        toast.success(`表「${tableName}」已更新`)
-        onSuccess()
+        const statements = sql.split('\n').map(stmt => stmt.trim()).filter(Boolean)
+        totalStructuralStatements = statements.length
+        for (const statement of statements) {
+          await sqlApi.execute(connectionId, database, statement)
+          completedStructuralStatements += 1
+        }
+        if (renamed) {
+          renameAttempted = true
+          await metadataApi.renameTable(connectionId, database, originalTableName, nextTableName)
+        }
+        toast.success(renamed ? `表已更新并重命名为「${nextTableName}」` : `表「${nextTableName}」已更新`)
+        onSuccess({ tableName: nextTableName, previousTableName: originalTableName, renamed })
       } else {
         const res = await metadataApi.createTable(connectionId, database, buildTableDef()) as { success: boolean }
         if (res.success) {
-          toast.success(`表「${tableName}」创建成功`)
-          onSuccess()
+          toast.success(`表「${nextTableName}」创建成功`)
+          onSuccess({ tableName: nextTableName, renamed: false })
         }
       }
     } catch (e) {
-      handleApiError(e, isEditMode ? '修改表失败' : '创建表失败')
+      if (isEditMode && completedStructuralStatements > 0) {
+        const allStructureChangesApplied = completedStructuralStatements === totalStructuralStatements
+        toast.warning(
+          allStructureChangesApplied
+            ? '表结构修改已生效，但后续操作失败；请重试重命名或重新打开设计页确认状态'
+            : `部分修改已生效（${completedStructuralStatements}/${totalStructuralStatements} 条），请重新打开设计页确认实际结构`,
+        )
+      }
+      handleApiError(
+        e,
+        isEditMode
+          ? (renameAttempted
+              ? (totalStructuralStatements > 0 ? '表结构修改已生效，但重命名失败' : '重命名表失败')
+              : '修改表失败')
+          : '创建表失败',
+      )
     } finally {
       setSaving(false)
     }
@@ -375,12 +509,13 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
     {
       title: '类型', dataIndex: 'type', key: 'type', width: 130,
       render: (_: string, record: ColumnRow) => (
-        <Select size="small" value={record.type} showSearch style={{ width: '100%' }} options={MYSQL_TYPES}
+        <Select size="small" value={record.type} showSearch style={{ width: '100%' }} options={typeOptions}
           onChange={(val: string) => {
             updateColumn(record.key, 'type', val)
-            if (val === 'VARCHAR' && !record.length) updateColumn(record.key, 'length', '255')
-            if (val === 'INT' && !record.length) updateColumn(record.key, 'length', '11')
-            if (val === 'BIGINT' && !record.length) updateColumn(record.key, 'length', '20')
+            if ((val === 'VARCHAR' || val === 'VARCHAR2') && !record.length) updateColumn(record.key, 'length', '255')
+            if (!isDameng && val === 'INT' && !record.length) updateColumn(record.key, 'length', '11')
+            if (!isDameng && val === 'BIGINT' && !record.length) updateColumn(record.key, 'length', '20')
+            if (!DAMENG_TYPES_WITH_LENGTH.has(val) && isDameng) updateColumn(record.key, 'length', '')
           }}
         />
       ),
@@ -388,7 +523,7 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
     {
       title: '长度', dataIndex: 'length', key: 'length', width: 80,
       render: (_: string, record: ColumnRow) => (
-        TYPES_WITH_LENGTH.has(record.type) ? (
+        typesWithLength.has(record.type) ? (
           <Input size="small" value={record.length} onChange={e => updateColumn(record.key, 'length', e.target.value)} />
         ) : <Text type="secondary">—</Text>
       ),
@@ -411,7 +546,7 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
     {
       title: '自增', dataIndex: 'isAutoIncrement', key: 'isAutoIncrement', width: 50, align: 'center' as const,
       render: (_: boolean, record: ColumnRow) => (
-        <Checkbox checked={record.isAutoIncrement} onChange={e => updateColumn(record.key, 'isAutoIncrement', e.target.checked)} />
+        <Checkbox disabled={isDameng} checked={!isDameng && record.isAutoIncrement} onChange={e => updateColumn(record.key, 'isAutoIncrement', e.target.checked)} />
       ),
     },
     {
@@ -504,7 +639,6 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
           placeholder="表名" value={tableName} style={{ width: 200 }}
           onChange={e => setTableName(e.target.value)}
           status={!tableName.trim() ? 'warning' : undefined}
-          disabled={isEditMode}
         />
         <Input
           placeholder="表备注（可选）" value={tableComment} style={{ width: 200 }}

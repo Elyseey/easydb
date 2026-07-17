@@ -1,9 +1,9 @@
 package com.easydb.launcher
 
+import com.easydb.common.ConnectionAdapter
 import com.easydb.common.DatabaseSession
+import com.easydb.common.DialectAdapter
 import com.easydb.common.SqlResult
-import com.easydb.drivers.mysql.MysqlConnectionAdapter
-import com.easydb.drivers.mysql.MysqlDatabaseSession
 import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Types
@@ -17,7 +17,7 @@ import java.util.concurrent.Executors
  * SQL 查询会话管理器 —— DBeaver 风格 LIMIT/OFFSET 分页。
  *
  * 核心思路：
- *   1. 用户 SQL 包装为 SELECT * FROM (用户SQL) _t LIMIT pageSize OFFSET 0
+ *   1. 用户 SQL 包装为分页子查询（由 DialectAdapter 生成分页 SQL）
  *   2. 每次 "加载更多" 只是 OFFSET 递增，重新执行一次轻量查询
  *   3. 连接可以自由复用（不像流式游标会锁连接）
  *   4. 总行数异步 COUNT(*)
@@ -81,7 +81,11 @@ class SqlQuerySessionManager {
         }, 60, 60, java.util.concurrent.TimeUnit.SECONDS)
     }
 
-    private fun acquireConnection(session: MysqlDatabaseSession, database: String): Connection {
+    private fun acquireConnection(
+        session: DatabaseSession,
+        database: String,
+        connectionAdapter: ConnectionAdapter
+    ): Connection {
         val key = PoolKey(session.connectionId, database)
         val pooled = connectionPool[key]
 
@@ -96,7 +100,7 @@ class SqlQuerySessionManager {
         }
 
         val config = session.config.copy(database = database)
-        val conn = MysqlConnectionAdapter.createJdbcConnection(config)
+        val conn = connectionAdapter.open(config).getJdbcConnection()
         connectionPool[key] = PooledConnection(conn)
         return conn
     }
@@ -117,12 +121,11 @@ class SqlQuerySessionManager {
         database: String,
         sql: String,
         pageSize: Int,
-        maxCellChars: Int
+        maxCellChars: Int,
+        connectionAdapter: ConnectionAdapter,
+        dialect: DialectAdapter
     ): SqlResult {
         cleanupExpiredSessions()
-
-        val jdbcSession = session as? MysqlDatabaseSession
-            ?: return errorResult(sql, "无效的数据库会话", 0L)
 
         val safePageSize = pageSize.coerceIn(MIN_PAGE_SIZE, MAX_PAGE_SIZE)
         val safeMaxCellChars = maxCellChars.coerceIn(MIN_CELL_CHARS, MAX_CELL_CHARS)
@@ -130,10 +133,15 @@ class SqlQuerySessionManager {
         val normalizedSql = sql.trim().trimEnd(';')
 
         return try {
-            val conn = acquireConnection(jdbcSession, database)
+            val conn = acquireConnection(session, database, connectionAdapter)
 
-            // DBeaver 风格：LIMIT/OFFSET 分页，MySQL 只扫描前 N 行
-            val pagedSql = "SELECT * FROM ($normalizedSql) _easydb_page LIMIT ${safePageSize + 1} OFFSET 0"
+            dialect.buildSwitchDatabaseSql(database)?.let { switchSql ->
+                conn.createStatement().use { stmt ->
+                    stmt.execute(switchSql)
+                }
+            }
+
+            val pagedSql = dialect.buildPaginationSql(normalizedSql, safePageSize + 1, 0)
 
             val page = executePagedQuery(conn, pagedSql, safePageSize, safeMaxCellChars)
 
@@ -144,7 +152,7 @@ class SqlQuerySessionManager {
             val sessionId = UUID.randomUUID().toString()
             val querySession = QuerySession(
                 sessionId = sessionId,
-                connectionId = jdbcSession.connectionId,
+                connectionId = session.connectionId,
                 originalSql = normalizedSql,
                 executedAt = now(),
                 database = database,
@@ -157,7 +165,7 @@ class SqlQuerySessionManager {
 
             if (page.hasMore) {
                 sessions[sessionId] = querySession
-                scheduleResultRowCount(querySession, jdbcSession, database, normalizedSql)
+                scheduleResultRowCount(querySession, session, database, normalizedSql, connectionAdapter, dialect)
             } else {
                 querySession.totalRows = querySession.loadedRows
             }
@@ -175,17 +183,17 @@ class SqlQuerySessionManager {
                 truncatedCellCount = page.truncatedCellCount,
                 duration = System.currentTimeMillis() - startAt,
                 sql = truncateSql(sql),
-                executedAt = querySession.executedAt
+                executedAt = querySession.executedAt,
+                warning = page.warning
             )
         } catch (e: Exception) {
-            // 连接出错时从池中移除
-            val key = PoolKey(jdbcSession.connectionId, database)
+            val key = PoolKey(session.connectionId, database)
             connectionPool.remove(key)?.let { closeQuietly(it.connection) }
             errorResult(truncateSql(sql), e.message ?: "SQL 预览异常", System.currentTimeMillis() - startAt)
         }
     }
 
-    fun fetch(querySessionId: String, pageSize: Int, maxCellChars: Int): SqlResult {
+    fun fetch(querySessionId: String, pageSize: Int, maxCellChars: Int, dialect: DialectAdapter): SqlResult {
         cleanupExpiredSessions()
 
         val session = sessions[querySessionId]
@@ -196,13 +204,11 @@ class SqlQuerySessionManager {
         val startAt = System.currentTimeMillis()
 
         return try {
-            // 从连接池获取连接
             val poolKey = PoolKey(session.connectionId, session.database)
             val conn = connectionPool[poolKey]?.connection
                 ?: return errorResult("", "数据库连接已断开", 0L)
 
-            // LIMIT/OFFSET 翻页
-            val pagedSql = "SELECT * FROM (${session.originalSql}) _easydb_page LIMIT ${safePageSize + 1} OFFSET ${session.offset}"
+            val pagedSql = dialect.buildPaginationSql(session.originalSql, safePageSize + 1, session.offset.toInt())
             val page = executePagedQuery(conn, pagedSql, safePageSize, safeMaxCellChars)
 
             session.offset += page.rows.size
@@ -230,7 +236,8 @@ class SqlQuerySessionManager {
                 truncatedCellCount = page.truncatedCellCount,
                 duration = System.currentTimeMillis() - startAt,
                 sql = session.originalSql,
-                executedAt = session.executedAt
+                executedAt = session.executedAt,
+                warning = page.warning
             )
         } catch (e: Exception) {
             sessions.remove(querySessionId)
@@ -241,7 +248,6 @@ class SqlQuerySessionManager {
     fun close(querySessionId: String) {
         cleanupExpiredSessions()
         sessions.remove(querySessionId)
-        // 连接保留在池中，不关闭
     }
 
     fun getStatus(querySessionId: String): com.easydb.common.SqlQuerySessionStatus {
@@ -273,7 +279,10 @@ class SqlQuerySessionManager {
 
     /**
      * 执行分页查询，返回当前页数据。
-     * 多取 1 行用于判断 hasMore。
+     * 双层防御：
+     *  - 软上限：拉满 pageSize+1 行后立即停止迭代，正常 hasMore 流程；
+     *    若发现继续 next() 仍能拿到第 pageSize+2 行（即驱动忽略了 LIMIT/FETCH），打 warning + 截断；
+     *  - 硬上限：达到 pageSize*10 行仍未截断，立即抛错保护 JVM 内存。
      */
     private fun executePagedQuery(
         conn: Connection,
@@ -292,23 +301,52 @@ class SqlQuerySessionManager {
             stmt.resultSet.use { rs ->
                 val meta = rs.metaData
                 val columnCount = meta.columnCount
-                val columns = (1..columnCount).map { meta.getColumnLabel(it) }
+                val allColumns = (1..columnCount).map { meta.getColumnLabel(it) }
+                val easydbPrefixes = setOf("_easydb_")
+                val columns = allColumns.filter { col -> easydbPrefixes.none { col.startsWith(it) } }
+                val easydbColumnIndices = allColumns.mapIndexedNotNull { idx, col ->
+                    if (easydbPrefixes.any { col.startsWith(it) }) idx + 1 else null
+                }.toSet()
+                // Build mapping from filtered column name to original ResultSet index
+                val columnToRsIndex = allColumns.mapIndexedNotNull { idx, col ->
+                    if (idx + 1 !in easydbColumnIndices) col to (idx + 1) else null
+                }
                 val rows = mutableListOf<Map<String, String?>>()
                 var truncatedCellCount = 0
 
                 while (rs.next()) {
                     if (rows.size >= pageSize) {
-                        // 第 pageSize+1 行存在 → hasMore=true
+                        // 软上限触发：尝试再 next 一次，若仍能拿数据说明驱动可能忽略了分页 SQL
+                        val driverIgnoredPagination = try { rs.next() } catch (_: Exception) { false }
+                        if (driverIgnoredPagination) {
+                            // 继续探测到 pageSize*10 仍未结束 → 抛错
+                            var probed = pageSize + 1
+                            while (rs.next()) {
+                                probed++
+                                if (probed > pageSize * 10) {
+                                    throw IllegalStateException(
+                                        "Pagination strategy did not apply: driver returned >${pageSize * 10} rows; " +
+                                            "check DialectAdapter.paginationStrategy is recognized by the database"
+                                    )
+                                }
+                            }
+                            return PageResult(
+                                columns,
+                                rows,
+                                hasMore = true,
+                                truncatedCellCount,
+                                warning = "PAGINATION_STRATEGY_NOT_APPLIED"
+                            )
+                        }
                         return PageResult(columns, rows, hasMore = true, truncatedCellCount)
                     }
 
                     val row = linkedMapOf<String, String?>()
-                    for ((index, column) in columns.withIndex()) {
-                        val colIndex = index + 1
-                        val colType = meta.getColumnType(colIndex)
+                    for ((column, rsIndex) in columnToRsIndex) {
+                        val colType = meta.getColumnType(rsIndex)
 
                         if (colType in setOf(Types.BLOB, Types.BINARY, Types.VARBINARY, Types.LONGVARBINARY)) {
-                            val bytes = rs.getBytes(colIndex)
+                            val bytes = rs.getBytes(rsIndex)
                             if (bytes == null) {
                                 row[column] = null
                             } else {
@@ -323,7 +361,7 @@ class SqlQuerySessionManager {
                             continue
                         }
 
-                        val value = rs.getString(colIndex)
+                        val value = rs.getString(rsIndex)
                         row[column] = when {
                             value == null -> null
                             value.length > maxCellChars -> {
@@ -343,16 +381,18 @@ class SqlQuerySessionManager {
 
     private fun scheduleResultRowCount(
         session: QuerySession,
-        jdbcSession: MysqlDatabaseSession,
+        dbSession: DatabaseSession,
         database: String,
-        sql: String
+        sql: String,
+        connectionAdapter: ConnectionAdapter,
+        dialect: DialectAdapter
     ) {
         if (session.counting || session.totalRows != null) return
         session.counting = true
 
         countExecutor.submit {
             try {
-                val totalRows = countResultRows(jdbcSession, database, sql)
+                val totalRows = countResultRows(dbSession, database, sql, connectionAdapter)
                 if (totalRows != null) {
                     session.totalRows = totalRows
                 }
@@ -363,9 +403,10 @@ class SqlQuerySessionManager {
     }
 
     private fun countResultRows(
-        session: MysqlDatabaseSession,
+        session: DatabaseSession,
         database: String,
-        sql: String
+        sql: String,
+        connectionAdapter: ConnectionAdapter
     ): Long? {
         val normalizedSql = sql.trimStart()
         if (!normalizedSql.startsWith("select", ignoreCase = true) &&
@@ -374,11 +415,10 @@ class SqlQuerySessionManager {
             return null
         }
 
-        // 使用独立连接执行 COUNT，避免阻塞主查询的连接池连接
         var dedicatedConn: Connection? = null
         return try {
             val config = session.config.copy(database = database)
-            dedicatedConn = MysqlConnectionAdapter.createJdbcConnection(config)
+            dedicatedConn = connectionAdapter.open(config).getJdbcConnection()
             dedicatedConn.createStatement().use { stmt ->
                 stmt.queryTimeout = QUERY_TIMEOUT_SECONDS
                 stmt.executeQuery(
@@ -427,7 +467,8 @@ class SqlQuerySessionManager {
         val columns: List<String>,
         val rows: List<Map<String, String?>>,
         val hasMore: Boolean,
-        val truncatedCellCount: Int
+        val truncatedCellCount: Int,
+        val warning: String? = null
     )
 
     /**

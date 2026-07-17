@@ -3,8 +3,6 @@ package com.easydb.launcher
 import com.easydb.api.ok
 import com.easydb.api.fail
 import com.easydb.common.*
-import com.easydb.drivers.mysql.MysqlConnectionAdapter
-import com.easydb.drivers.mysql.MysqlDatabaseSession
 import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
@@ -80,29 +78,6 @@ private const val EXPORT_MIN_DISK_SPACE_BYTES = 5L * 1024 * 1024 * 1024  // 5 GB
 private val exportTaskScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
 /**
- * 安全转义 SQL 字符串字面量，覆盖所有 MySQL 关键特殊字符。
- * 防止导出后再次导入时因字符逃逸导致 SQL 语法断裂或数据丢失。
- */
-private fun escapeSqlLiteral(value: String): String {
-    val sb = StringBuilder(value.length + 16)
-    for (ch in value) {
-        when (ch) {
-            '\u0000' -> sb.append("\\0")     // NUL 字节
-            '\'' -> sb.append("\\'")
-            '\"' -> sb.append("\\\"")
-            '\\' -> sb.append("\\\\")
-            '\n' -> sb.append("\\n")
-            '\r' -> sb.append("\\r")
-            '\t' -> sb.append("\\t")
-            '\u0008' -> sb.append("\\b")     // Backspace
-            '\u001A' -> sb.append("\\Z")     // Ctrl+Z (Windows EOF)
-            else -> sb.append(ch)
-        }
-    }
-    return sb.toString()
-}
-
-/**
  * 判断列类型是否为二进制类型（BLOB / BINARY / VARBINARY 等）
  */
 private fun isBinaryColumn(columnType: Int): Boolean {
@@ -113,7 +88,8 @@ private fun isBinaryColumn(columnType: Int): Boolean {
 }
 
 /**
- * 将字节数组转换为 MySQL 十六进制字面量：X'ABCD...'
+ * 将字节数组转换为十六进制字面量：X'ABCD...'
+ * 注：X'...' 格式为 SQL 标准语法，MySQL/DM/PG 均支持。
  */
 private fun bytesToHexLiteral(bytes: ByteArray): String {
     val sb = StringBuilder(bytes.size * 2 + 3)
@@ -156,11 +132,16 @@ private fun calculateExportProgress(
         .coerceIn(EXPORT_PROGRESS_MIN, EXPORT_PROGRESS_MAX_BEFORE_COMPLETE)
 }
 
+/**
+ * 加载表导出估算信息。
+ * 注意：当前使用 information_schema.tables（MySQL 特有），非 MySQL 数据库将返回默认估算值。
+ */
 private fun loadTableExportEstimates(
     connection: Connection,
     database: String,
     tables: List<String>,
-    includeData: Boolean
+    includeData: Boolean,
+    dbType: String
 ): Map<String, TableExportEstimate> {
     if (tables.isEmpty()) return emptyMap()
 
@@ -176,6 +157,11 @@ private fun loadTableExportEstimates(
         )
     }.toMutableMap()
 
+    // information_schema 是 MySQL 特有，其他数据库暂用 fallback 估算
+    if (dbType.lowercase() != "mysql") {
+        return fallback
+    }
+
     val placeholders = tables.joinToString(",") { "?" }
     val sql = """
         SELECT table_name,
@@ -185,41 +171,47 @@ private fun loadTableExportEstimates(
         WHERE table_schema = ? AND table_name IN ($placeholders)
     """.trimIndent()
 
-    connection.prepareStatement(sql).use { stmt ->
-        stmt.setString(1, database)
-        tables.forEachIndexed { index, table ->
-            stmt.setString(index + 2, table)
-        }
+    try {
+        connection.prepareStatement(sql).use { stmt ->
+            stmt.setString(1, database)
+            tables.forEachIndexed { index, table ->
+                stmt.setString(index + 2, table)
+            }
 
-        stmt.executeQuery().use { rs ->
-            while (rs.next()) {
-                val tableName = rs.getString("table_name") ?: continue
-                val estimatedRows = rs.getLong("table_rows").coerceAtLeast(0L)
-                val estimatedBytes = rs.getLong("total_bytes").coerceAtLeast(0L)
-                fallback[tableName] = TableExportEstimate(
-                    estimatedRows = when {
-                        !includeData -> 1L
-                        estimatedRows > 0L -> estimatedRows
-                        estimatedBytes > 0L -> (estimatedBytes / 64_000L).coerceAtLeast(EXPORT_PROGRESS_UPDATE_EVERY_ROWS)
-                        else -> EXPORT_PROGRESS_UPDATE_EVERY_ROWS
-                    },
-                    estimatedBytes = estimatedBytes,
-                    progressUnits = if (!includeData) {
-                        EXPORT_PROGRESS_BASE_UNITS_PER_TABLE
-                    } else {
-                        EXPORT_PROGRESS_BASE_UNITS_PER_TABLE +
-                            estimatedRows.coerceAtLeast(EXPORT_PROGRESS_UPDATE_EVERY_ROWS)
-                                .coerceAtMost(EXPORT_PROGRESS_DATA_UNITS_CAP_PER_TABLE)
-                    }
-                )
+            stmt.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val tableName = rs.getString("table_name") ?: continue
+                    val estimatedRows = rs.getLong("table_rows").coerceAtLeast(0L)
+                    val estimatedBytes = rs.getLong("total_bytes").coerceAtLeast(0L)
+                    fallback[tableName] = TableExportEstimate(
+                        estimatedRows = when {
+                            !includeData -> 1L
+                            estimatedRows > 0L -> estimatedRows
+                            estimatedBytes > 0L -> (estimatedBytes / 64_000L).coerceAtLeast(EXPORT_PROGRESS_UPDATE_EVERY_ROWS)
+                            else -> EXPORT_PROGRESS_UPDATE_EVERY_ROWS
+                        },
+                        estimatedBytes = estimatedBytes,
+                        progressUnits = if (!includeData) {
+                            EXPORT_PROGRESS_BASE_UNITS_PER_TABLE
+                        } else {
+                            EXPORT_PROGRESS_BASE_UNITS_PER_TABLE +
+                                estimatedRows.coerceAtLeast(EXPORT_PROGRESS_UPDATE_EVERY_ROWS)
+                                    .coerceAtMost(EXPORT_PROGRESS_DATA_UNITS_CAP_PER_TABLE)
+                        }
+                    )
+                }
             }
         }
+    } catch (_: Exception) {
+        // information_schema 查询失败时回退到默认估算
     }
 
     return fallback
 }
 
 fun Route.exportRoutes() {
+    val adapterRegistry = ServiceRegistry.adapterRegistry
+
     get("/debug/threads") {
         val dump = StringBuilder()
         Thread.getAllStackTraces().forEach { (thread, stack) ->
@@ -244,6 +236,11 @@ fun Route.exportRoutes() {
         }
 
         val config = session.config
+        val dbAdapter = adapterRegistry.get(config.dbType)
+        if (!dbAdapter.capabilities().supportsLogicalExport) {
+            call.fail("UNSUPPORTED_DB_FEATURE", "${dbAdapter.dbType().displayName} 暂不支持 SQL/CSV 逻辑导出")
+            return@post
+        }
         val task = taskMgr.createTask(
             name = "导出 ${req.database}",
             type = "export"
@@ -255,23 +252,25 @@ fun Route.exportRoutes() {
             reporter.onProgress(1, "初始化导出环境...")
             val startTime = System.currentTimeMillis()
 
-            var dedicatedConn: java.sql.Connection? = null
+            var taskSession: DatabaseSession? = null
             var zipFile: java.io.File? = null
             try {
                 // 使用 req.database 建立专用连接！绝对不能用 database=null，否则在某些分库分表中间件或云代理（如 MyCat/TiDB）下，
                 // 会因为无法路由目标节点而导致握手包被永久黑洞（Hang）！
                 val exportConfig = config.copy(database = req.database)
                 reporter.onLog("INFO", "正在验证并建立专用导出连接 [${req.database}]...")
-                val exportConn = kotlinx.coroutines.withTimeout(15000L) {
-                    MysqlConnectionAdapter.createJdbcConnection(exportConfig)
+                val exportSession = kotlinx.coroutines.withTimeout(15000L) {
+                    dbAdapter.connectionAdapter().open(exportConfig)
                 }
-                dedicatedConn = exportConn
+                taskSession = exportSession
+                val exportConn = exportSession.getJdbcConnection()
+                val adapter = dbAdapter.metadataAdapter()
+                val dialect = dbAdapter.dialectAdapter()
+                dialect.buildSwitchDatabaseSql(req.database)?.let { switchSql ->
+                    exportConn.createStatement().use { it.execute(switchSql) }
+                }
                 exportConn.isReadOnly = true
                 reporter.onLog("INFO", "专用连接已就绪，脱离主会话以防止心跳拥堵...")
-
-                val taskSession = MysqlDatabaseSession(config.id, config, exportConn)
-                val adapter = ServiceRegistry.mysqlAdapter.metadataAdapter()
-                val dialect = ServiceRegistry.mysqlAdapter.dialectAdapter()
 
                 val exportDir = File(System.getProperty("user.home"), ".easydb/exports")
                 if (!exportDir.exists()) exportDir.mkdirs()
@@ -288,7 +287,7 @@ fun Route.exportRoutes() {
                 val totalTables = req.tables.size
                 var currentTableIdx = 0
                 val includeData = shouldExportData(req.exportContent)
-                val tableEstimates = loadTableExportEstimates(exportConn, req.database, req.tables, includeData)
+                val tableEstimates = loadTableExportEstimates(exportConn, req.database, req.tables, includeData, config.dbType)
                 val totalProgressUnits = req.tables.sumOf { table ->
                     tableEstimates[table]?.progressUnits ?: if (includeData) {
                         EXPORT_PROGRESS_BASE_UNITS_PER_TABLE + EXPORT_PROGRESS_UPDATE_EVERY_ROWS
@@ -340,7 +339,7 @@ fun Route.exportRoutes() {
                                     writer.write("DROP TABLE IF EXISTS ${dialect.quoteIdentifier(table)};\n")
                                 }
                                 try {
-                                    val ddl = adapter.getDdl(taskSession, req.database, table)
+                                    val ddl = adapter.getDdl(exportSession, req.database, table)
                                     writer.write("$ddl;\n\n")
                                 } catch (e: Exception) {
                                     reporter.onLog("WARN", "无法获取 $table 的 DDL: ${e.message}")
@@ -361,31 +360,18 @@ fun Route.exportRoutes() {
                                     stmt.fetchSize = 1000
                                     // B1: 后台导出任务使用宽松超时（4小时），避免大表被误杀
                                     stmt.queryTimeout = EXPORT_QUERY_TIMEOUT_SECONDS
-                                    reporter.onLog("INFO", "  [DEBUG] 开始执行查询: SELECT * FROM $table...")
                                     stmt.executeQuery(
-                                        "SELECT * FROM ${dialect.quoteIdentifier(req.database)}.${dialect.quoteIdentifier(table)}"
+                                        "SELECT * FROM ${dialect.quoteIdentifier(table)}"
                                     ).use { rs ->
-                                        reporter.onLog("INFO", "  [DEBUG] 查询执行完毕，获取到 ResultSet")
                                         val meta = rs.metaData
                                         val colCount = meta.columnCount
                                         var rowsInBatch = 0
                                         var rowCount = 0L // 本地计数器（TYPE_FORWARD_ONLY 不支持 rs.row）
 
                                         while (true) {
-                                            // 记录每次 next 的耗时
-                                            val nextStart = System.currentTimeMillis()
                                             val hasNext = rs.next()
-                                            val nextSpill = System.currentTimeMillis() - nextStart
-                                            if (rowCount < 5 && nextSpill > 50) {
-                                                reporter.onLog("WARN", "  [DEBUG] rs.next() 取第 ${rowCount+1} 行耗时: ${nextSpill}ms")
-                                            }
-                                            
                                             if (!hasNext) break
                                             if (reporter.isCancelled()) break
-                                            
-                                            if (rowCount == 0L) {
-                                                reporter.onLog("INFO", "  [DEBUG] 成功读取到第一行数据！")
-                                            }
 
                                             if (rowsInBatch == 0) {
                                                 writer.write("INSERT INTO ${dialect.quoteIdentifier(table)} VALUES ")
@@ -402,9 +388,9 @@ fun Route.exportRoutes() {
                                                     val bytes = rs.getBytes(i)
                                                     writer.write(bytesToHexLiteral(bytes))
                                                 } else {
-                                                    // A1: 使用完善的转义函数覆盖所有特殊字符
+                                                    // 由数据库方言生成可重新导入的字符串字面量
                                                     val value = rs.getString(i)
-                                                    writer.write("'${escapeSqlLiteral(value)}'")
+                                                    writer.write(dialect.formatExportStringLiteral(value))
                                                 }
                                                 if (i < colCount) writer.write(", ")
                                             }
@@ -489,7 +475,7 @@ fun Route.exportRoutes() {
                                     stmt.fetchSize = 1000
                                     stmt.queryTimeout = EXPORT_QUERY_TIMEOUT_SECONDS
                                     stmt.executeQuery(
-                                        "SELECT * FROM ${dialect.quoteIdentifier(req.database)}.${dialect.quoteIdentifier(table)}"
+                                        "SELECT * FROM ${dialect.quoteIdentifier(table)}"
                                     ).use { rs ->
                                         val meta = rs.metaData
                                         val colCount = meta.columnCount
@@ -575,7 +561,7 @@ fun Route.exportRoutes() {
                 taskMgr.markFailed(task.id, e.message ?: "导出异常")
             } finally {
                 // 先关闭连接，释放资源
-                try { dedicatedConn?.close() } catch (ignored: Exception) {}
+                try { taskSession?.close() } catch (ignored: Exception) {}
 
                 // ZipOutputStream.use {} 已退出，文件流已关闭，现在可以安全删除
                 val isCancelled = reporter.isCancelled()
@@ -614,6 +600,12 @@ fun Route.exportRoutes() {
             return@post
         }
 
+        val dbAdapter = adapterRegistry.get(session.config.dbType)
+        if (!dbAdapter.capabilities().supportsLogicalExport) {
+            call.fail("UNSUPPORTED_DB_FEATURE", "${dbAdapter.dbType().displayName} 暂不支持 SQL/CSV 逻辑导出")
+            return@post
+        }
+
         if (req.tables.isEmpty()) {
             call.ok(
                 ExportEstimateResult(
@@ -632,17 +624,18 @@ fun Route.exportRoutes() {
             return@post
         }
 
-        var dedicatedConn: Connection? = null
+        var taskSession: DatabaseSession? = null
         try {
             val exportConfig = session.config.copy(database = req.database)
-            val estimateConn = kotlinx.coroutines.withTimeout(15000L) {
-                MysqlConnectionAdapter.createJdbcConnection(exportConfig)
+            val estimateSession = kotlinx.coroutines.withTimeout(15000L) {
+                dbAdapter.connectionAdapter().open(exportConfig)
             }
-            dedicatedConn = estimateConn
+            taskSession = estimateSession
+            val estimateConn = estimateSession.getJdbcConnection()
             estimateConn.isReadOnly = true
 
             val includeData = shouldExportData(req.exportContent)
-            val tableEstimates = loadTableExportEstimates(estimateConn, req.database, req.tables, includeData)
+            val tableEstimates = loadTableExportEstimates(estimateConn, req.database, req.tables, includeData, session.config.dbType)
             val estimateTables = req.tables.map { tableName ->
                 val estimate = tableEstimates[tableName]
                     ?: TableExportEstimate(
@@ -700,7 +693,7 @@ fun Route.exportRoutes() {
             call.fail("EXPORT_ESTIMATE_FAILED", e.message ?: "导出估算失败")
         } finally {
             try {
-                dedicatedConn?.close()
+                taskSession?.close()
             } catch (_: Exception) {
             }
         }
@@ -711,13 +704,14 @@ fun Route.exportRoutes() {
         val taskMgr = ServiceRegistry.taskManager
 
         val task = taskMgr.get(taskId) ?: return@get call.fail("NOT_FOUND", "任务不存在")
+        if (task.type != "export") return@get call.fail("INVALID_TASK", "任务不是导出任务")
         if (task.status != "completed") return@get call.fail("INVALID_STATUS", "任务未完成，无法下载")
 
         val filePath = task.payload?.get("filePath") ?: return@get call.fail("NO_FILE", "该任务未关联任何可下载文件")
         val fileName = task.payload?.get("fileName") ?: "export.zip"
 
         val file = File(filePath)
-        if (!file.exists()) return@get call.fail("FILE_NOT_FOUND", "导出文件已丢失或被清理")
+        if (!file.exists() || !file.isFile) return@get call.fail("FILE_NOT_FOUND", "导出文件已丢失或被清理")
 
         call.response.header(io.ktor.http.HttpHeaders.ContentDisposition, "attachment; filename=\"$fileName\"")
         call.respondFile(file)

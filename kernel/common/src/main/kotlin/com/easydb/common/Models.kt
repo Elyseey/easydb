@@ -21,6 +21,7 @@ import kotlinx.serialization.Serializable
 // ─── 数据库类型枚举 ────────────────────────────────────────
 enum class DbType(val displayName: String) {
     MYSQL("MySQL"),
+    DAMENG("达梦"),
     POSTGRESQL("PostgreSQL"),
     ORACLE("Oracle"),
     SQLSERVER("SQL Server"),
@@ -42,7 +43,9 @@ data class ConnectionConfig(
     val lastUsedAt: String? = null,
     val ssh: SshConfig? = null,
     val ssl: SslConfig? = null,
-    val groupId: String? = null
+    val groupId: String? = null,
+    /** Credential vault reference for the database password. */
+    val passwordRef: String? = null
 )
 
 // ─── 连接分组 ──────────────────────────────────────────────
@@ -62,7 +65,9 @@ data class SshConfig(
     val username: String = "",
     val authType: String = "password", // password | privateKey
     val password: String? = null,
-    val privateKeyPath: String? = null
+    val privateKeyPath: String? = null,
+    /** Credential vault reference for the SSH password. */
+    val passwordRef: String? = null
 )
 
 // ─── SSL 配置 ──────────────────────────────────────────────
@@ -95,9 +100,30 @@ data class DatabaseCapabilities(
     val supportsTransactions: Boolean = true,
     val supportsSsh: Boolean = true,
     val supportsSsl: Boolean = true,
+    val supportsAlterDatabaseCharset: Boolean = false,
     val supportsViews: Boolean = true,
     val supportsStoredProcedures: Boolean = false,
-    val supportsTriggers: Boolean = false
+    val supportsTriggers: Boolean = false,
+    val supportsLogicalExport: Boolean = false,
+    val supportsSqlFileImport: Boolean = false,
+    val supportsLogicalBackup: Boolean = false,
+    val supportsLogicalRestore: Boolean = false,
+    val supportsOverwriteRestore: Boolean = false
+)
+
+/**
+ * 数据库驱动为逻辑备份建立的读取上下文。
+ *
+ * [consistency] 只能是 snapshot 或 best_effort。驱动无法建立一致性快照时必须在
+ * [warnings] 中说明原因，调用方会把警告写入任务日志和 manifest。
+ */
+data class LogicalBackupContext(
+    val consistency: String,
+    val binlogFile: String? = null,
+    val binlogPosition: Long? = null,
+    val charset: String? = null,
+    val collation: String? = null,
+    val warnings: List<String> = emptyList()
 )
 
 // ─── 安全辅助 ───────────────────────────────────
@@ -105,10 +131,17 @@ data class DatabaseCapabilities(
 /**
  * 返回密码脱敏的副本（用于 API 响应）。
  * 内存中的原始对象保持明文不变。
+ *
+ * 脱敏规则：
+ *   - password 字段清空（API 永不返回明文），passwordRef 保留以指示凭据存在
+ *   - SSH password 同规则
+ *   - 调用方通过 passwordRef == null 判断是否有已存储凭据
  */
 fun ConnectionConfig.masked(): ConnectionConfig = copy(
-    password = if (password.isNotBlank()) "***" else "",
+    password = "",
+    passwordRef = passwordRef,
     ssh = ssh?.copy(
-        password = if (!ssh.password.isNullOrBlank()) "***" else null
+        password = null,
+        passwordRef = ssh.passwordRef
     )
 )
