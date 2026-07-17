@@ -13,13 +13,6 @@
   --font-family-code: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
   --font-size-base: 13px;
 
-  --edb-z-sticky: 100;
-  --edb-z-menu: 300;
-  --edb-z-tooltip: 400;
-  --edb-z-drawer: 500;
-  --edb-z-modal: 600;
-  --edb-z-message: 700;
-
   /* Professional Light — safe first-paint and new-install default. */
   color-scheme: light;
   --glass-bg-gradient: #F5F6F8;
@@ -865,7 +858,6 @@ body {
   -webkit-backdrop-filter: var(--glass-blur-heavy) !important;
   border: 1px solid var(--glass-border) !important;
   box-shadow: var(--glass-shadow-lg), var(--glass-inner-glow) !important;
-  z-index: var(--edb-z-menu) !important;
 }
 
 .ant-popover-inner {
@@ -874,22 +866,14 @@ body {
   -webkit-backdrop-filter: var(--glass-blur-heavy) !important;
   border: 1px solid var(--glass-border) !important;
 }
-.ant-popover {
-  z-index: var(--edb-z-menu) !important;
-}
-
 .ant-tooltip-inner {
   background: var(--edb-tooltip-bg) !important;
   backdrop-filter: var(--glass-blur-heavy) !important;
   -webkit-backdrop-filter: var(--glass-blur-heavy) !important;
 }
-.ant-tooltip {
-  z-index: var(--edb-z-tooltip) !important;
-}
 
 .ant-picker-dropdown {
   background: transparent !important;
-  z-index: var(--edb-z-menu) !important;
 }
 .ant-picker-dropdown .ant-picker-panel-container {
   background: var(--glass-popup) !important;
@@ -902,19 +886,6 @@ body {
 .ant-color-picker-panel-container {
   background: var(--glass-popup) !important;
   backdrop-filter: var(--glass-blur-heavy) !important;
-}
-
-.ant-modal-root {
-  --ant-z-index-popup-base: var(--edb-z-modal);
-}
-
-.ant-drawer {
-  z-index: var(--edb-z-drawer) !important;
-}
-
-.ant-message,
-.ant-notification {
-  z-index: var(--edb-z-message) !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
