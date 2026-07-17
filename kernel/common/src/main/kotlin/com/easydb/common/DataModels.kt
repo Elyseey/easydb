@@ -51,6 +51,79 @@ data class TimeSeriesTagValue(
     val value: String? = null
 )
 
+/** TDengine 等时序数据库的专属对象创建类型。 */
+@Serializable
+enum class TimeSeriesCreateKind {
+    SUPER_TABLE,
+    BASIC_TABLE,
+    CHILD_TABLE
+}
+
+/** 首版可视化建模支持的稳定类型子集。 */
+@Serializable
+enum class TimeSeriesDataType(val sql: String, val requiresLength: Boolean = false) {
+    TIMESTAMP("TIMESTAMP"),
+    BOOL("BOOL"),
+    TINYINT("TINYINT"),
+    TINYINT_UNSIGNED("TINYINT UNSIGNED"),
+    SMALLINT("SMALLINT"),
+    SMALLINT_UNSIGNED("SMALLINT UNSIGNED"),
+    INT("INT"),
+    INT_UNSIGNED("INT UNSIGNED"),
+    BIGINT("BIGINT"),
+    BIGINT_UNSIGNED("BIGINT UNSIGNED"),
+    FLOAT("FLOAT"),
+    DOUBLE("DOUBLE"),
+    BINARY("BINARY", requiresLength = true),
+    VARCHAR("VARCHAR", requiresLength = true),
+    NCHAR("NCHAR", requiresLength = true)
+}
+
+@Serializable
+data class TimeSeriesFieldDraft(
+    val name: String,
+    val type: TimeSeriesDataType,
+    val length: Int? = null
+)
+
+@Serializable
+data class TimeSeriesTagValueDraft(
+    val name: String,
+    val value: String? = null,
+    val isNull: Boolean = false
+)
+
+/**
+ * 时序对象创建请求。
+ *
+ * SUPER_TABLE 使用 [columns] + [tags]；BASIC_TABLE 使用 [columns]；
+ * CHILD_TABLE 使用 [stableName] + [tagValues]。其他字段必须为空。
+ */
+@Serializable
+data class TimeSeriesCreateDefinition(
+    val kind: TimeSeriesCreateKind,
+    val name: String,
+    val columns: List<TimeSeriesFieldDraft> = emptyList(),
+    val tags: List<TimeSeriesFieldDraft> = emptyList(),
+    val stableName: String? = null,
+    val tagValues: List<TimeSeriesTagValueDraft> = emptyList(),
+    val comment: String? = null
+)
+
+@Serializable
+data class TimeSeriesCreatePreview(
+    val ddl: String
+)
+
+@Serializable
+data class TimeSeriesCreateResult(
+    val success: Boolean,
+    val ddl: String,
+    val kind: TimeSeriesCreateKind,
+    val name: String,
+    val stableName: String? = null
+)
+
 @Serializable
 data class TimeSeriesChildTable(
     val name: String,

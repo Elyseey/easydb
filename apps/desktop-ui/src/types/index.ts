@@ -113,6 +113,51 @@ export interface TimeSeriesChildTablePage {
   hasMore: boolean
 }
 
+export type TimeSeriesCreateKind = 'SUPER_TABLE' | 'BASIC_TABLE' | 'CHILD_TABLE'
+
+export type TimeSeriesDataType =
+  | 'TIMESTAMP' | 'BOOL'
+  | 'TINYINT' | 'TINYINT_UNSIGNED'
+  | 'SMALLINT' | 'SMALLINT_UNSIGNED'
+  | 'INT' | 'INT_UNSIGNED'
+  | 'BIGINT' | 'BIGINT_UNSIGNED'
+  | 'FLOAT' | 'DOUBLE'
+  | 'BINARY' | 'VARCHAR' | 'NCHAR'
+
+export interface TimeSeriesFieldDraft {
+  name: string
+  type: TimeSeriesDataType
+  length?: number
+}
+
+export interface TimeSeriesTagValueDraft {
+  name: string
+  value?: string | null
+  isNull: boolean
+}
+
+export interface TimeSeriesCreateDefinition {
+  kind: TimeSeriesCreateKind
+  name: string
+  columns: TimeSeriesFieldDraft[]
+  tags: TimeSeriesFieldDraft[]
+  stableName?: string | null
+  tagValues: TimeSeriesTagValueDraft[]
+  comment?: string | null
+}
+
+export interface TimeSeriesCreatePreview {
+  ddl: string
+}
+
+export interface TimeSeriesCreateResult {
+  success: boolean
+  ddl: string
+  kind: TimeSeriesCreateKind
+  name: string
+  stableName?: string | null
+}
+
 // 字段信息
 export interface ColumnInfo {
   name: string

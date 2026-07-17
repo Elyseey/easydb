@@ -50,6 +50,7 @@ import ExportDatabaseModal from '@/components/ExportDatabaseModal'
 import BackupDatabaseModal from '@/components/BackupDatabaseModal'
 import RestoreDatabaseModal from '@/components/RestoreDatabaseModal'
 import { TableDesigner, type TableDesignerSaveResult } from '@/components/TableDesigner'
+import { TdengineObjectDesigner } from '@/components/TdengineObjectDesigner'
 import { DdlViewer } from '@/components/DdlViewer'
 import { QueryEditorPane } from '@/components/QueryEditorPane'
 import { ShortcutsModal } from '@/components/ShortcutsModal'
@@ -64,6 +65,7 @@ import {
   resolveWorkbenchTabKey,
 } from './queryTabTitle'
 import { tableDetailLoadPlan, type TableDetailLoadTarget } from './tableDetailLoadPlan'
+import { timeSeriesRefreshTarget } from '@/utils/timeSeriesDesigner'
 
 const { Sider, Content } = Layout
 const { Text } = Typography
@@ -1226,6 +1228,28 @@ export const WorkbenchPage: React.FC = () => {
     })
   }, [openConnections, openTableTabs, batchUpdate, openOrActivateTab, updateTabState, loadTabDataForTab])
 
+  const openTimeSeriesDesignerTab = useCallback((connId: string, connName: string, db: string) => {
+    const dbType = openConnections.find((connection) => connection.id === connId)?.dbType ?? null
+    if (!getDbCapabilities(dbType).workbench.timeSeriesObjectCreate) {
+      toast.warning('当前数据库类型不支持 TDengine 时序对象创建')
+      return
+    }
+    const tabKey = `time-series-design:${connId}:${db}`
+    batchUpdate({
+      openTableTabs: {
+        ...openTableTabs,
+        [tabKey]: openTableTabs[tabKey] ?? {
+          type: 'time-series-designer',
+          connectionId: connId,
+          connectionName: connName,
+          database: db,
+        },
+      },
+      activeTableTabKey: tabKey,
+      selectedCtx: { connectionId: connId, database: db },
+    })
+  }, [openConnections, openTableTabs, batchUpdate])
+
   // --- 对象分类 ---
   const objectCategories = useMemo(() => [
     { key: 'tables', label: '表', types: ['table'], icon: <Table2 size={16} /> },
@@ -1786,6 +1810,14 @@ export const WorkbenchPage: React.FC = () => {
       const conn = openConnections.find((c) => c.id === connId)
       const cap = getDbCapabilities(conn?.dbType ?? null)
       const items: MenuProps['items'] = []
+      if ((catKey === 'tables' || catKey === 'stables') && cap.workbench.timeSeriesObjectCreate) {
+        items.push({
+          key: 'create-time-series-object',
+          icon: <PlusOutlined />,
+          label: '新建 TDengine 对象',
+          onClick: () => openTimeSeriesDesignerTab(connId, conn?.name ?? '', dbName),
+        })
+      }
       if (catKey === 'tables' && cap.workbench.tableDesigner) {
         items.push({
           key: 'create-table',
@@ -1966,7 +1998,7 @@ export const WorkbenchPage: React.FC = () => {
       return tableItems
     }
     return []
-  }, [openConnections, loadDatabases, loadTables, selectedCtx, setSelectedCtx, handleTableExport, setCreateDbModal, setEditDbModal, setImportSqlModal, setExportModal, openTableDesignerTab, objectsMap, openOrActivateTab])
+  }, [openConnections, loadDatabases, loadTables, selectedCtx, setSelectedCtx, handleTableExport, setCreateDbModal, setEditDbModal, setImportSqlModal, setExportModal, openTableDesignerTab, openTimeSeriesDesignerTab, objectsMap, openOrActivateTab])
 
   // 延迟计算菜单项：仅在右键触发瞬间计算 1 次（而非 titleRender 中 N 次）
   const treeCtxMenuItems = useMemo(
@@ -2376,14 +2408,18 @@ export const WorkbenchPage: React.FC = () => {
                             ? `${tab.database} / ${tab.category === 'tables' ? '表' : tab.category === 'views' ? '视图' : tab.category === 'triggers' ? '触发器' : tab.category}`
                             : tab.type === 'sql-query'
                               ? tab.label || `查询`
-                              : ''
+                              : tab.type === 'time-series-designer'
+                                ? '新建 TDengine 对象'
+                                : '新建表'
                       const tabIcon = tab.type === 'table'
                         ? <Table2 size={14} style={{ marginRight: 6 }} />
                         : tab.type === 'db-overview'
                           ? <Database size={14} style={{ marginRight: 6 }} />
                           : tab.type === 'sql-query'
                             ? <CodeOutlined style={{ marginRight: 6 }} />
-                            : <KeyRound size={16} style={{ marginRight: 6 }} /> // Assuming this is the intended insertion point for KeyRound
+                            : tab.type === 'time-series-designer'
+                              ? <Activity size={15} style={{ marginRight: 6 }} />
+                              : <KeyRound size={16} style={{ marginRight: 6 }} />
                       const tabTitle = tab.type === 'table'
                         ? `${tab.database}.${tab.tableName}`
                         : tab.type === 'sql-query'
@@ -2878,6 +2914,11 @@ export const WorkbenchPage: React.FC = () => {
                                 新建表
                               </Button>
                             )}
+                            {overviewCapabilities.workbench.timeSeriesObjectCreate && (
+                              <Button icon={<PlusOutlined />} style={quietButtonStyle} onClick={() => openTimeSeriesDesignerTab(activeTab.connectionId, activeTab.connectionName, activeTab.database)}>
+                                新建 TDengine 对象
+                              </Button>
+                            )}
                             <Button type="primary" icon={<CodeOutlined />} onClick={() => openSqlEditor()}>
                               新建查询
                             </Button>
@@ -2927,6 +2968,11 @@ export const WorkbenchPage: React.FC = () => {
                             {overviewCapabilities.workbench.tableCreate && (
                               <Button block icon={<PlusOutlined />} style={{ ...quietButtonStyle, textAlign: 'left' }} onClick={() => openTableDesignerTab(activeTab.connectionId, activeTab.connectionName, activeTab.database)}>
                                 新建数据表
+                              </Button>
+                            )}
+                            {overviewCapabilities.workbench.timeSeriesObjectCreate && (
+                              <Button block icon={<PlusOutlined />} style={{ ...quietButtonStyle, textAlign: 'left' }} onClick={() => openTimeSeriesDesignerTab(activeTab.connectionId, activeTab.connectionName, activeTab.database)}>
+                                新建 TDengine 对象
                               </Button>
                             )}
                             <Button block icon={<ReloadOutlined />} style={{ ...quietButtonStyle, textAlign: 'left' }} onClick={() => loadTables(activeTab.connectionId, activeTab.database)}>
@@ -3011,6 +3057,31 @@ export const WorkbenchPage: React.FC = () => {
                           )
                         }
                         loadTables(activeTab.connectionId, activeTab.database)
+                        closeTableTab(tabKey)
+                      }}
+                      onCancel={() => closeTableTab(tabKey)}
+                    />
+                  </div>
+                )
+              }
+
+              if (activeTab.type === 'time-series-designer') {
+                const stables = (objectsMap[`${activeTab.connectionId}::${activeTab.database}`] || [])
+                  .filter((item) => item.tableKind === 'SUPER_TABLE')
+                  .map((item) => item.name)
+                return (
+                  <div style={{ flex: 1, overflow: 'hidden' }}>
+                    <TdengineObjectDesigner
+                      connectionId={activeTab.connectionId}
+                      database={activeTab.database}
+                      stableNames={stables}
+                      onSuccess={(result) => {
+                        const refresh = timeSeriesRefreshTarget(result)
+                        if (refresh.kind === 'children') {
+                          loadChildTables(activeTab.connectionId, activeTab.database, refresh.stableName)
+                        } else {
+                          loadTables(activeTab.connectionId, activeTab.database)
+                        }
                         closeTableTab(tabKey)
                       }}
                       onCancel={() => closeTableTab(tabKey)}

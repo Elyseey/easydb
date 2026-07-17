@@ -42,6 +42,7 @@ describe('database metadata capabilities', () => {
     expect(capabilities.workbench.rowEdit).toBe(false)
     expect(capabilities.workbench.tableDesigner).toBe(false)
     expect(capabilities.workbench.tableCreate).toBe(false)
+    expect(capabilities.workbench.timeSeriesObjectCreate).toBe(true)
     expect(capabilities.workbench.tableRename).toBe(false)
     expect(capabilities.workbench.tableDrop).toBe(false)
     expect(capabilities.workbench.tableTruncate).toBe(false)

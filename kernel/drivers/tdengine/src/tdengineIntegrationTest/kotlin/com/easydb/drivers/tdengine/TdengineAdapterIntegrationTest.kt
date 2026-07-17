@@ -4,6 +4,11 @@ import com.easydb.common.ConnectionManager
 import com.easydb.common.SqlExecutionService
 import com.easydb.common.TableKind
 import com.easydb.common.TimeSeriesMetadataLimits
+import com.easydb.common.TimeSeriesCreateDefinition
+import com.easydb.common.TimeSeriesCreateKind
+import com.easydb.common.TimeSeriesDataType
+import com.easydb.common.TimeSeriesFieldDraft
+import com.easydb.common.TimeSeriesTagValueDraft
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import java.sql.SQLFeatureNotSupportedException
@@ -175,6 +180,112 @@ class TdengineAdapterIntegrationTest {
             if (cleanupFailures.isNotEmpty()) {
                 val cleanupFailure = AssertionError(
                     "Failed to clean ${cleanupFailures.size} EASYDB_IT_ TDengine object(s)"
+                )
+                cleanupFailures.forEach(cleanupFailure::addSuppressed)
+                if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure) else throw cleanupFailure
+            }
+        }
+    }
+
+    @Test
+    fun `time series object builder creates all object kinds with typed tag values`() {
+        assumeTrue(config.allowDdl, "Set EASYDB_TDENGINE_ALLOW_DDL=true for create builder coverage")
+
+        val token = UUID.randomUUID().toString().replace("-", "").take(10)
+        val stable = "easydb_it_${token}_builder_stable"
+        val child = "easydb_it_${token}_builder_child"
+        val basic = "easydb_it_${token}_builder_basic"
+        val cleanup = mutableListOf<String>()
+        var primaryFailure: Throwable? = null
+        val session = adapter.connectionAdapter().open(config.toConnectionConfig())
+        val objectAdapter = requireNotNull(adapter.timeSeriesObjectAdapter())
+
+        try {
+            val stableDdl = objectAdapter.buildCreateSql(
+                session,
+                config.database,
+                TimeSeriesCreateDefinition(
+                    kind = TimeSeriesCreateKind.SUPER_TABLE,
+                    name = stable,
+                    columns = listOf(
+                        TimeSeriesFieldDraft("ts", TimeSeriesDataType.TIMESTAMP),
+                        TimeSeriesFieldDraft("reading", TimeSeriesDataType.DOUBLE)
+                    ),
+                    tags = listOf(
+                        TimeSeriesFieldDraft("location", TimeSeriesDataType.VARCHAR, 64),
+                        TimeSeriesFieldDraft("description", TimeSeriesDataType.NCHAR, 32),
+                        TimeSeriesFieldDraft("group_id", TimeSeriesDataType.BIGINT_UNSIGNED),
+                        TimeSeriesFieldDraft("enabled", TimeSeriesDataType.BOOL),
+                        TimeSeriesFieldDraft("installed_at", TimeSeriesDataType.TIMESTAMP),
+                        TimeSeriesFieldDraft("nullable_note", TimeSeriesDataType.VARCHAR, 8)
+                    ),
+                    comment = "builder\\rack's integration test"
+                )
+            )
+            assertFalse(stableDdl.contains("IF NOT EXISTS"))
+            execute(session, stableDdl)
+            cleanup += "DROP STABLE IF EXISTS ${qualified(stable)}"
+
+            val childDdl = objectAdapter.buildCreateSql(
+                session,
+                config.database,
+                TimeSeriesCreateDefinition(
+                    kind = TimeSeriesCreateKind.CHILD_TABLE,
+                    name = child,
+                    stableName = stable,
+                    tagValues = listOf(
+                        TimeSeriesTagValueDraft("location", ""),
+                        TimeSeriesTagValueDraft("description", "中文\\机房's"),
+                        TimeSeriesTagValueDraft("group_id", "18446744073709551615"),
+                        TimeSeriesTagValueDraft("enabled", "true"),
+                        TimeSeriesTagValueDraft("installed_at", "2026-07-17 12:34:56.123"),
+                        TimeSeriesTagValueDraft("nullable_note", isNull = true)
+                    )
+                )
+            )
+            execute(session, childDdl)
+            cleanup += "DROP TABLE IF EXISTS ${qualified(child)}"
+
+            val basicDdl = objectAdapter.buildCreateSql(
+                session,
+                config.database,
+                TimeSeriesCreateDefinition(
+                    kind = TimeSeriesCreateKind.BASIC_TABLE,
+                    name = basic,
+                    columns = listOf(
+                        TimeSeriesFieldDraft("event_time", TimeSeriesDataType.TIMESTAMP),
+                        TimeSeriesFieldDraft("message", TimeSeriesDataType.NCHAR, 64)
+                    )
+                )
+            )
+            execute(session, basicDdl)
+            cleanup += "DROP TABLE IF EXISTS ${qualified(basic)}"
+
+            val topLevel = adapter.metadataAdapter().listTables(session, config.database)
+            assertEquals(TableKind.SUPER_TABLE, topLevel.single { it.name == stable }.tableKind)
+            assertEquals(TableKind.BASIC_TABLE, topLevel.single { it.name == basic }.tableKind)
+            assertFalse(topLevel.any { it.name == child })
+
+            val tagValues = requireNotNull(adapter.timeSeriesMetadataAdapter())
+                .listTagValues(session, config.database, child)
+                .associateBy { it.name }
+            assertEquals("", tagValues.getValue("location").value)
+            assertEquals("中文\\机房's", tagValues.getValue("description").value)
+            assertEquals("18446744073709551615", tagValues.getValue("group_id").value)
+            assertEquals("true", tagValues.getValue("enabled").value?.lowercase())
+            assertTrue(!tagValues.getValue("installed_at").value.isNullOrBlank())
+            assertEquals(null, tagValues.getValue("nullable_note").value)
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            val cleanupFailures = cleanup.asReversed().mapNotNull { sql ->
+                runCatching { execute(session, sql) }.exceptionOrNull()
+            }
+            adapter.connectionAdapter().close(session)
+            if (cleanupFailures.isNotEmpty()) {
+                val cleanupFailure = AssertionError(
+                    "Failed to clean ${cleanupFailures.size} TDengine builder integration object(s)"
                 )
                 cleanupFailures.forEach(cleanupFailure::addSuppressed)
                 if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure) else throw cleanupFailure

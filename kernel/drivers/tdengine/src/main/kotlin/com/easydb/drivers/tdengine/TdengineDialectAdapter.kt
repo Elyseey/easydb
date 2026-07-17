@@ -22,5 +22,22 @@ class TdengineDialectAdapter : DialectAdapter {
     override fun buildSwitchDatabaseSql(database: String): String? =
         database.takeIf { it.isNotBlank() }?.let { "USE ${quoteIdentifier(it)}" }
 
+    override fun escapeValue(value: String?): String {
+        if (value == null) return "NULL"
+        val escaped = buildString {
+            value.forEach { character ->
+                when (character) {
+                    '\\' -> append("\\\\")
+                    '\'' -> append("\\'")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    else -> append(character)
+                }
+            }
+        }
+        return "'$escaped'"
+    }
+
     override val paginationStrategy: PaginationStrategy = PaginationStrategy.LIMIT_OFFSET
 }

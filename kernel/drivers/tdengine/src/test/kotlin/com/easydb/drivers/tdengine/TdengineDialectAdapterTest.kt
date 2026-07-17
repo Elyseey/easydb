@@ -22,6 +22,12 @@ class TdengineDialectAdapterTest {
     }
 
     @Test
+    fun `escapes tdengine string literal control characters`() {
+        assertEquals("'a\\\\b\\'c\\n\\r\\t'", dialect.escapeValue("a\\b'c\n\r\t"))
+        assertEquals("NULL", dialect.escapeValue(null))
+    }
+
+    @Test
     fun `builds parameterized insert`() {
         assertEquals(
             "INSERT INTO `d1001` (`ts`, `value`) VALUES (?, ?)",

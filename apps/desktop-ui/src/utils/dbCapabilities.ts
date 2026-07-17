@@ -25,6 +25,7 @@ export interface WorkbenchCapability {
   rowEdit: boolean
   tableDesigner: boolean
   tableCreate: boolean
+  timeSeriesObjectCreate: boolean
   tableRename: boolean
   tableDrop: boolean
   tableTruncate: boolean
@@ -58,7 +59,7 @@ export interface DbCapabilities {
 const MYSQL: DbCapabilities = {
   metadata: { schemas: true, schemaCreation: true, schemaManagement: true, schemaAlterCharset: true, tables: true, views: true, procedures: true, functions: true, triggers: true, ddl: true, timeSeries: false },
   sql: { execute: true, paginatedPreview: true, explain: true },
-  workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, tableCreate: true, tableRename: true, tableDrop: true, tableTruncate: true, importSql: true, exportData: true, backup: true, restore: true },
+  workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, tableCreate: true, timeSeriesObjectCreate: false, tableRename: true, tableDrop: true, tableTruncate: true, importSql: true, exportData: true, backup: true, restore: true },
   tasks: { migration: true, sync: true, structureCompare: true },
   diagnostics: { dataTracker: true, slowQuery: true },
 }
@@ -66,7 +67,7 @@ const MYSQL: DbCapabilities = {
 const DAMENG: DbCapabilities = {
   metadata: { schemas: true, schemaCreation: true, schemaManagement: true, schemaAlterCharset: false, tables: true, views: true, procedures: true, functions: true, triggers: true, ddl: true, timeSeries: false },
   sql: { execute: true, paginatedPreview: true, explain: false },
-  workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, tableCreate: true, tableRename: true, tableDrop: true, tableTruncate: true, importSql: true, exportData: true, backup: true, restore: true },
+  workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, tableCreate: true, timeSeriesObjectCreate: false, tableRename: true, tableDrop: true, tableTruncate: true, importSql: true, exportData: true, backup: true, restore: true },
   tasks: { migration: true, sync: true, structureCompare: true },
   diagnostics: { dataTracker: false, slowQuery: false },
 }
@@ -74,7 +75,7 @@ const DAMENG: DbCapabilities = {
 const STUB: DbCapabilities = {
   metadata: { schemas: false, schemaCreation: false, schemaManagement: false, schemaAlterCharset: false, tables: false, views: false, procedures: false, functions: false, triggers: false, ddl: false, timeSeries: false },
   sql: { execute: false, paginatedPreview: false, explain: false },
-  workbench: { dataPreview: false, rowEdit: false, tableDesigner: false, tableCreate: false, tableRename: false, tableDrop: false, tableTruncate: false, importSql: false, exportData: false, backup: false, restore: false },
+  workbench: { dataPreview: false, rowEdit: false, tableDesigner: false, tableCreate: false, timeSeriesObjectCreate: false, tableRename: false, tableDrop: false, tableTruncate: false, importSql: false, exportData: false, backup: false, restore: false },
   tasks: { migration: false, sync: false, structureCompare: false },
   diagnostics: { dataTracker: false, slowQuery: false },
 }
@@ -85,7 +86,7 @@ const CAPABILITIES: Record<DbType, DbCapabilities> = {
   tdengine: {
     metadata: { schemas: true, schemaCreation: false, schemaManagement: false, schemaAlterCharset: false, tables: true, views: false, procedures: false, functions: false, triggers: false, ddl: true, timeSeries: true },
     sql: { execute: true, paginatedPreview: true, explain: false },
-    workbench: { dataPreview: true, rowEdit: false, tableDesigner: false, tableCreate: false, tableRename: false, tableDrop: false, tableTruncate: false, importSql: false, exportData: false, backup: false, restore: false },
+    workbench: { dataPreview: true, rowEdit: false, tableDesigner: false, tableCreate: false, timeSeriesObjectCreate: true, tableRename: false, tableDrop: false, tableTruncate: false, importSql: false, exportData: false, backup: false, restore: false },
     tasks: { migration: false, sync: false, structureCompare: false },
     diagnostics: { dataTracker: false, slowQuery: false },
   },

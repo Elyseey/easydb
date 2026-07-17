@@ -237,6 +237,7 @@ private fun parseTableDefinition(body: kotlinx.serialization.json.JsonObject): T
 // ─── 元数据路由 ────────────────────────────────────────────
 fun Route.metadataRoutes() {
     val connMgr = ServiceRegistry.connectionManager
+    val timeSeriesCreateService = TimeSeriesObjectCreateService(ServiceRegistry.adapterRegistry)
 
     fun adapterFor(session: DatabaseSession): DatabaseAdapter =
         ServiceRegistry.adapterRegistry.get(session.config.dbType)
@@ -314,6 +315,40 @@ fun Route.metadataRoutes() {
             call.ok(adapter.listTagValues(session, database, table))
         } catch (error: Exception) {
             call.fail("METADATA_FAILED", error.message ?: "加载 TDengine tag values 失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/objects/preview") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val definition = try {
+            call.receive<TimeSeriesCreateDefinition>()
+        } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesCreateService.preview(session, database, definition))
+        } catch (error: TimeSeriesObjectCreateException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("PREVIEW_TIME_SERIES_OBJECT_FAILED", error.message ?: "生成时序对象 DDL 失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/objects/create") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val definition = try {
+            call.receive<TimeSeriesCreateDefinition>()
+        } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesCreateService.create(session, database, definition))
+        } catch (error: TimeSeriesObjectCreateException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("CREATE_TIME_SERIES_OBJECT_FAILED", error.message ?: "创建时序对象失败")
         }
     }
 

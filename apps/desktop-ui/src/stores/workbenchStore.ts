@@ -106,8 +106,16 @@ export interface TableDesignerTabState {
   tableName?: string // 仅在 edit 模式下存在
 }
 
+/** TDengine 时序对象创建器 Tab 状态 */
+export interface TimeSeriesDesignerTabState {
+  type: 'time-series-designer'
+  connectionId: string
+  connectionName: string
+  database: string
+}
+
 /** 工作台 Tab 联合类型 */
-export type WorkbenchTab = TableTabState | DbOverviewTabState | CategoryListTabState | SqlQueryTabState | TableDesignerTabState
+export type WorkbenchTab = TableTabState | DbOverviewTabState | CategoryListTabState | SqlQueryTabState | TableDesignerTabState | TimeSeriesDesignerTabState
 
 /** 当前选中的上下文 */
 export interface SelectedContext {

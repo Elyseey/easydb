@@ -110,6 +110,8 @@ data class DatabaseCapabilities(
     val supportsLogicalBackup: Boolean = false,
     val supportsLogicalRestore: Boolean = false,
     val supportsOverwriteRestore: Boolean = false,
+    /** 专属时序对象设计器；不得用于开启通用关系型 TableDesigner。 */
+    val supportsTimeSeriesObjectCreate: Boolean = false,
     val supportsTableCreate: Boolean = true,
     val supportsTableRename: Boolean = true,
     val supportsTableDrop: Boolean = true,

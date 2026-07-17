@@ -35,6 +35,9 @@ interface DatabaseAdapter {
     /** 时序目录能力是可选的；关系型驱动无需提供空实现。 */
     fun timeSeriesMetadataAdapter(): TimeSeriesMetadataAdapter? = null
 
+    /** 时序对象建模能力独立于通用关系型表设计器。 */
+    fun timeSeriesObjectAdapter(): TimeSeriesObjectAdapter? = null
+
     /** 逻辑备份读取一致性由具体数据库驱动实现；不支持时返回 null。 */
     fun logicalBackupAdapter(): LogicalBackupAdapter? = null
 
@@ -142,6 +145,21 @@ interface TimeSeriesMetadataAdapter {
         table: String
     ): List<TimeSeriesTagValue>
 }
+
+/**
+ * 为时序数据库生成专属对象创建 DDL。
+ * preview/create 路由必须都调用此方法，且 create 不得执行客户端传回的 SQL。
+ */
+interface TimeSeriesObjectAdapter {
+    fun buildCreateSql(
+        session: DatabaseSession,
+        database: String,
+        definition: TimeSeriesCreateDefinition
+    ): String
+}
+
+/** 父超级表在当前数据库中不存在，或当前账号无法读取其 Tag 定义。 */
+class TimeSeriesParentNotFoundException(message: String) : IllegalArgumentException(message)
 
 // ─── 方言适配器 ───────────────────────────────────────────
 
