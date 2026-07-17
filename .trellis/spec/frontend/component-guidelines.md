@@ -1096,3 +1096,27 @@ requestAnimationFrame(updateHeight)
 **推广规则**：当组件的可选 prop 控制核心功能（分页、权限、验证等），
 调用方**必须显式决定是否传入**（传值 or 注释说明为什么不传）。
 新增可选 prop 时，应在 PR 中附"调用方接线检查"清单。
+
+---
+
+## Connection Database Select — Guard Async Identity and Hidden-Pane Rendering
+
+SQL query panes can stay mounted while hidden. A connection-scoped database selector therefore has two independent stale-state risks:
+
+- A slower request for connection A can resolve after the user switches to connection B and overwrite B's database list.
+- Ant Design's virtualized Select popup can retain a stale scroll range after its pane was hidden, producing an empty popup with a scrollbar until the user scrolls.
+
+Required pattern:
+
+- Keep database loading in the shared `useConnectionDatabases(connectionId)` hook.
+- Associate every result with its connection/request identity and ignore results after effect cleanup.
+- Derive `loading`, `databases`, and `error` only from the current request identity so a connection switch clears stale options immediately.
+- Render SQL database selectors through the shared `ConnectionDatabaseSelect` component.
+- Reset the Select instance by `connectionId` and keep `virtual={false}` for this small metadata list.
+- Show loading, empty, and retry states explicitly; do not turn every request failure into a silent empty array.
+
+Required regression coverage:
+
+- Resolve connection B before a pending connection A request, then resolve A and verify B remains visible.
+- Verify a failed request exposes a retry action and retry can load the list.
+- Open the Select popup and verify the current database options render.

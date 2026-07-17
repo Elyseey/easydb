@@ -91,6 +91,11 @@ interface MetadataAdapter {
     fun listTriggers(session: DatabaseSession, database: String): List<TriggerInfo> = emptyList()
     fun listRoutines(session: DatabaseSession, database: String): List<RoutineInfo> = emptyList()
     fun getTableDefinition(session: DatabaseSession, database: String, table: String): TableDefinition
+    /**
+     * Lightweight metadata used by table design/edit views.
+     * Implementations must include table info, columns, and indexes without loading DDL.
+     */
+    fun getTableDesign(session: DatabaseSession, database: String, table: String): TableDefinition
     fun getTableInfo(session: DatabaseSession, database: String, table: String): TableInfo =
         getTableDefinition(session, database, table).table
     fun getColumns(session: DatabaseSession, database: String, table: String): List<ColumnInfo> =

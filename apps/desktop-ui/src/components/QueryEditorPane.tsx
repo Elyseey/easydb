@@ -41,6 +41,7 @@ import {
 import { EmptyState } from '@/components/EmptyState'
 import { beautifySql, compactSql } from '@/utils/sqlTransform'
 import { getSqlTemplates, insertSqlTemplate, type SqlTemplate } from '@/pages/sql-editor/sqlTemplates'
+import { ConnectionDatabaseSelect } from '@/components/ConnectionDatabaseSelect'
 import {
   buildOpenObjectDetailRequest,
   type OpenObjectDetailRequest,
@@ -174,7 +175,6 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({
   
   const [executing, setExecuting] = useState(false)
   const [loadingMoreKey, setLoadingMoreKey] = useState<string | null>(null)
-  const [databases, setDatabases] = useState<string[]>([])
   const [editabilityMap, setEditabilityMap] = useState<Map<number, EditabilityStatus>>(new Map())
   const [analyzingEditability, setAnalyzingEditability] = useState(false)
 
@@ -249,14 +249,6 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({
     () => activeConnectionDbType ? getSqlTemplates(activeConnectionDbType, sqlTemplatesEnabled) : [],
     [activeConnectionDbType, sqlTemplatesEnabled],
   )
-
-  // Fetch DBs whenever connection changes within this tab
-  useEffect(() => {
-    if (!activeEditorTab?.connectionId) { setDatabases([]); return }
-    metadataApi.databases(activeEditorTab.connectionId).then((dbs) => {
-      setDatabases((dbs as Array<{name: string}>).map(d => d.name))
-    }).catch(() => setDatabases([]))
-  }, [activeEditorTab?.connectionId])
 
   const handleConnectionChange = async (connId: string) => {
     const conn = connections.find((c) => c.id === connId)
@@ -725,16 +717,10 @@ const QueryEditorPaneComponent: React.FC<QueryEditorPaneProps> = ({
             }))}
             listHeight={320}
           />
-          <Select
-            size="small"
-            variant="filled"
-            style={{ width: 160 }}
-            placeholder="选择数据库"
+          <ConnectionDatabaseSelect
+            connectionId={activeEditorTab.connectionId}
             value={activeEditorTab.database}
             onChange={handleDatabaseChange}
-            options={databases.map((db) => ({ label: db, value: db }))}
-            disabled={!activeEditorTab.connectionId}
-            showSearch
           />
         </Space>
         <Space>

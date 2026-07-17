@@ -44,6 +44,40 @@ class DamengDatabaseAdapterTest {
     }
 
     @Test
+    fun `deduplicates native ddl object type attempts while preserving fallback order`() {
+        assertEquals(
+            listOf("TABLE", "VIEW", "PROCEDURE", "FUNCTION"),
+            DamengDdlPolicy.candidateTypes("TABLE")
+        )
+        assertEquals(
+            listOf("TRIGGER", "TABLE", "VIEW", "PROCEDURE", "FUNCTION"),
+            DamengDdlPolicy.candidateTypes("TRIGGER")
+        )
+    }
+
+    @Test
+    fun `reuses fallback columns and loads native ddl columns once`() {
+        val cachedColumns = listOf(ColumnInfo(name = "ID", type = "BIGINT"))
+        var fallbackLoads = 0
+        val fallbackResolution = DamengDdlResolution(
+            ddl = "CREATE TABLE \"T\" (\"ID\" BIGINT);",
+            source = "synthesized",
+            columns = cachedColumns
+        )
+
+        assertEquals(cachedColumns, fallbackResolution.columnsOrLoad { fallbackLoads += 1; emptyList() })
+        assertEquals(0, fallbackLoads)
+
+        var nativeLoads = 0
+        val nativeResolution = DamengDdlResolution(ddl = "CREATE TABLE \"T\";", source = "native")
+        assertEquals(
+            cachedColumns,
+            nativeResolution.columnsOrLoad { nativeLoads += 1; cachedColumns }
+        )
+        assertEquals(1, nativeLoads)
+    }
+
+    @Test
     fun `preserves routine case in generated call SQL`() {
         val adapter = DamengProcedureAdapter()
 

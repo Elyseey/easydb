@@ -367,6 +367,17 @@ fun Route.metadataRoutes() {
         }
     }
 
+    get("/{connectionId}/{database}/tables/{table}/design") {
+        val session = getSessionOrFail(call, connMgr) ?: return@get
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        try {
+            call.ok(adapterFor(session).metadataAdapter().getTableDesign(session, database, table))
+        } catch (e: Exception) {
+            call.fail("METADATA_FAILED", e.message ?: "加载表设计元数据失败")
+        }
+    }
+
     get("/{connectionId}/{database}/tables/{table}/info") {
         val session = getSessionOrFail(call, connMgr) ?: return@get
         val database = call.parameters["database"]!!

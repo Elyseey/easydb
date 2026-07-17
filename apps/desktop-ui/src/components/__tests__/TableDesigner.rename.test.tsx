@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { TableDesigner } from '../TableDesigner'
 
 const apiMocks = vi.hoisted(() => ({
-  tableDefinition: vi.fn(),
+  tableDesign: vi.fn(),
   renameTable: vi.fn(),
   executeSql: vi.fn(),
 }))
@@ -17,7 +17,7 @@ const notificationMocks = vi.hoisted(() => ({
 
 vi.mock('@/services/api', () => ({
   metadataApi: {
-    tableDefinition: apiMocks.tableDefinition,
+    tableDesign: apiMocks.tableDesign,
     renameTable: apiMocks.renameTable,
   },
   sqlApi: {
@@ -67,7 +67,7 @@ const renderDesigner = (dbType: 'mysql' | 'dameng' = 'mysql') => {
 describe('TableDesigner table rename', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    apiMocks.tableDefinition.mockResolvedValue(tableDefinition)
+    apiMocks.tableDesign.mockResolvedValue(tableDefinition)
     apiMocks.renameTable.mockResolvedValue({ success: true })
     apiMocks.executeSql.mockResolvedValue({ success: true })
   })
@@ -84,6 +84,8 @@ describe('TableDesigner table rename', () => {
       expect(apiMocks.renameTable).toHaveBeenCalledWith('conn-1', 'ENERGY', 'orders', 'orders_archive')
     })
     expect(apiMocks.executeSql).not.toHaveBeenCalled()
+    expect(apiMocks.tableDesign).toHaveBeenCalledTimes(1)
+    expect(apiMocks.tableDesign).toHaveBeenCalledWith('conn-1', 'ENERGY', 'orders')
     expect(onSuccess).toHaveBeenCalledWith({
       tableName: 'orders_archive',
       previousTableName: 'orders',

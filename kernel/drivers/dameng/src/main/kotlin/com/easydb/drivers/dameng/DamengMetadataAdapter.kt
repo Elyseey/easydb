@@ -14,6 +14,19 @@ import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.Types
 
+internal object DamengDdlPolicy {
+    fun candidateTypes(objectType: String?): List<String> =
+        listOfNotNull(objectType, "TABLE", "VIEW", "PROCEDURE", "FUNCTION").distinct()
+}
+
+internal data class DamengDdlResolution(
+    val ddl: String,
+    val source: String?,
+    private val columns: List<ColumnInfo>? = null
+) {
+    fun columnsOrLoad(loader: () -> List<ColumnInfo>): List<ColumnInfo> = columns ?: loader()
+}
+
 class DamengMetadataAdapter : MetadataAdapter {
 
     private val dialect = DamengDialectAdapter()
@@ -258,15 +271,25 @@ class DamengMetadataAdapter : MetadataAdapter {
         val tableInfo = findTableInfo(session, schema, objectName)
             ?: TableInfo(name = objectName, schema = schema, type = "table", engine = "DM")
 
-        val (ddl, ddlSource) = resolveDdl(session, schema, objectName)
-        val columns = getColumns(session, schema, objectName)
+        val resolvedDdl = resolveDdl(session, schema, objectName)
+        val columns = resolvedDdl.columnsOrLoad { getColumns(session, schema, objectName) }
 
         return TableDefinition(
             table = tableInfo,
             columns = columns,
             indexes = getIndexes(session, schema, objectName),
-            ddl = appendCommentsToDdl(session, schema, objectName, ddl, columns),
-            ddlSource = ddlSource
+            ddl = appendCommentsToDdl(session, schema, objectName, resolvedDdl.ddl, columns),
+            ddlSource = resolvedDdl.source
+        )
+    }
+
+    override fun getTableDesign(session: DatabaseSession, database: String, table: String): TableDefinition {
+        val schema = DamengIdentifierPolicy.catalogName(database)
+        val objectName = DamengIdentifierPolicy.catalogName(table)
+        return TableDefinition(
+            table = getTableInfo(session, schema, objectName),
+            columns = getColumns(session, schema, objectName),
+            indexes = getIndexes(session, schema, objectName)
         )
     }
 
@@ -470,21 +493,27 @@ class DamengMetadataAdapter : MetadataAdapter {
     override fun getDdl(session: DatabaseSession, database: String, table: String): String {
         val schema = DamengIdentifierPolicy.catalogName(database)
         val objectName = DamengIdentifierPolicy.catalogName(table)
-        val ddl = resolveDdl(session, schema, objectName).first
-        return appendCommentsToDdl(session, schema, objectName, ddl)
+        val resolvedDdl = resolveDdl(session, schema, objectName)
+        val columns = resolvedDdl.columnsOrLoad { getColumns(session, schema, objectName) }
+        return appendCommentsToDdl(session, schema, objectName, resolvedDdl.ddl, columns)
     }
 
     /**
-     * 返回 (ddl, ddlSource)：先试原生 DBMS_METADATA.GET_DDL；失败降级拼装。
+     * 先试原生 DBMS_METADATA.GET_DDL；失败降级拼装并保留已加载的列元数据。
      */
-    private fun resolveDdl(session: DatabaseSession, schema: String, objectName: String): Pair<String, String?> {
+    private fun resolveDdl(session: DatabaseSession, schema: String, objectName: String): DamengDdlResolution {
         val objectType = getObjectType(session, schema, objectName)
-        for (type in listOfNotNull(objectType, "TABLE", "VIEW", "PROCEDURE", "FUNCTION")) {
+        for (type in DamengDdlPolicy.candidateTypes(objectType)) {
             val ddl = tryGetDdl(session, type, schema, objectName)
-            if (!ddl.isNullOrBlank()) return ddl to "native"
+            if (!ddl.isNullOrBlank()) return DamengDdlResolution(ddl, "native")
         }
-        val fallback = buildFallbackDdl(session, schema, objectName)
-        return if (fallback.isBlank()) "" to null else fallback to "synthesized"
+        val columns = getColumns(session, schema, objectName)
+        val fallback = buildFallbackDdl(schema, objectName, columns)
+        return DamengDdlResolution(
+            ddl = fallback,
+            source = if (fallback.isBlank()) null else "synthesized",
+            columns = columns
+        )
     }
 
     override fun createDatabase(session: DatabaseSession, name: String, charset: String, collation: String) {
@@ -693,8 +722,7 @@ class DamengMetadataAdapter : MetadataAdapter {
         }
     }
 
-    private fun buildFallbackDdl(session: DatabaseSession, schema: String, table: String): String {
-        val columns = getColumns(session, schema, table)
+    private fun buildFallbackDdl(schema: String, table: String, columns: List<ColumnInfo>): String {
         if (columns.isEmpty()) return ""
 
         val columnLines = columns.map { column ->

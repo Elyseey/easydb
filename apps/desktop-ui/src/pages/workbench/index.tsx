@@ -47,6 +47,7 @@ import ExportDatabaseModal from '@/components/ExportDatabaseModal'
 import BackupDatabaseModal from '@/components/BackupDatabaseModal'
 import RestoreDatabaseModal from '@/components/RestoreDatabaseModal'
 import { TableDesigner, type TableDesignerSaveResult } from '@/components/TableDesigner'
+import { DdlViewer } from '@/components/DdlViewer'
 import { QueryEditorPane } from '@/components/QueryEditorPane'
 import { ShortcutsModal } from '@/components/ShortcutsModal'
 import { CallProcedurePanel, type CallProcedureTarget } from '@/components/CallProcedurePanel'
@@ -59,6 +60,7 @@ import {
   normalizeQueryTabTitle,
   resolveWorkbenchTabKey,
 } from './queryTabTitle'
+import { tableDetailLoadPlan, type TableDetailLoadTarget } from './tableDetailLoadPlan'
 
 const { Sider, Content } = Layout
 const { Text } = Typography
@@ -629,21 +631,22 @@ export const WorkbenchPage: React.FC = () => {
     }
   }, [updateTabState])
 
-  const loadTabDataForTab = useCallback(async (tabKey: string, connId: string, dbName: string, tableName: string, tab: string) => {
+  const loadTabDataForTab = useCallback(async (tabKey: string, connId: string, dbName: string, tableName: string, tab: TableDetailLoadTarget) => {
     const requestKey = `${tabKey}::${tab}`
     const seq = (loadSeqRef.current[requestKey] ?? 0) + 1
     loadSeqRef.current[requestKey] = seq
     const isCurrentRequest = () => loadSeqRef.current[requestKey] === seq
     const startedTabs: string[] = []
     try {
-      // columns 始终加载
       const promises: Promise<void>[] = []
       // currentTab 可能为 undefined（新 Tab 刚创建，state 还未 commit）
       const currentTab = useWorkbenchStore.getState().openTableTabs[tabKey] ?? openTableTabs[tabKey]
       if (currentTab && currentTab.type !== 'table') return
       const tableTab = currentTab as TableTabState | undefined
-      const needColumns = !tableTab?.loadedTabs.includes('columns')
-      const needTab = tab !== 'columns' && !tableTab?.loadedTabs.includes(tab)
+      const { loadColumns: needColumns, loadTab: needTab } = tableDetailLoadPlan(
+        tab,
+        tableTab?.loadedTabs ?? [],
+      )
       if (!needColumns && !needTab) return
       if (needColumns) startedTabs.push('columns')
       if (needTab) startedTabs.push(tab)
@@ -2481,7 +2484,6 @@ export const WorkbenchPage: React.FC = () => {
                                 connectionName={t.connectionName}
                                 database={t.database}
                                 editTableName={t.tableName}
-                                lightweightStructureLoad={openConnections.find(c => c.id === t.connectionId)?.dbType === 'dameng'}
                                 dbType={openConnections.find(c => c.id === t.connectionId)?.dbType}
                                 onSuccess={(result: TableDesignerSaveResult) => {
                                   if (result.renamed && result.previousTableName) {
@@ -2520,18 +2522,7 @@ export const WorkbenchPage: React.FC = () => {
                           label: 'DDL',
                           children: (
                             <div style={{ ...panelStyle, height: '100%', overflow: 'hidden', padding: 0 }}>
-                              <pre style={{
-                                margin: 0,
-                                padding: 16,
-                                color: token.colorText,
-                                background: 'var(--glass-panel)',
-                                fontSize: 12,
-                                fontFamily: 'var(--font-family-code)',
-                                overflow: 'auto',
-                                height: '100%',
-                              }}>
-                                {isDdlLoading ? '正在加载 DDL...' : (t.ddl || '无 DDL 数据')}
-                              </pre>
+                              <DdlViewer ddl={t.ddl} loading={isDdlLoading} />
                             </div>
                           ),
                         },
@@ -2714,7 +2705,6 @@ export const WorkbenchPage: React.FC = () => {
                       connectionName={activeTab.connectionName}
                       database={activeTab.database}
                       editTableName={activeTab.tableName}
-                      lightweightStructureLoad={openConnections.find(c => c.id === activeTab.connectionId)?.dbType === 'dameng'}
                       dbType={openConnections.find(c => c.id === activeTab.connectionId)?.dbType}
                       onSuccess={(result: TableDesignerSaveResult) => {
                         if (result.renamed && result.previousTableName) {

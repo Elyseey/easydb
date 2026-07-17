@@ -164,6 +164,8 @@ export const metadataApi = {
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/objects`),
   tableDefinition: (connectionId: string, database: string, table: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/definition`),
+  tableDesign: (connectionId: string, database: string, table: string) =>
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/design`),
   tableInfo: (connectionId: string, database: string, table: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/info`),
   columns: (connectionId: string, database: string, table: string) =>

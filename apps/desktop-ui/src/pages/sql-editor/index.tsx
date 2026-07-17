@@ -29,7 +29,7 @@ import type { SqlResult, ConnectionConfig } from '@/types'
 import { useWorkbenchStore } from '@/stores/workbenchStore'
 import { useConnectionStore } from '@/stores/connectionStore'
 import { useSqlEditorStore } from '@/stores/sqlEditorStore'
-import { sqlApi, metadataApi, connectionApi } from '@/services/api'
+import { sqlApi, connectionApi } from '@/services/api'
 import { useAppSettingsStore } from '@/stores/appSettingsStore'
 import { EmptyState } from '@/components/EmptyState'
 import { SqlResultPanel } from '@/components/SqlResultPanel'
@@ -50,6 +50,7 @@ import { SaveScriptModal } from './SaveScriptModal'
 import { SavedScriptsModal } from './SavedScriptsModal'
 import { SqlHistoryDrawer } from './SqlHistoryDrawer'
 import { formatHotkey } from '@/utils/osUtils'
+import { ConnectionDatabaseSelect } from '@/components/ConnectionDatabaseSelect'
 
 const { Content } = Layout
 const { Text } = Typography
@@ -94,7 +95,6 @@ export const SqlEditorPage: React.FC = () => {
   const [saveModalOpen, setSaveModalOpen] = useState(false)
   const [listModalOpen, setListModalOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [databases, setDatabases] = useState<string[]>([])
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null)
 
   const activeEditorTab = tabs.find((t) => t.key === activeTabKey) ?? tabs[0]
@@ -160,14 +160,6 @@ export const SqlEditorPage: React.FC = () => {
   // 仅在组件挂载时消费一次
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  // 连接变化时加载数据库列表（从工具栏上下文读取）
-  useEffect(() => {
-    if (!currentConnId) { setDatabases([]); return }
-    metadataApi.databases(currentConnId).then((dbs) => {
-      setDatabases((dbs as Array<{name: string}>).map(d => d.name))
-    }).catch(() => setDatabases([]))
-  }, [currentConnId])
 
   const addTab = () => {
     storeAddTab(currentConnId, currentDatabase)
@@ -452,16 +444,10 @@ export const SqlEditorPage: React.FC = () => {
                 }))}
                 listHeight={320}
               />
-              <Select
-                size="small"
-                variant="filled"
-                style={{ width: 160 }}
-                placeholder="选择数据库"
+              <ConnectionDatabaseSelect
+                connectionId={activeEditorTab.connectionId}
                 value={activeEditorTab.database}
                 onChange={handleDatabaseChange}
-                options={databases.map((db) => ({ label: db, value: db }))}
-                disabled={!activeEditorTab.connectionId}
-                showSearch
               />
             </Space>
             <Space>

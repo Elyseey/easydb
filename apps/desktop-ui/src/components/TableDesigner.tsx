@@ -113,8 +113,6 @@ interface TableDesignerProps {
   database: string
   /** 编辑模式下传入已有表名 */
   editTableName?: string
-  /** Avoid full table definition loads for drivers where DDL lookup is expensive. */
-  lightweightStructureLoad?: boolean
   dbType?: DbType
   onSuccess: (result: TableDesignerSaveResult) => void
   onCancel: () => void
@@ -124,7 +122,7 @@ let colCounter = 0
 let idxCounter = 0
 
 export const TableDesigner: React.FC<TableDesignerProps> = ({
-  connectionId, connectionName, database, editTableName, lightweightStructureLoad = false, dbType = 'mysql', onSuccess, onCancel,
+  connectionId, connectionName, database, editTableName, dbType = 'mysql', onSuccess, onCancel,
 }) => {
   const { token } = theme.useToken()
   const isEditMode = !!editTableName
@@ -156,19 +154,7 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
     if (!isEditMode || !editTableName) return
     originalTableNameRef.current = editTableName
     setLoading(true)
-    const loadStructure = lightweightStructureLoad
-      ? Promise.all([
-          metadataApi.tableInfo(connectionId, database, editTableName),
-          metadataApi.columns(connectionId, database, editTableName),
-          metadataApi.indexes(connectionId, database, editTableName),
-        ]).then(([tableInfo, columnsData, indexesData]) => ({
-          table: tableInfo,
-          columns: columnsData,
-          indexes: indexesData,
-        }))
-      : metadataApi.tableDefinition(connectionId, database, editTableName)
-
-    loadStructure
+    metadataApi.tableDesign(connectionId, database, editTableName)
       .then((def: unknown) => {
         const d = def as { table: { name?: string; comment?: string }; columns: Array<{ name: string; type: string; nullable: boolean; defaultValue?: string; isPrimaryKey: boolean; isAutoIncrement: boolean; comment?: string }>; indexes: Array<{ name: string; columns: string[]; isUnique: boolean; isPrimary: boolean }> }
         setTableComment(d.table.comment || '')
@@ -207,7 +193,7 @@ export const TableDesigner: React.FC<TableDesignerProps> = ({
       })
       .catch(e => handleApiError(e, '加载表结构失败'))
       .finally(() => setLoading(false))
-  }, [isEditMode, editTableName, connectionId, database, lightweightStructureLoad])
+  }, [isEditMode, editTableName, connectionId, database])
 
   // 列操作
   const updateColumn = useCallback((key: string, field: keyof ColumnRow, value: unknown) => {
