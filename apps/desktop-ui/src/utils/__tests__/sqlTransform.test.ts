@@ -11,6 +11,7 @@ describe('sqlFormatterDialectFor', () => {
   it.each<[DbType, string]>([
     ['mysql', 'mysql'],
     ['dameng', 'plsql'],
+    ['tdengine', 'mysql'],
     ['postgresql', 'postgresql'],
     ['oracle', 'plsql'],
     ['sqlserver', 'transactsql'],
@@ -33,7 +34,7 @@ describe('beautifySql', () => {
     expect(result).toContain('\nWHERE')
   })
 
-  it.each<DbType>(['mysql', 'dameng', 'postgresql', 'oracle', 'sqlserver', 'sqlite'])(
+  it.each<DbType>(['mysql', 'dameng', 'tdengine', 'postgresql', 'oracle', 'sqlserver', 'sqlite'])(
     'formats a basic query for %s',
     async (dbType) => {
       await expect(beautifySql('select 1 from sample_table', dbType)).resolves.toContain('SELECT')
@@ -42,6 +43,14 @@ describe('beautifySql', () => {
 
   it('does not return a partial result when parsing fails', async () => {
     await expect(beautifySql("select 'unterminated", 'mysql')).rejects.toBeInstanceOf(SqlTransformError)
+  })
+
+  it.each([
+    'CREATE STABLE meters (ts TIMESTAMP, value DOUBLE) TAGS (location VARCHAR(64))',
+    'SELECT DISTINCT tbname, location FROM meters',
+    'SELECT _wstart, AVG(value) FROM meters PARTITION BY tbname INTERVAL(1m)',
+  ])('formats TDengine syntax with the explicit MySQL-compatible fallback', async (sql) => {
+    await expect(beautifySql(sql, 'tdengine')).resolves.toMatch(/^(CREATE|SELECT)/)
   })
 })
 

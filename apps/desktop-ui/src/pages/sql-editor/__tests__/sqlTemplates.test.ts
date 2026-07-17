@@ -12,7 +12,7 @@ import {
 describe('SQL templates', () => {
   it('contains the agreed built-in abbreviations', () => {
     expect(BUILTIN_SQL_TEMPLATES.map((template) => template.prefix))
-      .toEqual(['sel', 'selw', 'selc', 'selj', 'ins', 'upd', 'del', 'cte'])
+      .toEqual(['sel', 'selw', 'selc', 'selj', 'ins', 'upd', 'del', 'cte', 'tdint', 'tdtags', 'tdstable'])
   })
 
   it.each(['upd', 'del'])('%s always includes an explicit WHERE placeholder', (prefix) => {
@@ -29,9 +29,19 @@ describe('SQL templates', () => {
   it.each<DbType>(['mysql', 'dameng', 'postgresql', 'oracle', 'sqlserver', 'sqlite'])(
     'exposes common templates for %s',
     (dbType) => {
-      expect(getSqlTemplates(dbType, true)).toHaveLength(BUILTIN_SQL_TEMPLATES.length)
+      expect(getSqlTemplates(dbType, true).map((template) => template.prefix))
+        .toEqual(['sel', 'selw', 'selc', 'selj', 'ins', 'upd', 'del', 'cte'])
     },
   )
+
+  it('exposes TDengine window/tag/stable templates without unsupported update or join templates', () => {
+    const prefixes = getSqlTemplates('tdengine', true).map((template) => template.prefix)
+
+    expect(prefixes).toEqual(['sel', 'selw', 'selc', 'ins', 'del', 'tdint', 'tdtags', 'tdstable'])
+    expect(prefixes).not.toContain('upd')
+    expect(prefixes).not.toContain('selj')
+    expect(prefixes).not.toContain('cte')
+  })
 
   it('filters dialect-specific templates by dbType', () => {
     const mysqlOnly: SqlTemplate = {

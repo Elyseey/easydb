@@ -32,6 +32,9 @@ interface DatabaseAdapter {
     fun migrationAdapter(): MigrationAdapter
     fun procedureAdapter(): ProcedureAdapter  // 存储过程/函数适配器
 
+    /** 时序目录能力是可选的；关系型驱动无需提供空实现。 */
+    fun timeSeriesMetadataAdapter(): TimeSeriesMetadataAdapter? = null
+
     /** 逻辑备份读取一致性由具体数据库驱动实现；不支持时返回 null。 */
     fun logicalBackupAdapter(): LogicalBackupAdapter? = null
 
@@ -115,6 +118,29 @@ interface MetadataAdapter {
  fun getObjectDdl(session: DatabaseSession, database: String, name: String, objectType: String): String {
   return getDdl(session, database, name)
  }
+}
+
+interface TimeSeriesMetadataAdapter {
+    fun listChildTables(
+        session: DatabaseSession,
+        database: String,
+        stable: String,
+        offset: Int = 0,
+        limit: Int = TimeSeriesMetadataLimits.DEFAULT_CHILD_TABLE_PAGE_SIZE,
+        search: String? = null
+    ): TimeSeriesChildTablePage
+
+    fun listTagDefinitions(
+        session: DatabaseSession,
+        database: String,
+        stable: String
+    ): List<TimeSeriesTagDefinition>
+
+    fun listTagValues(
+        session: DatabaseSession,
+        database: String,
+        table: String
+    ): List<TimeSeriesTagValue>
 }
 
 // ─── 方言适配器 ───────────────────────────────────────────

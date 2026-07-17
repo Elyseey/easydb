@@ -84,6 +84,9 @@ test/e2e/specs/*
 !test/e2e/specs/workbench-query-monaco.spec.ts
 
 # Temp data files
+!docs/开发规范/
+docs/开发规范/*
+!docs/开发规范/TDengine支持与安全集成测试.md
 docs/*.csv
 icon-new.png
 icon-squircle.png

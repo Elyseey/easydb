@@ -15,7 +15,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 import { create } from 'zustand'
-import type { DatabaseInfo, TableInfo, ColumnInfo, IndexInfo, DbType } from '@/types'
+import type { DatabaseInfo, TableInfo, ColumnInfo, IndexInfo, DbType, TableKind, TimeSeriesTagDefinition, TimeSeriesTagValue } from '@/types'
 
 /**
  * 工作台上下文 Store
@@ -50,6 +50,10 @@ export interface TableTabState {
   tableName: string
   /** 数据库对象类型：决定显示哪些标签页 */
   objectType: 'table' | 'view' | 'procedure' | 'function' | 'trigger'
+  tableKind?: TableKind
+  stableName?: string
+  tagDefinitions: TimeSeriesTagDefinition[]
+  tagValues: TimeSeriesTagValue[]
   columns: ColumnInfo[]
   indexes: IndexInfo[]
   ddl: string
@@ -59,7 +63,7 @@ export interface TableTabState {
   hasMoreRows: boolean
   /** 是否正在加载更多数据 */
   loadingMoreRows: boolean
-  detailTab: 'data' | 'design' | 'ddl'
+  detailTab: 'data' | 'design' | 'tags' | 'ddl'
   loadedTabs: string[]
   loadingTabs: string[]
 }

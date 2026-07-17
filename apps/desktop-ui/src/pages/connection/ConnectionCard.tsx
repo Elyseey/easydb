@@ -27,6 +27,7 @@ interface ConnectionCardProps {
 const VENDOR_COLORS: Record<string, string> = {
   mysql: '#E17E10',
   dameng: '#C23531',
+  tdengine: '#16A085',
   dm: '#C23531',
   postgresql: '#336791',
 }
@@ -34,6 +35,7 @@ const VENDOR_COLORS: Record<string, string> = {
 const DB_TYPE_LABELS: Record<string, string> = {
   mysql: 'MySQL',
   dameng: '达梦',
+  tdengine: 'TDengine',
   dm: '达梦',
   postgresql: 'PostgreSQL',
   oracle: 'Oracle',

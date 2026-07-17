@@ -13,7 +13,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="Platform">
   <img src="https://img.shields.io/badge/database-MySQL-4479A1?logo=mysql&logoColor=white" alt="MySQL">
-  <img src="https://img.shields.io/badge/version-1.3.2-green" alt="Version">
+  <img src="https://img.shields.io/badge/database-TDengine-16A085" alt="TDengine">
+  <img src="https://img.shields.io/badge/version-1.4.0--dev-orange" alt="Version">
 </p>
 
 <p align="center">
@@ -25,7 +26,8 @@
 ## ✨ 功能特性
 
 ### 🔌 连接管理
-- 支持 MySQL 连接的创建、编辑、测试、分组、搜索
+- 支持 MySQL、达梦、TDengine 连接的创建、编辑、测试、分组、搜索
+- TDengine 使用纯 WebSocket JDBC（默认 6041），桌面端无需安装 `libtaos`
 - **SSH 隧道**：JSch 本地端口转发，真正绕过跳板机访问内网数据库（密码/私钥双认证）
 - **SSL/TLS 加密**：支持 CA 证书验证、客户端双向认证（PEM 格式直读）
 - **凭据加密存储**：连接密码 AES-256-GCM 加密落盘，机器 ID 绑定密钥；API 响应自动脱敏
@@ -36,6 +38,7 @@
 - 视图支持：数据预览（只读）+ DDL 查看
 - 存储过程/函数/触发器 DDL 查看
 - 表结构设计器、DDL 查看
+- TDengine 时序对象浏览：超级表、普通表、子表分页/搜索、Tags、DDL 与只读数据预览
 
 ### ⚙️ 存储过程执行
 - 工作台对象树右键菜单入口（⚙ 执行存储过程 / ⨍ 调用函数）
@@ -50,7 +53,7 @@
 
 ### ✏️ SQL 编辑器
 - 基于 Monaco Editor，支持语法高亮
-- **智能补全**：表名、字段名、SQL 关键字、MySQL 函数
+- **智能补全**：按数据库类型提供表/超级表、字段、SQL 关键字、函数与模板
 - 上下文感知：自动识别 FROM/JOIN 子句中的表并提示字段
 - 支持选中部分执行、`⌘+Enter` 快捷执行
 - **SQL 历史**：可按库开关、可搜索、一键重新执行（可在设置中开关）
@@ -145,7 +148,7 @@
 │              Kernel (Kotlin / JVM 21)            │
 │  ┌──────────┐  ┌────────────┐  ┌──────────────┐ │
 │  │ Launcher │  │   Common   │  │   Drivers    │ │
-│  │  (Ktor)  │  │  接口 + 模型 │  │ MySQL (SPI) │ │
+│  │  (Ktor)  │  │  接口 + 模型 │  │ 多数据库 SPI │ │
 │  └──────────┘  └────────────┘  └──────────────┘ │
 │  ┌──────────────────────────────────────────────┐│
 │  │           SSH/SSL 安全层                     ││
@@ -223,6 +226,7 @@ easydb/
 ├── kernel/                  # 后端内核（Kotlin 多模块）
 │   ├── common/              # 接口定义 + 核心服务
 │   ├── drivers/mysql/       # MySQL 驱动（连接/元数据/迁移/同步）
+│   ├── drivers/tdengine/    # TDengine WebSocket 驱动与时序元数据
 │   ├── launcher/            # HTTP 服务入口（Ktor）
 │   ├── tunnel/              # SSH 隧道（JSch）
 │   └── api/                 # 协议定义
@@ -240,7 +244,7 @@ easydb/
 | v1.3.0 | ✅ 已发布 | 深色模式、SQL 文件导入、存储管理、查询收藏、快捷键体系、导出取消优化、自动更新检查、视图/存储过程/函数/触发器浏览 |
 | v1.3.1 | ✅ 已发布 | **数据库备份恢复**（完整备份、表级选择、一致性快照、SHA-256 校验、恢复策略、恢复模式） |
 | **v1.3.2** | ✅ 已发布 | 备份文件管理 · **存储过程执行** · **安全连接**（凭据 AES-256-GCM 加密、SSH 隧道、SSL/TLS）· **SQL 历史**（按库浏览开关、搜索、重执行）· **结构对比扩展**（视图/过程/函数/触发器，DDL 归一化）· **DDL 审计**（Binlog 表级 DDL 采集、5 类 DDL、风险分级、原始 SQL 保留）· **慢查询分析**（基于 performance_schema，SQL 指纹聚合，EXPLAIN 执行计划） |
-| **v1.4.0** | 🔜 计划中 | **达梦数据库兼容** — 驱动 SPI 扩展，达梦 SQL 方言适配 |
+| **v1.4.0** | 🚧 开发中 | **达梦 + TDengine 数据库兼容** — 多数据库 SPI、方言能力矩阵、TDengine 时序对象只读工作台 |
 
 ## 🤝 参与贡献
 

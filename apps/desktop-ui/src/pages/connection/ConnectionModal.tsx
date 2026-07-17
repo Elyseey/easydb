@@ -6,6 +6,16 @@ import type { ConnectionConfig, ConnectionGroup, DbType } from '@/types'
 
 const { Text } = Typography
 
+const DB_DEFAULTS: Record<DbType, { port: number; username: string; databasePlaceholder: string }> = {
+  mysql: { port: 3306, username: 'root', databasePlaceholder: '可选，连接后自动切换' },
+  dameng: { port: 5236, username: 'SYSDBA', databasePlaceholder: '可选，默认 schema' },
+  tdengine: { port: 6041, username: 'root', databasePlaceholder: '可选，默认数据库（WebSocket）' },
+  postgresql: { port: 5432, username: 'postgres', databasePlaceholder: '可选' },
+  oracle: { port: 1521, username: 'system', databasePlaceholder: '可选' },
+  sqlserver: { port: 1433, username: 'sa', databasePlaceholder: '可选' },
+  sqlite: { port: 0, username: '', databasePlaceholder: '文件路径' },
+}
+
 interface ConnectionModalProps {
   open: boolean
   editingConnection: ConnectionConfig | null
@@ -33,22 +43,11 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
 
   const dbType = Form.useWatch('dbType', form)
 
-  const DB_DEFAULTS: Record<DbType, { port: number; username: string; databasePlaceholder: string }> = {
-    mysql: { port: 3306, username: 'root', databasePlaceholder: '可选，连接后自动切换' },
-    dameng: { port: 5236, username: 'SYSDBA', databasePlaceholder: '可选，默认 schema' },
-    postgresql: { port: 5432, username: 'postgres', databasePlaceholder: '可选' },
-    oracle: { port: 1521, username: 'system', databasePlaceholder: '可选' },
-    sqlserver: { port: 1433, username: 'sa', databasePlaceholder: '可选' },
-    sqlite: { port: 0, username: '', databasePlaceholder: '文件路径' },
-  }
-
   // 弹窗打开时重置表单
   React.useEffect(() => {
     if (open) {
       if (editingConnection) {
         // 编辑模式：不预填已存储密码，避免 *** 回传
-        const hasStoredPassword = !!editingConnection.passwordRef
-        const hasStoredSshPassword = !!editingConnection.ssh?.passwordRef
         form.setFieldsValue({
           ...editingConnection,
           password: '',  // 清空，由 placeholder 提示
@@ -60,9 +59,6 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
         setSshEnabled(!!editingConnection.ssh?.enabled)
         setSslEnabled(!!editingConnection.ssl?.enabled)
         setSshAuthType((editingConnection.ssh?.authType as 'password' | 'privateKey') ?? 'password')
-        // 保存原始 passwordRef，用于判断 save 时是否修改了密码
-        ;(form as any).__hasStoredPassword = hasStoredPassword
-        ;(form as any).__hasStoredSshPassword = hasStoredSshPassword
       } else {
         form.resetFields()
         form.setFieldsValue({
@@ -72,8 +68,6 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
         setSshEnabled(false)
         setSslEnabled(false)
         setSshAuthType('password')
-        ;(form as any).__hasStoredPassword = false
-        ;(form as any).__hasStoredSshPassword = false
       }
     }
   }, [open, editingConnection, form, defaultGroupId])
@@ -170,6 +164,7 @@ export const ConnectionModal: React.FC<ConnectionModalProps> = ({
                       options={[
                         { value: 'mysql', label: 'MySQL' },
                         { value: 'dameng', label: '达梦' },
+                        { value: 'tdengine', label: 'TDengine（WebSocket）' },
                         { value: 'postgresql', label: 'PostgreSQL', disabled: true },
                       ]}
                     />

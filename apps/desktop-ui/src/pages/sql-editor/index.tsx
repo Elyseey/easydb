@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
-import React, { useState, useCallback, useRef, useEffect } from 'react'
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import {
   Layout, Button, Space, Typography, Tabs, Tag, Select,
   theme, Tooltip,
@@ -74,6 +74,7 @@ export const SqlEditorPage: React.FC = () => {
   const effectiveTheme = useThemeStore((s) => s.effectiveTheme)
   const sqlHistoryEnabled          = useAppSettingsStore((s) => s.sqlHistoryEnabled)
   const sqlHistoryFilterByDatabase = useAppSettingsStore((s) => s.sqlHistoryFilterByDatabase)
+  const sqlTemplatesEnabled        = useAppSettingsStore((s) => s.sqlTemplatesEnabled)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const completionDisposableRef = useRef<{ dispose: () => void } | null>(null)
 
@@ -105,6 +106,11 @@ export const SqlEditorPage: React.FC = () => {
   const hasTabs = tabs.length > 0
   const currentConnId = hasTabs ? activeEditorTab?.connectionId : (activeConnectionId ?? undefined)
   const currentDatabase = hasTabs ? activeEditorTab?.database : (activeDatabase ?? undefined)
+  const currentDbType = connections.find((connection) => connection.id === currentConnId)?.dbType
+  const completionOptions = useMemo(() => ({
+    dbType: currentDbType,
+    templatesEnabled: sqlTemplatesEnabled,
+  }), [currentDbType, sqlTemplatesEnabled])
 
   const updateActiveTab = useCallback((updates: Partial<typeof activeEditorTab>) => {
     storeUpdateTab(activeTabKey, updates)
@@ -208,7 +214,7 @@ export const SqlEditorPage: React.FC = () => {
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = monacoRef.current.languages.registerCompletionItemProvider(
         'sql',
-        createSqlCompletionProvider(activeEditorTab.connectionId, db, monacoRef.current)
+        createSqlCompletionProvider(activeEditorTab.connectionId, db, monacoRef.current, completionOptions)
       )
     }
   }
@@ -227,7 +233,7 @@ export const SqlEditorPage: React.FC = () => {
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = monaco.languages.registerCompletionItemProvider(
         'sql',
-        createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monaco)
+        createSqlCompletionProvider(activeEditorTab.connectionId, activeEditorTab.database, monaco, completionOptions)
       )
     }
 
@@ -240,13 +246,13 @@ export const SqlEditorPage: React.FC = () => {
       completionDisposableRef.current?.dispose()
       completionDisposableRef.current = monacoRef.current.languages.registerCompletionItemProvider(
         'sql',
-        createSqlCompletionProvider(currentConnId, currentDatabase, monacoRef.current)
+        createSqlCompletionProvider(currentConnId, currentDatabase, monacoRef.current, completionOptions)
       )
     }
     return () => {
       completionDisposableRef.current?.dispose()
     }
-  }, [currentConnId, currentDatabase])
+  }, [currentConnId, currentDatabase, completionOptions])
 
   const activeDbRefForCache = activeEditorTab?.database
   useEffect(() => { clearCompletionCache() }, [activeDbRefForCache])

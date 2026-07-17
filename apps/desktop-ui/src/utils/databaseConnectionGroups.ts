@@ -3,6 +3,7 @@ import type { ConnectionConfig, DbType } from '@/types'
 const DATABASE_TYPE_ORDER: DbType[] = [
   'mysql',
   'dameng',
+  'tdengine',
   'postgresql',
   'oracle',
   'sqlserver',
@@ -12,6 +13,7 @@ const DATABASE_TYPE_ORDER: DbType[] = [
 const DATABASE_TYPE_LABELS: Record<DbType, string> = {
   mysql: 'MySQL',
   dameng: '达梦',
+  tdengine: 'TDengine',
   postgresql: 'PostgreSQL',
   oracle: 'Oracle',
   sqlserver: 'SQL Server',

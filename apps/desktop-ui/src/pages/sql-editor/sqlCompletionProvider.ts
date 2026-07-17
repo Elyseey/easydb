@@ -19,6 +19,12 @@ const SQL_KEYWORDS = [
   'DATE', 'DATETIME', 'TIMESTAMP', 'BOOLEAN', 'CHAR',
 ]
 
+const TDENGINE_KEYWORDS = [
+  'STABLE', 'TAGS', 'USING', 'TBNAME', 'PARTITION', 'INTERVAL', 'SLIDING', 'FILL',
+  'SLIMIT', 'SOFFSET', 'SESSION', 'STATE_WINDOW', 'EVENT_WINDOW', 'COUNT_WINDOW',
+  'EVERY', 'RANGE', 'ASOF', 'WINDOW_OFFSET', 'PRECISION',
+]
+
 // ─── MySQL 内置函数 ──────────────────────────────────────────
 const SQL_FUNCTIONS = [
   'NOW()', 'CURDATE()', 'CURTIME()', 'DATE_FORMAT()', 'DATEDIFF()',
@@ -28,9 +34,37 @@ const SQL_FUNCTIONS = [
   'GROUP_CONCAT()', 'JSON_EXTRACT()', 'JSON_OBJECT()',
 ]
 
+const TDENGINE_FUNCTIONS = [
+  'NOW()', 'TODAY()', 'TIMEZONE()', 'TIMETRUNCATE()', 'TIMEDIFF()', 'TO_ISO8601()',
+  'TO_UNIXTIMESTAMP()', 'COUNT()', 'SUM()', 'AVG()', 'MAX()', 'MIN()', 'STDDEV()',
+  'SPREAD()', 'FIRST()', 'LAST()', 'LAST_ROW()', 'TOP()', 'BOTTOM()', 'APERCENTILE()',
+  'TWA()', 'IRATE()', 'DERIVATIVE()', 'DIFF()', 'CSUM()', 'MAVG()', 'ELAPSED()',
+  'SAMPLE()', 'UNIQUE()', 'MODE()',
+]
+
+export function sqlCompletionVocabulary(dbType?: DbType): {
+  keywords: readonly string[]
+  functions: readonly string[]
+  functionDetail: string
+} {
+  if (dbType === 'tdengine') {
+    return {
+      keywords: [...SQL_KEYWORDS.filter((keyword) => keyword !== 'AUTO_INCREMENT'), ...TDENGINE_KEYWORDS],
+      functions: TDENGINE_FUNCTIONS,
+      functionDetail: 'TDengine 函数',
+    }
+  }
+  return {
+    keywords: SQL_KEYWORDS,
+    functions: SQL_FUNCTIONS,
+    functionDetail: dbType === 'mysql' ? 'MySQL 函数' : 'SQL 函数',
+  }
+}
+
 // ─── 缓存 ─────────────────────────────────────────────────
 interface TableMeta {
   name: string
+  type: string
   columns?: string[]
 }
 
@@ -52,8 +86,8 @@ async function ensureTablesLoaded(connectionId: string, database: string): Promi
   try {
     const objects = await metadataApi.objects(connectionId, database) as Array<{ name: string; type: string }>
     cachedTables = objects
-      .filter((o) => o.type === 'table' || o.type === 'view')
-      .map((o) => ({ name: o.name }))
+      .filter((o) => o.type === 'table' || o.type === 'stable' || o.type === 'view')
+      .map((o) => ({ name: o.name, type: o.type }))
     cachedConnectionId = connectionId
     cachedDatabase = database
   } catch {
@@ -147,6 +181,7 @@ export function createSqlCompletionProvider(
       }
 
       const suggestions: languages.CompletionItem[] = []
+      const vocabulary = sqlCompletionVocabulary(options.dbType)
 
       const availableTemplates = options.dbType && isSqlTemplateContext(model, position.lineNumber, word.startColumn)
         ? getSqlTemplates(options.dbType, options.templatesEnabled ?? false)
@@ -205,7 +240,7 @@ export function createSqlCompletionProvider(
       }
 
       // ─── 3. SQL 关键字 ─────────────────────────────────────
-      for (const kw of SQL_KEYWORDS) {
+      for (const kw of vocabulary.keywords) {
         suggestions.push({
           label: kw,
           kind: monacoInstance.languages.CompletionItemKind.Keyword,
@@ -216,12 +251,12 @@ export function createSqlCompletionProvider(
       }
 
       // ─── 4. SQL 函数 ──────────────────────────────────────
-      for (const fn of SQL_FUNCTIONS) {
+      for (const fn of vocabulary.functions) {
         suggestions.push({
           label: fn,
           kind: monacoInstance.languages.CompletionItemKind.Function,
           insertText: fn,
-          detail: 'MySQL 函数',
+          detail: vocabulary.functionDetail,
           range,
         })
       }
@@ -233,7 +268,7 @@ export function createSqlCompletionProvider(
           label: table.name,
           kind: monacoInstance.languages.CompletionItemKind.Struct,
           insertText: table.name,
-          detail: '表',
+          detail: table.type === 'stable' ? 'TDengine 超级表' : table.type === 'view' ? '视图' : '表',
           range,
         })
       }

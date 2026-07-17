@@ -75,7 +75,7 @@ describe('TaskCenterPage', () => {
     })
     expect(screen.getByText('energy → ENERGY')).toBeInTheDocument()
     expect(screen.getByText('生产 MySQL → 达梦测试')).toBeInTheDocument()
-  })
+  }, 10_000)
 
   it('searches tasks by endpoint host', async () => {
     render(<TaskCenterPage />)

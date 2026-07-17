@@ -10,6 +10,7 @@ dependencies {
     implementation(project(":api"))
     implementation(project(":drivers:mysql"))
     implementation(project(":drivers:dameng"))
+    implementation(project(":drivers:tdengine"))
     implementation(project(":metadata"))
     implementation(project(":dialect"))
     implementation(project(":sync-engine"))

@@ -126,4 +126,32 @@ describe('EditableDataTable export menu', () => {
     await waitFor(() => expect(handleResize).toHaveBeenCalled())
     window.removeEventListener('resize', handleResize)
   })
+
+  it('does not expose edit or export actions in restricted read-only mode', () => {
+    const { container } = render(
+      <EditableDataTable
+        connectionId="connection-1"
+        dbType="tdengine"
+        database="database-1"
+        tableName="meters"
+        columns={[{
+          name: 'ts',
+          type: 'TIMESTAMP',
+          nullable: false,
+          isPrimaryKey: true,
+          isAutoIncrement: false,
+        }]}
+        dataSource={[{ ts: '2026-07-17 00:00:00.000' }]}
+        readOnly
+        allowExport={false}
+        allowSqlExport={false}
+        onRefresh={() => {}}
+      />,
+    )
+
+    expect(screen.getByText('数据只读')).toBeInTheDocument()
+    expect(container.querySelector('.anticon-plus')).toBeNull()
+    expect(container.querySelector('.anticon-save')).toBeNull()
+    expect(container.querySelector('.anticon-download')).toBeNull()
+  })
 })

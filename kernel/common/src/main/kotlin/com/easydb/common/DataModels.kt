@@ -27,8 +27,52 @@ data class TableInfo(
     val dataLength: Long? = null,
     val indexLength: Long? = null,
     val updateTime: String? = null,
-    val engine: String? = null
+    val engine: String? = null,
+    val tableKind: TableKind? = null
 )
+
+@Serializable
+enum class TableKind {
+    SUPER_TABLE,
+    BASIC_TABLE,
+    CHILD_TABLE
+}
+
+@Serializable
+data class TimeSeriesTagDefinition(
+    val name: String,
+    val type: String
+)
+
+@Serializable
+data class TimeSeriesTagValue(
+    val name: String,
+    val type: String,
+    val value: String? = null
+)
+
+@Serializable
+data class TimeSeriesChildTable(
+    val name: String,
+    val database: String,
+    val stableName: String,
+    val tagValues: List<TimeSeriesTagValue> = emptyList(),
+    val createdAt: String? = null,
+    val comment: String? = null
+)
+
+@Serializable
+data class TimeSeriesChildTablePage(
+    val items: List<TimeSeriesChildTable>,
+    val offset: Int,
+    val limit: Int,
+    val hasMore: Boolean
+)
+
+object TimeSeriesMetadataLimits {
+    const val DEFAULT_CHILD_TABLE_PAGE_SIZE = 100
+    const val MAX_CHILD_TABLE_PAGE_SIZE = 200
+}
 
 @Serializable
 data class TriggerInfo(

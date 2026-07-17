@@ -9,12 +9,16 @@ describe('tableDetailLoadPlan', () => {
     })
   })
 
-  it('does not preload columns for design or DDL', () => {
+  it('does not preload columns for design, tags or DDL', () => {
     expect(tableDetailLoadPlan('design', [])).toEqual({
       loadColumns: false,
       loadTab: true,
     })
     expect(tableDetailLoadPlan('ddl', [])).toEqual({
+      loadColumns: false,
+      loadTab: true,
+    })
+    expect(tableDetailLoadPlan('tags', [])).toEqual({
       loadColumns: false,
       loadTab: true,
     })

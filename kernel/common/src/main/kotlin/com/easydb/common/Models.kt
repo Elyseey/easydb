@@ -22,6 +22,7 @@ import kotlinx.serialization.Serializable
 enum class DbType(val displayName: String) {
     MYSQL("MySQL"),
     DAMENG("达梦"),
+    TDENGINE("TDengine"),
     POSTGRESQL("PostgreSQL"),
     ORACLE("Oracle"),
     SQLSERVER("SQL Server"),
@@ -108,7 +109,12 @@ data class DatabaseCapabilities(
     val supportsSqlFileImport: Boolean = false,
     val supportsLogicalBackup: Boolean = false,
     val supportsLogicalRestore: Boolean = false,
-    val supportsOverwriteRestore: Boolean = false
+    val supportsOverwriteRestore: Boolean = false,
+    val supportsTableCreate: Boolean = true,
+    val supportsTableRename: Boolean = true,
+    val supportsTableDrop: Boolean = true,
+    val supportsTableTruncate: Boolean = true,
+    val supportsRowEdit: Boolean = true
 )
 
 /**

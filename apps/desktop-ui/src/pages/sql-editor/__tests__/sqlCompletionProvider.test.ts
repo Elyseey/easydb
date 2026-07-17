@@ -10,7 +10,7 @@ vi.mock('@/services/api', () => ({
   metadataApi: metadataMocks,
 }))
 
-import { createSqlCompletionProvider, clearCompletionCache } from '../sqlCompletionProvider'
+import { createSqlCompletionProvider, clearCompletionCache, sqlCompletionVocabulary } from '../sqlCompletionProvider'
 
 const monacoInstance = {
   languages: {
@@ -107,5 +107,36 @@ describe('createSqlCompletionProvider SQL templates', () => {
     )
 
     expect(result?.suggestions.some((item) => item.kind === 28)).toBe(false)
+  })
+
+  it('uses TDengine vocabulary and exposes supertables as objects', async () => {
+    metadataMocks.objects.mockResolvedValue([{ name: 'meters', type: 'stable' }])
+    const provider = createSqlCompletionProvider('conn', 'db', monacoInstance, {
+      dbType: 'tdengine',
+      templatesEnabled: false,
+    })
+
+    const result = await provider.provideCompletionItems(
+      modelFor('', '', 1),
+      { lineNumber: 1, column: 1 } as Position,
+      completionContext,
+      cancellationToken,
+    )
+
+    expect(result?.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'STABLE', detail: 'SQL 关键字' }),
+      expect.objectContaining({ label: 'INTERVAL', detail: 'SQL 关键字' }),
+      expect.objectContaining({ label: 'LAST_ROW()', detail: 'TDengine 函数' }),
+      expect.objectContaining({ label: 'meters', detail: 'TDengine 超级表' }),
+    ]))
+    expect(result?.suggestions.some((item) => item.label === 'AUTO_INCREMENT')).toBe(false)
+    expect(result?.suggestions.some((item) => item.label === 'JSON_EXTRACT()')).toBe(false)
+  })
+
+  it('keeps MySQL-only functions out of the TDengine vocabulary', () => {
+    const vocabulary = sqlCompletionVocabulary('tdengine')
+
+    expect(vocabulary.functions).toContain('APERCENTILE()')
+    expect(vocabulary.functions).not.toContain('GROUP_CONCAT()')
   })
 })

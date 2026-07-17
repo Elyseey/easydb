@@ -13,6 +13,10 @@ export interface SqlTemplate {
   dbTypes?: readonly DbType[]
 }
 
+const NON_TDENGINE_DB_TYPES: readonly DbType[] = [
+  'mysql', 'dameng', 'postgresql', 'oracle', 'sqlserver', 'sqlite',
+]
+
 export const BUILTIN_SQL_TEMPLATES: readonly SqlTemplate[] = [
   {
     id: 'select-basic',
@@ -76,6 +80,7 @@ export const BUILTIN_SQL_TEMPLATES: readonly SqlTemplate[] = [
       '  ${7:condition};$0',
     ].join('\n'),
     risk: 'read',
+    dbTypes: NON_TDENGINE_DB_TYPES,
   },
   {
     id: 'insert-row',
@@ -106,6 +111,7 @@ export const BUILTIN_SQL_TEMPLATES: readonly SqlTemplate[] = [
       '  ${4:condition};$0',
     ].join('\n'),
     risk: 'write',
+    dbTypes: NON_TDENGINE_DB_TYPES,
   },
   {
     id: 'delete-safe',
@@ -140,6 +146,59 @@ export const BUILTIN_SQL_TEMPLATES: readonly SqlTemplate[] = [
       '  ${1:cte_name};$0',
     ].join('\n'),
     risk: 'read',
+    dbTypes: NON_TDENGINE_DB_TYPES,
+  },
+  {
+    id: 'tdengine-interval',
+    prefix: 'tdint',
+    label: 'TDengine 时间窗口聚合',
+    description: '按子表和时间窗口聚合超级表指标',
+    body: [
+      'SELECT',
+      '  _wstart,',
+      '  AVG(${1:value_column}) AS avg_value',
+      'FROM',
+      '  ${2:stable_name}',
+      'WHERE',
+      '  ts >= NOW - ${3:1h}',
+      'PARTITION BY',
+      '  tbname',
+      'INTERVAL(${4:1m});$0',
+    ].join('\n'),
+    risk: 'read',
+    dbTypes: ['tdengine'],
+  },
+  {
+    id: 'tdengine-tags',
+    prefix: 'tdtags',
+    label: 'TDengine 子表 Tags',
+    description: '从超级表查询子表名和 Tag 列',
+    body: [
+      'SELECT DISTINCT',
+      '  tbname,',
+      '  ${1:tag_column}',
+      'FROM',
+      '  ${2:stable_name};$0',
+    ].join('\n'),
+    risk: 'read',
+    dbTypes: ['tdengine'],
+  },
+  {
+    id: 'tdengine-create-stable',
+    prefix: 'tdstable',
+    label: '创建 TDengine 超级表',
+    description: '创建包含时间戳、指标列和 Tags 的超级表',
+    body: [
+      'CREATE STABLE ${1:stable_name} (',
+      '  ts TIMESTAMP,',
+      '  ${2:value_column} DOUBLE',
+      ')',
+      'TAGS (',
+      '  ${3:location} VARCHAR(64)',
+      ');$0',
+    ].join('\n'),
+    risk: 'write',
+    dbTypes: ['tdengine'],
   },
 ]
 

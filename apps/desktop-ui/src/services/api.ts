@@ -217,6 +217,18 @@ export const metadataApi = {
       method: 'POST',
       body: JSON.stringify({ oldName, newName }),
     }),
+  timeSeriesChildren: (connectionId: string, database: string, stable: string, params?: { offset?: number; limit?: number; search?: string }) => {
+    const query = new URLSearchParams()
+    if (params?.offset !== undefined) query.set('offset', String(params.offset))
+    if (params?.limit !== undefined) query.set('limit', String(params.limit))
+    if (params?.search) query.set('search', params.search)
+    const suffix = query.size > 0 ? `?${query.toString()}` : ''
+    return request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/stables/${pathSegment(stable)}/children${suffix}`)
+  },
+  timeSeriesTagDefinitions: (connectionId: string, database: string, stable: string) =>
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/stables/${pathSegment(stable)}/tags`),
+  timeSeriesTagValues: (connectionId: string, database: string, table: string) =>
+    request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/tables/${pathSegment(table)}/tags`),
 }
 
 // ─── SQL 执行 ────────────────────────────────────────────

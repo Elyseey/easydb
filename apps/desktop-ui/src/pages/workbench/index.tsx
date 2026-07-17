@@ -30,7 +30,10 @@ import type { DataNode } from 'antd/es/tree'
 import {
   FileText, Table2, Activity, Zap, Eye, KeyRound, Search, Plus, Database, Cog, FunctionSquare,
 } from 'lucide-react'
-import type { TableInfo, ColumnInfo, ConnectionConfig, SavedScript, DatabaseInfo } from '@/types'
+import type {
+  TableInfo, ColumnInfo, ConnectionConfig, SavedScript, DatabaseInfo, TableKind,
+  TimeSeriesChildTablePage, TimeSeriesTagDefinition, TimeSeriesTagValue,
+} from '@/types'
 import { useWorkbenchStore, type TableDataQuery, type TableTabState, type WorkbenchTab } from '@/stores/workbenchStore'
 import { useConnectionStore } from '@/stores/connectionStore'
 import { useSqlEditorStore } from '@/stores/sqlEditorStore'
@@ -68,6 +71,10 @@ type TreeDataNode = DataNode & { 'data-node-key'?: string }
 type WorkbenchPaneRenderState = {
   keepAliveKeys: string[]
   dirtyKeys: string[]
+}
+type ChildTableTreeState = TimeSeriesChildTablePage & {
+  loading: boolean
+  search: string
 }
 
 /** 每次 previewRows 加载的行数（与后端 limit 对齐） */
@@ -306,6 +313,8 @@ export const WorkbenchPage: React.FC = () => {
   const [loadingConns, setLoadingConns] = useState<Set<string>>(new Set())
   const [searchText, setSearchText] = useState('')
   const deferredSearch = useDeferredValue(searchText)
+  const [childTablesMap, setChildTablesMap] = useState<Record<string, ChildTableTreeState>>({})
+  const childTableLoadSeqRef = useRef<Record<string, number>>({})
 
   // --- 树组件虚拟列表高度 ---
   const [treeHeight, setTreeHeight] = useState(600)
@@ -579,6 +588,57 @@ export const WorkbenchPage: React.FC = () => {
     }
   }, [ensureConnected, setObjectsMap])
 
+  const loadChildTables = useCallback(async (
+    connId: string,
+    dbName: string,
+    stableName: string,
+    options?: { append?: boolean; search?: string },
+  ) => {
+    if (!(await ensureConnected(connId))) return
+    const key = `${connId}::${dbName}::${stableName}`
+    const current = childTablesMap[key]
+    const search = options?.search ?? current?.search ?? ''
+    const append = options?.append === true && search === current?.search
+    const offset = append ? current.items.length : 0
+    const seq = (childTableLoadSeqRef.current[key] ?? 0) + 1
+    childTableLoadSeqRef.current[key] = seq
+    setChildTablesMap((prev) => ({
+      ...prev,
+      [key]: {
+        items: append ? prev[key]?.items ?? [] : [],
+        offset,
+        limit: prev[key]?.limit ?? 100,
+        hasMore: prev[key]?.hasMore ?? false,
+        loading: true,
+        search,
+      },
+    }))
+    try {
+      const page = await metadataApi.timeSeriesChildren(connId, dbName, stableName, {
+        offset,
+        limit: 100,
+        search: search || undefined,
+      }) as TimeSeriesChildTablePage
+      if (childTableLoadSeqRef.current[key] !== seq) return
+      setChildTablesMap((prev) => ({
+        ...prev,
+        [key]: {
+          ...page,
+          items: append ? [...(prev[key]?.items ?? []), ...page.items] : page.items,
+          loading: false,
+          search,
+        },
+      }))
+    } catch (error) {
+      if (childTableLoadSeqRef.current[key] !== seq) return
+      setChildTablesMap((prev) => ({
+        ...prev,
+        [key]: { ...(prev[key] ?? { items: [], offset: 0, limit: 100, hasMore: false, search }), loading: false },
+      }))
+      handleApiError(error, '加载 TDengine 子表失败')
+    }
+  }, [childTablesMap, ensureConnected])
+
   // --- 多 Tab 数据加载（懒加载 + Tab 内独立缓存）---
   const updateTabState = useCallback((tabKey: string, updater: (prev: TableTabState) => Partial<TableTabState>) => {
     setOpenTableTabs(prev => {
@@ -694,6 +754,20 @@ export const WorkbenchPage: React.FC = () => {
               updateTabState(tabKey, (prev) => ({
                 ddl: ddlStr as string,
                 loadedTabs: addUnique(prev.loadedTabs, 'ddl'),
+              }))
+            })
+          )
+        } else if (tab === 'tags' && tableTab?.tableKind) {
+          const tagRequest = tableTab.tableKind === 'SUPER_TABLE'
+            ? metadataApi.timeSeriesTagDefinitions(connId, dbName, tableName)
+            : metadataApi.timeSeriesTagValues(connId, dbName, tableName)
+          promises.push(
+            tagRequest.then((tags: unknown) => {
+              if (!isCurrentRequest()) return
+              updateTabState(tabKey, (prev) => ({
+                tagDefinitions: prev.tableKind === 'SUPER_TABLE' ? tags as TimeSeriesTagDefinition[] : [],
+                tagValues: prev.tableKind === 'CHILD_TABLE' ? tags as TimeSeriesTagValue[] : [],
+                loadedTabs: addUnique(prev.loadedTabs, 'tags'),
               }))
             })
           )
@@ -816,7 +890,16 @@ export const WorkbenchPage: React.FC = () => {
   }, [applyRenamedTableState, loadTables, loadTabDataForTab, renameTableInput, renameTableTarget, renamingTable])
 
   // 打开或激活一个表 Tab
-  const openOrActivateTab = useCallback((connId: string, connName: string, dbName: string, tableName: string, defaultTab: 'data' | 'ddl' | 'design' = 'data', objectType: 'table' | 'view' | 'procedure' | 'function' | 'trigger' = 'table') => {
+  const openOrActivateTab = useCallback((
+    connId: string,
+    connName: string,
+    dbName: string,
+    tableName: string,
+    defaultTab: 'data' | 'ddl' | 'design' | 'tags' = 'data',
+    objectType: 'table' | 'view' | 'procedure' | 'function' | 'trigger' = 'table',
+    tableKind?: TableKind,
+    stableName?: string,
+  ) => {
     const tabKey = `table:${connId}::${dbName}::${tableName}`
     const existing = openTableTabs[tabKey]
     if (!existing) {
@@ -827,6 +910,10 @@ export const WorkbenchPage: React.FC = () => {
         database: dbName,
         tableName,
         objectType,
+        tableKind,
+        stableName,
+        tagDefinitions: [],
+        tagValues: [],
         columns: [],
         indexes: [],
         ddl: '',
@@ -1097,6 +1184,11 @@ export const WorkbenchPage: React.FC = () => {
 
   // --- 打开表设计器 ---
   const openTableDesignerTab = useCallback((connId: string, connName: string, db: string, tableName?: string) => {
+    const dbType = openConnections.find((connection) => connection.id === connId)?.dbType ?? null
+    if (!getDbCapabilities(dbType).workbench.tableDesigner) {
+      toast.warning('当前数据库类型不支持通用表设计器')
+      return
+    }
     if (tableName) {
       // Edit mode: open the unified table tab and focus directly on 'design'
       const key = `table:${connId}::${db}::${tableName}`
@@ -1132,7 +1224,7 @@ export const WorkbenchPage: React.FC = () => {
       },
       activeTableTabKey: uniqueId
     })
-  }, [openTableTabs, batchUpdate, openOrActivateTab, updateTabState, loadTabDataForTab])
+  }, [openConnections, openTableTabs, batchUpdate, openOrActivateTab, updateTabState, loadTabDataForTab])
 
   // --- 对象分类 ---
   const objectCategories = useMemo(() => [
@@ -1269,8 +1361,93 @@ export const WorkbenchPage: React.FC = () => {
         // 数据库名不匹配且子对象也不匹配 → 过滤掉
         if (deferredSearch && !dbNameMatches && !hasMatchingObjects) return null
 
-        const categoryChildren: TreeDataNode[] = objectCategories
-          .map((cat) => {
+        const categoryChildren: TreeDataNode[] = conn.dbType === 'tdengine'
+          ? [
+              {
+                key: `cat:${conn.id}:${db.name}:stables`,
+                'data-node-key': `cat:${conn.id}:${db.name}:stables`,
+                title: `超级表 (${dbObjects.filter((item) => item.tableKind === 'SUPER_TABLE').length})`,
+                icon: <Activity size={15} />,
+                children: dbObjects
+                  .filter((item) => item.tableKind === 'SUPER_TABLE')
+                  .map((stable) => {
+                    const childKey = `${conn.id}::${db.name}::${stable.name}`
+                    const childState = childTablesMap[childKey]
+                    return {
+                      key: `tsstable:${conn.id}:${db.name}:${stable.name}`,
+                      'data-node-key': `tsstable:${conn.id}:${db.name}:${stable.name}`,
+                      title: <Space size={6}><span>{stable.name}</span><Tag style={{ margin: 0 }}>STABLE</Tag></Space>,
+                      icon: <Activity size={14} color={token.colorPrimary} />,
+                      children: [
+                        {
+                          key: `tssearch:${conn.id}:${db.name}:${stable.name}`,
+                          'data-node-key': `tssearch:${conn.id}:${db.name}:${stable.name}`,
+                          selectable: false,
+                          isLeaf: true,
+                          title: (
+                            <Input.Search
+                              size="small"
+                              allowClear
+                              placeholder="搜索子表"
+                              defaultValue={childState?.search}
+                              onClick={(event) => event.stopPropagation()}
+                              onSearch={(value) => loadChildTables(conn.id, db.name, stable.name, { search: value })}
+                              style={{ width: 170 }}
+                            />
+                          ),
+                        },
+                        ...(childState?.items ?? []).map((child) => ({
+                          key: `tschild:${conn.id}:${db.name}:${stable.name}:${child.name}`,
+                          'data-node-key': `tschild:${conn.id}:${db.name}:${stable.name}:${child.name}`,
+                          title: <Space size={6}><span>{child.name}</span><Tag style={{ margin: 0 }}>子表</Tag></Space>,
+                          icon: iconTable,
+                          isLeaf: true,
+                        })),
+                        ...(childState?.loading ? [{
+                          key: `tsloading:${conn.id}:${db.name}:${stable.name}`,
+                          title: '正在加载子表...',
+                          selectable: false,
+                          isLeaf: true,
+                        }] : []),
+                        ...(childState?.hasMore ? [{
+                          key: `tsmore:${conn.id}:${db.name}:${stable.name}`,
+                          selectable: false,
+                          isLeaf: true,
+                          title: (
+                            <Button
+                              type="link"
+                              size="small"
+                              loading={childState.loading}
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                loadChildTables(conn.id, db.name, stable.name, { append: true })
+                              }}
+                            >
+                              加载更多
+                            </Button>
+                          ),
+                        }] : []),
+                      ],
+                    } as TreeDataNode
+                  }),
+              },
+              {
+                key: `cat:${conn.id}:${db.name}:tables`,
+                'data-node-key': `cat:${conn.id}:${db.name}:tables`,
+                title: `普通表 (${dbObjects.filter((item) => item.tableKind === 'BASIC_TABLE').length})`,
+                icon: <Table2 size={16} />,
+                children: dbObjects
+                  .filter((item) => item.tableKind === 'BASIC_TABLE')
+                  .map((table) => ({
+                    key: `obj:${conn.id}:${db.name}:${table.name}`,
+                    'data-node-key': `obj:${conn.id}:${db.name}:${table.name}`,
+                    title: <Space size={6}><span>{table.name}</span><Tag style={{ margin: 0 }}>普通表</Tag></Space>,
+                    icon: iconTable,
+                    isLeaf: true,
+                  })),
+              },
+            ]
+          : objectCategories.map((cat) => {
             const items = dbObjects.filter(
               (t) => cat.types.includes(t.type)
                 && (!deferredSearch || dbNameMatches || t.name.toLowerCase().includes(lowerSearch))
@@ -1288,8 +1465,7 @@ export const WorkbenchPage: React.FC = () => {
                 isLeaf: true,
               })),
             } as TreeDataNode
-          })
-          .filter((cat) => !deferredSearch || (cat.children && cat.children.length > 0))
+          }).filter((cat) => !deferredSearch || (cat.children && cat.children.length > 0))
 
         return {
           key: `db:${conn.id}:${db.name}`,
@@ -1326,7 +1502,7 @@ export const WorkbenchPage: React.FC = () => {
   })
 
   return [scriptsNode, ...connNodes]
-  }, [deferTree, openConnections, databasesMap, objectsMap, loadingConns, deferredSearch, objectCategories, token, handleRemoveConnection, iconConn, iconDb, iconTable, iconTrigger, iconView, iconProcedure, iconFunction, savedScripts])
+  }, [deferTree, openConnections, databasesMap, objectsMap, loadingConns, deferredSearch, objectCategories, token, handleRemoveConnection, iconConn, iconDb, iconTable, iconTrigger, iconView, iconProcedure, iconFunction, savedScripts, childTablesMap, loadChildTables])
 
   // --- 搜索时自动展开所有匹配的节点 ---
   const prevExpandedRef = useRef<React.Key[]>([])
@@ -1374,6 +1550,22 @@ export const WorkbenchPage: React.FC = () => {
       const dbName = parts.slice(1).join(':')
       const conn = openConnections.find((c) => c.id === connId)
       openOrActivateDbOverview(connId, conn?.name ?? '', dbName)
+    } else if (key.startsWith('tsstable:') || key.startsWith('tschild:')) {
+      const prefix = key.startsWith('tsstable:') ? 'tsstable:' : 'tschild:'
+      const parts = key.slice(prefix.length).split(':')
+      const connId = parts[0]
+      const dbName = parts[1]
+      const objectName = key.startsWith('tsstable:') ? parts.slice(2).join(':') : parts.slice(3).join(':')
+      const conn = openConnections.find((item) => item.id === connId)
+      const tabKey = `table:${connId}::${dbName}::${objectName}`
+      batchUpdate({
+        selectedCtx: { connectionId: connId, database: dbName, table: objectName },
+        activeConnectionId: connId,
+        activeConnectionName: conn?.name ?? null,
+        activeDatabase: dbName,
+        activeTable: objectName,
+        ...(openTableTabs[tabKey] ? { activeTableTabKey: tabKey } : {}),
+      })
     } else if (key.startsWith('obj:')) {
       const parts = key.slice(4).split(':')
       const connId = parts[0]
@@ -1419,6 +1611,15 @@ export const WorkbenchPage: React.FC = () => {
         const objKey = `${connId}::${dbName}`
         if (!objectsMap[objKey]) {
           loadTables(connId, dbName)
+        }
+      } else if (key.startsWith('tsstable:')) {
+        const parts = key.slice('tsstable:'.length).split(':')
+        const connId = parts[0]
+        const dbName = parts[1]
+        const stableName = parts.slice(2).join(':')
+        const childKey = `${connId}::${dbName}::${stableName}`
+        if (!childTablesMap[childKey]) {
+          loadChildTables(connId, dbName, stableName)
         }
       }
     }
@@ -1661,17 +1862,18 @@ export const WorkbenchPage: React.FC = () => {
       }
 
       // 表对象：完整菜单
-      return [
-        {
+      const conn = openConnections.find((item) => item.id === connId)
+      const cap = getDbCapabilities(conn?.dbType ?? null)
+      const tableItems: MenuProps['items'] = []
+      if (cap.workbench.tableDesigner) tableItems.push({
           key: 'design-table',
           icon: <EditOutlined />,
           label: '设计表',
           onClick: () => {
-            const conn = openConnections.find((c) => c.id === connId)
             openTableDesignerTab(connId, conn?.name ?? '', dbName, objName)
           },
-        },
-        {
+        })
+      if (cap.workbench.tableRename) tableItems.push({
           key: 'rename-table',
           icon: <EditOutlined />,
           label: '重命名',
@@ -1679,7 +1881,8 @@ export const WorkbenchPage: React.FC = () => {
             setRenameTableTarget({ connectionId: connId, database: dbName, tableName: objName })
             setRenameTableInput(objName)
           },
-        },
+        })
+      if (cap.workbench.exportData) tableItems.push(
         {
           key: 'export-csv',
           icon: <DownloadOutlined />,
@@ -1698,6 +1901,8 @@ export const WorkbenchPage: React.FC = () => {
           label: '导出为 SQL INSERT',
           onClick: () => handleTableExport(connId, dbName, objName, 'sql'),
         },
+      )
+      if (cap.workbench.tableTruncate) tableItems.push(
         { type: 'divider' },
         {
           key: 'truncate-table',
@@ -1721,6 +1926,8 @@ export const WorkbenchPage: React.FC = () => {
             })
           },
         },
+      )
+      if (cap.workbench.tableDrop) tableItems.push(
         { type: 'divider' },
         {
           key: 'drop-table',
@@ -1749,7 +1956,14 @@ export const WorkbenchPage: React.FC = () => {
             })
           },
         },
-      ]
+      )
+      tableItems.push({
+        key: 'refresh-table',
+        icon: <ReloadOutlined />,
+        label: '刷新',
+        onClick: () => loadTables(connId, dbName),
+      })
+      return tableItems
     }
     return []
   }, [openConnections, loadDatabases, loadTables, selectedCtx, setSelectedCtx, handleTableExport, setCreateDbModal, setEditDbModal, setImportSqlModal, setExportModal, openTableDesignerTab, objectsMap, openOrActivateTab])
@@ -1949,7 +2163,22 @@ export const WorkbenchPage: React.FC = () => {
                 onExpand={handleTreeExpand}
                 onDoubleClick={(_e, node) => {
                   const key = String(node.key)
-                  if (key.startsWith('obj:')) {
+                  if (key.startsWith('tsstable:')) {
+                    const parts = key.slice('tsstable:'.length).split(':')
+                    const connId = parts[0]
+                    const dbName = parts[1]
+                    const stableName = parts.slice(2).join(':')
+                    const conn = openConnections.find((item) => item.id === connId)
+                    openOrActivateTab(connId, conn?.name ?? '', dbName, stableName, 'data', 'table', 'SUPER_TABLE')
+                  } else if (key.startsWith('tschild:')) {
+                    const parts = key.slice('tschild:'.length).split(':')
+                    const connId = parts[0]
+                    const dbName = parts[1]
+                    const stableName = parts[2]
+                    const childName = parts.slice(3).join(':')
+                    const conn = openConnections.find((item) => item.id === connId)
+                    openOrActivateTab(connId, conn?.name ?? '', dbName, childName, 'data', 'table', 'CHILD_TABLE', stableName)
+                  } else if (key.startsWith('obj:')) {
                     const parts = key.slice(4).split(':')
                     const connId = parts[0]
                     const dbName = parts[1]
@@ -1962,9 +2191,17 @@ export const WorkbenchPage: React.FC = () => {
                     const objInfo = dbObjects.find(o => o.name === objName)
                     const objType = objInfo?.type ?? 'table'
 
-                    if (objType === 'table' || objType === 'view') {
+                    if (objType === 'table' || objType === 'view' || objType === 'stable') {
                       // 表和视图：打开数据预览
-                      openOrActivateTab(connId, conn?.name ?? '', dbName, objName, 'data', objType as 'table' | 'view')
+                      openOrActivateTab(
+                        connId,
+                        conn?.name ?? '',
+                        dbName,
+                        objName,
+                        'data',
+                        objType === 'view' ? 'view' : 'table',
+                        objInfo?.tableKind,
+                      )
                     } else {
                       // 存储过程/函数/触发器：打开 DDL 标签页
                       openOrActivateTab(connId, conn?.name ?? '', dbName, objName, 'ddl', objType as 'procedure' | 'function' | 'trigger')
@@ -2296,6 +2533,17 @@ export const WorkbenchPage: React.FC = () => {
               // ===== 表详情 Tab =====
               if (activeTab.type === 'table') {
                 const t = activeTab
+                const paneDbType = openConnectionDbTypes.get(t.connectionId)
+                const paneCapabilities = getDbCapabilities(paneDbType ?? null)
+                const tableKindLabel = t.tableKind === 'SUPER_TABLE'
+                  ? '超级表'
+                  : t.tableKind === 'CHILD_TABLE'
+                    ? '子表'
+                    : t.tableKind === 'BASIC_TABLE'
+                      ? '普通表'
+                      : t.objectType === 'view'
+                        ? '视图'
+                        : '表'
                 const isDataLoading = t.detailTab === 'data' && (
                   t.loadingTabs.includes('data') ||
                   t.loadingTabs.includes('columns')
@@ -2330,8 +2578,13 @@ export const WorkbenchPage: React.FC = () => {
                             <Space size={8} wrap style={{ marginTop: 10 }}>
                               <Text strong style={{ fontSize: 18, color: token.colorText }}>{t.tableName}</Text>
                               <Tag variant="filled" color={t.objectType === 'view' ? 'processing' : 'default'} style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
-                                {t.objectType === 'view' ? '视图' : '表'}
+                                {tableKindLabel}
                               </Tag>
+                              {t.tableKind === 'CHILD_TABLE' && t.stableName && (
+                                <Tag variant="filled" color="blue" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                                  所属超级表：{t.stableName}
+                                </Tag>
+                              )}
                               <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
                                 {t.connectionName}
                               </Tag>
@@ -2353,7 +2606,7 @@ export const WorkbenchPage: React.FC = () => {
                       size="small"
                       activeKey={t.detailTab}
                       onChange={(key) => {
-                        const nextTab = key as 'data' | 'design' | 'ddl'
+                        const nextTab = key as 'data' | 'design' | 'tags' | 'ddl'
                         updateTabState(tabKey, () => ({ detailTab: nextTab }))
                         loadTabDataForTab(tabKey, t.connectionId, t.database, t.tableName, nextTab)
                       }}
@@ -2369,6 +2622,8 @@ export const WorkbenchPage: React.FC = () => {
                                 <Text type="secondary" style={{ fontSize: 12, flex: 1 }}>
                                   {t.objectType === 'view'
                                     ? '视图数据为只读模式'
+                                    : !paneCapabilities.workbench.rowEdit
+                                      ? `${tableKindLabel}数据为只读模式`
                                     : isDataLoading
                                       ? '正在加载表数据...'
                                       : t.columns.length > 0 && t.columns.some((c: ColumnInfo) => c.isPrimaryKey)
@@ -2390,7 +2645,7 @@ export const WorkbenchPage: React.FC = () => {
                                       刷新
                                     </Button>
                                   </Tooltip>
-                                  {t.previewRows.length > 0 && (
+                                  {t.previewRows.length > 0 && paneCapabilities.workbench.exportData && (
                                     <Dropdown menu={{
                                       items: [
                                         { key: 'csv', label: '导出为 CSV', onClick: () => confirmDataExport({ columns: t.columns.map((c: ColumnInfo) => c.name), rows: t.previewRows, format: 'csv', filenameBase: t.tableName, tableName: t.tableName, loadedOnly: t.hasMoreRows }) },
@@ -2427,6 +2682,9 @@ export const WorkbenchPage: React.FC = () => {
                                   loadingMore={t.loadingMoreRows}
                                   loading={isDataLoading}
                                   active={isActivePane && t.detailTab === 'data'}
+                                  readOnly={!paneCapabilities.workbench.rowEdit}
+                                  allowExport={paneCapabilities.workbench.exportData}
+                                  allowSqlExport={paneCapabilities.workbench.exportData}
                                   onDirtyChange={(dirty) => setPaneDirty(tabKey, dirty)}
                                   filterState={{
                                     whereDraft: t.dataQuery?.whereDraft ?? t.dataQuery?.where ?? '',
@@ -2474,7 +2732,7 @@ export const WorkbenchPage: React.FC = () => {
                             </div>
                           ),
                         } : null,
-                        t.objectType === 'table' ? {
+                        t.objectType === 'table' && paneCapabilities.workbench.tableDesigner ? {
                           key: 'design',
                           label: '设计',
                           children: (
@@ -2517,6 +2775,38 @@ export const WorkbenchPage: React.FC = () => {
                             </div>
                           ),
                         } : null,
+                        (t.tableKind === 'SUPER_TABLE' || t.tableKind === 'CHILD_TABLE') ? {
+                          key: 'tags',
+                          label: `Tags (${t.tableKind === 'SUPER_TABLE' ? t.tagDefinitions.length : t.tagValues.length})`,
+                          children: (
+                            <div style={{ ...panelStyle, height: '100%', overflow: 'auto', padding: 16 }}>
+                              {t.tableKind === 'CHILD_TABLE' && t.stableName && (
+                                <div style={{ ...compactPanelStyle, padding: '10px 12px', marginBottom: 12 }}>
+                                  <Text type="secondary" style={{ fontSize: 12 }}>所属超级表</Text>
+                                  <Text strong style={{ display: 'block', marginTop: 4 }}>{t.stableName}</Text>
+                                </div>
+                              )}
+                              <Table<TimeSeriesTagDefinition | TimeSeriesTagValue>
+                                size="small"
+                                rowKey="name"
+                                loading={t.loadingTabs.includes('tags')}
+                                pagination={false}
+                                dataSource={t.tableKind === 'SUPER_TABLE' ? t.tagDefinitions : t.tagValues}
+                                columns={[
+                                  { title: 'Tag 名称', dataIndex: 'name', key: 'name', width: 240 },
+                                  { title: '类型', dataIndex: 'type', key: 'type', width: 200 },
+                                  ...(t.tableKind === 'CHILD_TABLE' ? [{
+                                    title: '值',
+                                    dataIndex: 'value',
+                                    key: 'value',
+                                    render: (value: string | null | undefined) => value == null ? <Text type="secondary">NULL</Text> : value,
+                                  }] : []),
+                                ]}
+                                locale={{ emptyText: t.loadingTabs.includes('tags') ? '正在加载 Tags...' : '暂无 Tag 信息' }}
+                              />
+                            </div>
+                          ),
+                        } : null,
                         {
                           key: 'ddl',
                           label: 'DDL',
@@ -2536,6 +2826,7 @@ export const WorkbenchPage: React.FC = () => {
               if (activeTab.type === 'db-overview') {
                 const objKey = `${activeTab.connectionId}::${activeTab.database}`
                 const dbObjects = objectsMap[objKey] || []
+                const overviewCapabilities = getDbCapabilities(openConnectionDbTypes.get(activeTab.connectionId) ?? null)
                 const totalTableBytes = dbObjects
                   .filter((item) => item.type === 'table')
                   .reduce((acc, item) => acc + (item.dataLength || 0) + (item.indexLength || 0), 0)
@@ -2582,9 +2873,11 @@ export const WorkbenchPage: React.FC = () => {
                             <Button icon={<ReloadOutlined />} style={quietButtonStyle} onClick={() => loadTables(activeTab.connectionId, activeTab.database)}>
                               刷新对象
                             </Button>
-                            <Button icon={<PlusOutlined />} style={quietButtonStyle} onClick={() => openTableDesignerTab(activeTab.connectionId, activeTab.connectionName, activeTab.database)}>
-                              新建表
-                            </Button>
+                            {overviewCapabilities.workbench.tableCreate && (
+                              <Button icon={<PlusOutlined />} style={quietButtonStyle} onClick={() => openTableDesignerTab(activeTab.connectionId, activeTab.connectionName, activeTab.database)}>
+                                新建表
+                              </Button>
+                            )}
                             <Button type="primary" icon={<CodeOutlined />} onClick={() => openSqlEditor()}>
                               新建查询
                             </Button>
@@ -2631,9 +2924,11 @@ export const WorkbenchPage: React.FC = () => {
                             <Button block icon={<CodeOutlined />} style={{ ...quietButtonStyle, textAlign: 'left' }} onClick={() => openSqlEditor()}>
                               打开当前库查询窗口
                             </Button>
-                            <Button block icon={<PlusOutlined />} style={{ ...quietButtonStyle, textAlign: 'left' }} onClick={() => openTableDesignerTab(activeTab.connectionId, activeTab.connectionName, activeTab.database)}>
-                              新建数据表
-                            </Button>
+                            {overviewCapabilities.workbench.tableCreate && (
+                              <Button block icon={<PlusOutlined />} style={{ ...quietButtonStyle, textAlign: 'left' }} onClick={() => openTableDesignerTab(activeTab.connectionId, activeTab.connectionName, activeTab.database)}>
+                                新建数据表
+                              </Button>
+                            )}
                             <Button block icon={<ReloadOutlined />} style={{ ...quietButtonStyle, textAlign: 'left' }} onClick={() => loadTables(activeTab.connectionId, activeTab.database)}>
                               重新加载对象元数据
                             </Button>

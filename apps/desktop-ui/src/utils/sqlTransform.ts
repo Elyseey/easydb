@@ -4,6 +4,7 @@ import type { SqlLanguage } from 'sql-formatter'
 const FORMATTER_DIALECTS: Record<DbType, SqlLanguage> = {
   mysql: 'mysql',
   dameng: 'plsql',
+  tdengine: 'mysql',
   postgresql: 'postgresql',
   oracle: 'plsql',
   sqlserver: 'transactsql',

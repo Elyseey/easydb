@@ -241,6 +241,20 @@ fun Route.metadataRoutes() {
     fun adapterFor(session: DatabaseSession): DatabaseAdapter =
         ServiceRegistry.adapterRegistry.get(session.config.dbType)
 
+    suspend fun timeSeriesAdapterFor(
+        call: ApplicationCall,
+        session: DatabaseSession
+    ): TimeSeriesMetadataAdapter? {
+        val adapter = adapterFor(session).timeSeriesMetadataAdapter()
+        if (adapter == null) {
+            call.fail(
+                "UNSUPPORTED_DB_FEATURE",
+                "当前数据库类型（${session.config.dbType}）不支持时序对象元数据"
+            )
+        }
+        return adapter
+    }
+
     get("/{connectionId}/databases") {
         val session = getSessionOrFail(call, connMgr) ?: return@get
         call.ok(adapterFor(session).metadataAdapter().listDatabases(session))
@@ -250,6 +264,57 @@ fun Route.metadataRoutes() {
     get("/{connectionId}/charsets") {
         val session = getSessionOrFail(call, connMgr) ?: return@get
         call.ok(adapterFor(session).metadataAdapter().listCharsets(session))
+    }
+
+    get("/{connectionId}/{database}/timeseries/stables/{stable}/children") {
+        val session = getSessionOrFail(call, connMgr) ?: return@get
+        val adapter = timeSeriesAdapterFor(call, session) ?: return@get
+        val database = call.parameters["database"]!!
+        val stable = call.parameters["stable"]!!
+        val offset = call.request.queryParameters["offset"]?.toIntOrNull() ?: 0
+        val limit = call.request.queryParameters["limit"]?.toIntOrNull()
+            ?: TimeSeriesMetadataLimits.DEFAULT_CHILD_TABLE_PAGE_SIZE
+        if (offset < 0 || limit <= 0) {
+            return@get call.fail("INVALID_REQUEST", "offset 必须大于等于 0，limit 必须大于 0")
+        }
+        try {
+            call.ok(
+                adapter.listChildTables(
+                    session = session,
+                    database = database,
+                    stable = stable,
+                    offset = offset,
+                    limit = limit,
+                    search = call.request.queryParameters["search"]
+                )
+            )
+        } catch (error: Exception) {
+            call.fail("METADATA_FAILED", error.message ?: "加载 TDengine 子表失败")
+        }
+    }
+
+    get("/{connectionId}/{database}/timeseries/stables/{stable}/tags") {
+        val session = getSessionOrFail(call, connMgr) ?: return@get
+        val adapter = timeSeriesAdapterFor(call, session) ?: return@get
+        val database = call.parameters["database"]!!
+        val stable = call.parameters["stable"]!!
+        try {
+            call.ok(adapter.listTagDefinitions(session, database, stable))
+        } catch (error: Exception) {
+            call.fail("METADATA_FAILED", error.message ?: "加载 TDengine tag 定义失败")
+        }
+    }
+
+    get("/{connectionId}/{database}/timeseries/tables/{table}/tags") {
+        val session = getSessionOrFail(call, connMgr) ?: return@get
+        val adapter = timeSeriesAdapterFor(call, session) ?: return@get
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        try {
+            call.ok(adapter.listTagValues(session, database, table))
+        } catch (error: Exception) {
+            call.fail("METADATA_FAILED", error.message ?: "加载 TDengine tag values 失败")
+        }
     }
 
     // 新建数据库
@@ -316,12 +381,17 @@ fun Route.metadataRoutes() {
         val session = getSessionOrFail(call, connMgr) ?: return@post
         val database = call.parameters["database"]!!
         try {
+            val adapter = adapterFor(session)
+            if (!adapter.capabilities().supportsTableRename) {
+                call.fail("UNSUPPORTED_DB_FEATURE", "当前数据库类型（${session.config.dbType}）不支持重命名表")
+                return@post
+            }
             val body = call.receive<kotlinx.serialization.json.JsonObject>()
             val oldName = (body["oldName"] as? kotlinx.serialization.json.JsonPrimitive)?.content
                 ?: return@post call.fail("INVALID_REQUEST", "缺少 oldName 参数")
             val newName = (body["newName"] as? kotlinx.serialization.json.JsonPrimitive)?.content
                 ?: return@post call.fail("INVALID_REQUEST", "缺少 newName 参数")
-            adapterFor(session).metadataAdapter().renameTable(session, database, oldName, newName)
+            adapter.metadataAdapter().renameTable(session, database, oldName, newName)
             call.ok(true)
         } catch (e: Exception) {
             call.fail("RENAME_TABLE_FAILED", e.message ?: "重命名表失败")
@@ -441,9 +511,14 @@ fun Route.metadataRoutes() {
     post("/{connectionId}/{database}/preview-create-table") {
         val session = getSessionOrFail(call, connMgr) ?: return@post
         try {
+            val adapter = adapterFor(session)
+            if (!adapter.capabilities().supportsTableCreate) {
+                call.fail("UNSUPPORTED_DB_FEATURE", "当前数据库类型（${session.config.dbType}）不支持通用表设计器")
+                return@post
+            }
             val body = call.receive<kotlinx.serialization.json.JsonObject>()
             val tableDef = parseTableDefinition(body)
-            val ddl = adapterFor(session).dialectAdapter().buildCreateTableStatements(tableDef)
+            val ddl = adapter.dialectAdapter().buildCreateTableStatements(tableDef)
                 .joinToString("\n") { it.trim().trimEnd(';') + ";" }
             val escaped = ddl.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
             call.respondText("""{"success":true,"data":{"ddl":"$escaped"}}""", io.ktor.http.ContentType.Application.Json)
@@ -457,9 +532,13 @@ fun Route.metadataRoutes() {
         val session = getSessionOrFail(call, connMgr) ?: return@post
         val database = call.parameters["database"]!!
         try {
+            val adapter = adapterFor(session)
+            if (!adapter.capabilities().supportsTableCreate) {
+                call.fail("UNSUPPORTED_DB_FEATURE", "当前数据库类型（${session.config.dbType}）不支持通用表设计器")
+                return@post
+            }
             val body = call.receive<kotlinx.serialization.json.JsonObject>()
             val tableDef = parseTableDefinition(body)
-            val adapter = adapterFor(session)
             val ddlStatements = adapter.dialectAdapter().buildCreateTableStatements(tableDef)
             val ddl = ddlStatements.joinToString("\n") { it.trim().trimEnd(';') + ";" }
 
@@ -484,8 +563,13 @@ fun Route.metadataRoutes() {
         val database = call.parameters["database"]!!
         val table = call.parameters["table"]!!
         try {
+            val adapter = adapterFor(session)
+            if (!adapter.capabilities().supportsTableDrop) {
+                call.fail("UNSUPPORTED_DB_FEATURE", "当前数据库类型（${session.config.dbType}）不支持删除表")
+                return@delete
+            }
             val jdbcConn = session.getJdbcConnection()
-            val dialect = adapterFor(session).dialectAdapter()
+            val dialect = adapter.dialectAdapter()
             jdbcConn.createStatement().use { stmt ->
                 dialect.buildSwitchDatabaseSql(database)?.let { stmt.execute(it) }
                 stmt.execute("DROP TABLE ${dialect.quoteIdentifier(table)}")
@@ -502,8 +586,13 @@ fun Route.metadataRoutes() {
         val database = call.parameters["database"]!!
         val table = call.parameters["table"]!!
         try {
+            val adapter = adapterFor(session)
+            if (!adapter.capabilities().supportsTableTruncate) {
+                call.fail("UNSUPPORTED_DB_FEATURE", "当前数据库类型（${session.config.dbType}）不支持清空表")
+                return@post
+            }
             val jdbcConn = session.getJdbcConnection()
-            val dialect = adapterFor(session).dialectAdapter()
+            val dialect = adapter.dialectAdapter()
             jdbcConn.createStatement().use { stmt ->
                 dialect.buildSwitchDatabaseSql(database)?.let { stmt.execute(it) }
                 stmt.execute("TRUNCATE TABLE ${dialect.quoteIdentifier(table)}")
@@ -519,9 +608,14 @@ fun Route.metadataRoutes() {
         val session = getSessionOrFail(call, connMgr) ?: return@post
         val database = call.parameters["database"]!!
         val table = call.parameters["table"]!!
+        val adapter = adapterFor(session)
+        if (!adapter.capabilities().supportsRowEdit) {
+            call.fail("UNSUPPORTED_DB_FEATURE", "当前数据库类型（${session.config.dbType}）不支持表数据编辑")
+            return@post
+        }
         val req = call.receive<DataEditRequest>()
         val editService = DataEditService()
-        val dialect = adapterFor(session).dialectAdapter()
+        val dialect = adapter.dialectAdapter()
         val statements = editService.generateStatements(dialect, table, req.changes)
         val sqlStatements = statements.map { it.previewSql }
 

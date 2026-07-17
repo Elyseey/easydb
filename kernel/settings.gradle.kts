@@ -5,6 +5,7 @@ include(
     "api",
     "drivers:mysql",
     "drivers:dameng",
+    "drivers:tdengine",
     "metadata",
     "dialect",
     "compare-engine",

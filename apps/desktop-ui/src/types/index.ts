@@ -1,7 +1,7 @@
 // 全局类型定义
 
 // 数据库类型
-export type DbType = 'mysql' | 'dameng' | 'postgresql' | 'oracle' | 'sqlserver' | 'sqlite'
+export type DbType = 'mysql' | 'dameng' | 'tdengine' | 'postgresql' | 'oracle' | 'sqlserver' | 'sqlite'
 
 // 连接状态
 export type ConnectionStatus = 'connected' | 'disconnected' | 'connecting' | 'error'
@@ -74,13 +74,43 @@ export interface DatabaseInfo {
 export interface TableInfo {
   name: string
   schema?: string
-  type: 'table' | 'view' | 'trigger' | 'procedure' | 'function'
+  type: 'table' | 'stable' | 'view' | 'trigger' | 'procedure' | 'function'
   rowCount?: number
   comment?: string
   dataLength?: number
   indexLength?: number
   updateTime?: string
   engine?: string
+  tableKind?: TableKind
+}
+
+export type TableKind = 'SUPER_TABLE' | 'BASIC_TABLE' | 'CHILD_TABLE'
+
+export interface TimeSeriesTagDefinition {
+  name: string
+  type: string
+}
+
+export interface TimeSeriesTagValue {
+  name: string
+  type: string
+  value?: string | null
+}
+
+export interface TimeSeriesChildTable {
+  name: string
+  database: string
+  stableName: string
+  tagValues: TimeSeriesTagValue[]
+  createdAt?: string
+  comment?: string
+}
+
+export interface TimeSeriesChildTablePage {
+  items: TimeSeriesChildTable[]
+  offset: number
+  limit: number
+  hasMore: boolean
 }
 
 // 字段信息

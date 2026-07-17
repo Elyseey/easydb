@@ -32,6 +32,20 @@ describe('database metadata capabilities', () => {
     expect(getDbCapabilities(null).tasks.migration).toBe(false)
     expect(getDbCapabilities(null).diagnostics.dataTracker).toBe(false)
   })
+
+  it('keeps TDengine browsing and time-series metadata read-only', () => {
+    const capabilities = getDbCapabilities('tdengine')
+
+    expect(capabilities.metadata.timeSeries).toBe(true)
+    expect(capabilities.sql.execute).toBe(true)
+    expect(capabilities.workbench.dataPreview).toBe(true)
+    expect(capabilities.workbench.rowEdit).toBe(false)
+    expect(capabilities.workbench.tableDesigner).toBe(false)
+    expect(capabilities.workbench.tableCreate).toBe(false)
+    expect(capabilities.workbench.tableRename).toBe(false)
+    expect(capabilities.workbench.tableDrop).toBe(false)
+    expect(capabilities.workbench.tableTruncate).toBe(false)
+  })
 })
 
 describe('database diagnostic capabilities', () => {

@@ -5,6 +5,7 @@ import com.easydb.drivers.dameng.DamengDatabaseAdapter
 import com.easydb.drivers.dameng.DamengStructureCompareSqlGenerator
 import com.easydb.drivers.mysql.MysqlDatabaseAdapter
 import com.easydb.drivers.mysql.MysqlStructureCompareSqlGenerator
+import com.easydb.drivers.tdengine.TdengineDatabaseAdapter
 import com.easydb.tunnel.SshTunnelManager
 
 /**
@@ -14,7 +15,8 @@ import com.easydb.tunnel.SshTunnelManager
 object ServiceRegistry {
     val mysqlAdapter = MysqlDatabaseAdapter()
     val damengAdapter = DamengDatabaseAdapter()
-    val adapterRegistry = DatabaseAdapterRegistry(listOf(mysqlAdapter, damengAdapter))
+    val tdengineAdapter = TdengineDatabaseAdapter()
+    val adapterRegistry = DatabaseAdapterRegistry(listOf(mysqlAdapter, damengAdapter, tdengineAdapter))
     val migrationAdapterRegistry = MigrationAdapterRegistry(
         listOf(
             RegisteredMigrationAdapter("mysql", "mysql", mysqlAdapter.migrationAdapter()),

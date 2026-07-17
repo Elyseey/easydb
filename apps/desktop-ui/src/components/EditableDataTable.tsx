@@ -61,6 +61,9 @@ interface EditableDataTableProps {
   loadingMore?: boolean
   loading?: boolean
   active?: boolean
+  readOnly?: boolean
+  allowExport?: boolean
+  allowSqlExport?: boolean
   onDirtyChange?: (dirty: boolean) => void
   filterState?: EditableDataTableFilterState
   onFilterStateChange?: (patch: Partial<EditableDataTableFilterState>) => void
@@ -171,6 +174,9 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
   loadingMore,
   loading = false,
   active = true,
+  readOnly = false,
+  allowExport = true,
+  allowSqlExport = true,
   onDirtyChange,
   filterState,
   onFilterStateChange,
@@ -258,7 +264,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
     columns.filter((c) => c.isPrimaryKey).map((c) => c.name),
     [columns]
   )
-  const isEditable = primaryKeys.length > 0
+  const isEditable = !readOnly && primaryKeys.length > 0
 
   const effectiveData = useMemo(() => {
     const deletedIndices = new Set(
@@ -1435,24 +1441,26 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
       >
         <Text type="secondary" style={{ fontSize: 12 }}>
           {selectedRowKeys.length > 0
-            ? `已选 ${selectedRowKeys.length} 行`
+            ? allowExport ? `已选 ${selectedRowKeys.length} 行` : '数据只读'
             : isEditable
               ? '单击选中，双击编辑，右键更多操作'
-              : '勾选行后可导出所选数据'}
+              : allowExport ? '勾选行后可导出所选数据' : '数据只读'}
         </Text>
         <Space size={2}>
           {/* 选择集操作区 */}
-          {selectedRowKeys.length > 0 && (
+          {selectedRowKeys.length > 0 && (allowExport || isEditable) && (
             <>
-              <SelectedRowsActions
-                selectedCount={selectedExportRows.length}
-                canUseSql={selectedExportActions.canUseSql}
-                onExport={selectedExportActions.exportSelected}
-                onCopyInsert={selectedExportActions.copySelectedInsert}
-                onClear={clearSelection}
-                compact
-                showCount={false}
-              />
+              {allowExport && (
+                <SelectedRowsActions
+                  selectedCount={selectedExportRows.length}
+                  canUseSql={allowSqlExport && selectedExportActions.canUseSql}
+                  onExport={selectedExportActions.exportSelected}
+                  onCopyInsert={selectedExportActions.copySelectedInsert}
+                  onClear={clearSelection}
+                  compact
+                  showCount={false}
+                />
+              )}
               {isEditable && (
                 <>
                   <Divider type="vertical" style={{ margin: '0 4px' }} />
@@ -1474,7 +1482,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
             </>
           )}
           {/* 常驻操作 */}
-          <Dropdown
+          {allowExport && <Dropdown
               menu={{
                 items: [
                   {
@@ -1511,8 +1519,8 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
               >
                 <Button size="small" type="text" icon={<DownloadOutlined />} />
               </Tooltip>
-          </Dropdown>
-            <Tooltip
+          </Dropdown>}
+          {allowSqlExport && <Tooltip
               title={hasChanges
                 ? '复制全部最近一次查询结果为 INSERT，不包含未保存修改'
                 : hasMore
@@ -1527,7 +1535,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
                 onClick={handleCopyAsInsert}
                 disabled={!dbType || dataSource.length === 0}
               />
-            </Tooltip>
+            </Tooltip>}
           {isEditable && (
             <>
             <Tooltip title="新增一行" placement="bottom">

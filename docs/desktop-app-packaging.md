@@ -26,7 +26,7 @@ bash scripts/build/build-app.sh
 | 产物 | 路径 |
 |------|------|
 | EasyDB.app | `apps/desktop-ui/src-tauri/target/release/bundle/macos/EasyDB.app` |
-| DMG 安装包 | `apps/desktop-ui/src-tauri/target/release/bundle/dmg/EasyDB_1.0.0_aarch64.dmg` |
+| DMG 安装包 | `apps/desktop-ui/src-tauri/target/release/bundle/dmg/EasyDB_<version>_aarch64.dmg` |
 
 ### 耗时参考
 
