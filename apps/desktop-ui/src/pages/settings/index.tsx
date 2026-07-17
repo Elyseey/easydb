@@ -22,16 +22,17 @@ import {
   CodeOutlined, RetweetOutlined, AppstoreOutlined,
   DatabaseOutlined, FileZipOutlined, FileTextOutlined, SettingFilled,
   DeleteOutlined, ClearOutlined, ExclamationCircleOutlined, SaveOutlined,
-  DownOutlined, UpOutlined, DownloadOutlined
+  DownOutlined, UpOutlined, DownloadOutlined, GithubOutlined, StarOutlined
 } from '@ant-design/icons'
 import {
-  checkForUpdate, getAutoCheckEnabled, setAutoCheckEnabled, APP_VERSION,
+  checkForUpdate, getAutoCheckEnabled, setAutoCheckEnabled, APP_VERSION, GITHUB_REPOSITORY_URL,
   type UpdateInfo,
 } from '@/utils/updater'
 import { useThemeStore, type ThemeMode, type ThemeStyle } from '@/stores/themeStore'
 import { useAppSettingsStore } from '@/stores/appSettingsStore'
 import { storageApi, backupApi } from '@/services/api'
 import { BUILTIN_SQL_TEMPLATES } from '@/pages/sql-editor/sqlTemplates'
+import { openExternalUrl } from '@/utils/openExternalUrl'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -743,10 +744,30 @@ export const SettingsPage: React.FC = () => {
           }}>
             <DesktopOutlined style={{ fontSize: 64, color: token.colorPrimary, marginBottom: 16 }} />
             <Title level={3} style={{ margin: 0 }}>EasyDB Pro</Title>
-            <Text type="secondary" style={{ marginTop: 8, marginBottom: 24 }}>版本号：v{APP_VERSION}-beta ✨</Text>
+            <Text type="secondary" style={{ marginTop: 8, marginBottom: 24 }}>版本号：v{APP_VERSION}-beta</Text>
+
+            <Paragraph type="secondary" style={{ maxWidth: 480, textAlign: 'center', marginBottom: 16 }}>
+              EasyDB 是免费开源项目。如果它对你有帮助，欢迎前往 GitHub 点一个 Star，帮助更多人发现它。
+            </Paragraph>
 
             <Button
               type="primary"
+              size="large"
+              shape="round"
+              icon={<StarOutlined />}
+              onClick={() => void openExternalUrl(GITHUB_REPOSITORY_URL)}
+              style={{ width: 240, marginBottom: 12 }}
+            >
+              在 GitHub 上支持 EasyDB
+            </Button>
+
+            <Text type="secondary" style={{ marginBottom: 20 }}>
+              <GithubOutlined style={{ marginRight: 6 }} />
+              qingwz1994/easydb
+            </Text>
+
+            <Button
+              type="default"
               size="large"
               shape="round"
               icon={checking ? <SyncOutlined spin /> : <CloudDownloadOutlined />}
@@ -776,9 +797,9 @@ export const SettingsPage: React.FC = () => {
                   <Button
                     type="default"
                     size="middle"
-                    onClick={() => window.open(updateInfo.downloadUrl, '_blank')}
+                    onClick={() => void openExternalUrl(updateInfo.downloadUrl)}
                   >
-                    🚀 立即前往发布页下载
+                    <DownloadOutlined /> 立即前往发布页下载
                   </Button>
                 </Space>
               </div>

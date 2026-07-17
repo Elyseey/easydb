@@ -17,9 +17,11 @@ const SUPPORTED_TASK_PAIRS: Record<PairTaskFeature, readonly DatabaseTaskPair[]>
   ],
   sync: [
     { source: 'mysql', target: 'mysql' },
+    { source: 'dameng', target: 'dameng' },
   ],
   structureCompare: [
     { source: 'mysql', target: 'mysql' },
+    { source: 'dameng', target: 'dameng' },
   ],
 }
 

@@ -39,7 +39,7 @@ import { toast, handleApiError } from '@/utils/notification'
 import { useNavigate } from 'react-router-dom'
 import { supportsDatabaseTaskPair, supportsDatabaseTaskRole } from '@/utils/databaseTaskPairs'
 import type { ConnectionConfig } from '@/types'
-import { groupConnectionsByDatabaseType } from './connectionGroups'
+import { toDatabaseConnectionOptionGroups } from '@/utils/databaseConnectionGroups'
 import '../databaseTask.css'
 
 const { Title, Text } = Typography
@@ -136,7 +136,7 @@ export const MigrationPage: React.FC = () => {
   }
 
   // 格式化连接下拉项
-  const toConnOptions = (items: ConnectionConfig[]) => items.map((c) => ({
+  const toConnOption = (c: ConnectionConfig) => ({
     value: c.id,
     label: (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -146,22 +146,18 @@ export const MigrationPage: React.FC = () => {
         )}
       </div>
     )
-  }))
-  const toConnOptionGroups = (items: ConnectionConfig[]) => (
-    groupConnectionsByDatabaseType(items).map((group) => ({
-      label: group.label,
-      options: toConnOptions(group.connections),
-    }))
+  })
+  const sourceConnOptions = toDatabaseConnectionOptionGroups(
+    connections.filter((c) => supportsDatabaseTaskRole('migration', c.dbType, 'source')),
+    toConnOption,
   )
-  const sourceConnOptions = toConnOptionGroups(
-    connections.filter((c) => supportsDatabaseTaskRole('migration', c.dbType, 'source'))
-  )
-  const targetConnOptions = toConnOptionGroups(
+  const targetConnOptions = toDatabaseConnectionOptionGroups(
     connections.filter((c) => {
       if (!supportsDatabaseTaskRole('migration', c.dbType, 'target')) return false
       if (!sourceConn) return true
       return supportsMigrationPair(sourceConn, c)
-    })
+    }),
+    toConnOption,
   )
 
   // 监听源连接以加载数据库

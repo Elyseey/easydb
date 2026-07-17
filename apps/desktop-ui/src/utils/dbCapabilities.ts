@@ -40,6 +40,8 @@ export interface DiagnosticCapability {
   slowQuery: boolean
 }
 
+export type DiagnosticFeature = keyof DiagnosticCapability
+
 export interface DbCapabilities {
   metadata: MetadataCapability
   sql: SqlCapability
@@ -60,7 +62,7 @@ const DAMENG: DbCapabilities = {
   metadata: { schemas: true, schemaCreation: true, schemaManagement: true, schemaAlterCharset: false, tables: true, views: true, procedures: true, functions: true, triggers: true, ddl: true },
   sql: { execute: true, paginatedPreview: true, explain: false },
   workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, importSql: true, exportData: true, backup: true, restore: true },
-  tasks: { migration: true, sync: false, structureCompare: false },
+  tasks: { migration: true, sync: true, structureCompare: true },
   diagnostics: { dataTracker: false, slowQuery: false },
 }
 
@@ -82,6 +84,20 @@ const CAPABILITIES: Record<DbType, DbCapabilities> = {
 }
 
 export function getDbCapabilities(dbType: DbType | null): DbCapabilities {
-  if (!dbType) return MYSQL
-  return CAPABILITIES[dbType] ?? MYSQL
+  if (!dbType) return STUB
+  return CAPABILITIES[dbType] ?? STUB
+}
+
+export function supportsDatabaseDiagnostic(
+  dbType: DbType | null,
+  feature: DiagnosticFeature,
+): boolean {
+  return getDbCapabilities(dbType).diagnostics[feature]
+}
+
+export function filterConnectionsByDiagnosticCapability<T extends { dbType: DbType }>(
+  connections: readonly T[],
+  feature: DiagnosticFeature,
+): T[] {
+  return connections.filter((connection) => supportsDatabaseDiagnostic(connection.dbType, feature))
 }

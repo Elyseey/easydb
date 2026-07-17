@@ -11,11 +11,12 @@ describe('database task pair capabilities', () => {
     expect(supportsDatabaseTaskRole('migration', 'dameng', 'target')).toBe(true)
   })
 
-  it.each(['sync', 'structureCompare'] as const)('keeps %s restricted to MySQL pairs', (feature) => {
+  it.each(['sync', 'structureCompare'] as const)('supports same-database MySQL and Dameng pairs only for %s', (feature) => {
     expect(supportsDatabaseTaskPair(feature, 'mysql', 'mysql')).toBe(true)
+    expect(supportsDatabaseTaskPair(feature, 'dameng', 'dameng')).toBe(true)
     expect(supportsDatabaseTaskPair(feature, 'mysql', 'dameng')).toBe(false)
-    expect(supportsDatabaseTaskPair(feature, 'dameng', 'dameng')).toBe(false)
-    expect(supportsDatabaseTaskRole(feature, 'dameng', 'source')).toBe(false)
-    expect(supportsDatabaseTaskRole(feature, 'dameng', 'target')).toBe(false)
+    expect(supportsDatabaseTaskPair(feature, 'dameng', 'mysql')).toBe(false)
+    expect(supportsDatabaseTaskRole(feature, 'dameng', 'source')).toBe(true)
+    expect(supportsDatabaseTaskRole(feature, 'dameng', 'target')).toBe(true)
   })
 })

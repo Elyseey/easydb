@@ -32,6 +32,7 @@ import { checkForUpdate, getAutoCheckEnabled } from '@/utils/updater'
 import { useThemeStore } from '@/stores/themeStore'
 import { getEasyDbThemeConfig } from '@/theme/themeConfig'
 import { configureFeedbackApis } from '@/utils/notification'
+import { openExternalUrl } from '@/utils/openExternalUrl'
 
 const AppContent: React.FC = () => {
   const { message, notification, modal } = AntApp.useApp()
@@ -61,7 +62,7 @@ const AppContent: React.FC = () => {
             okText: '前往下载',
             cancelText: '稍后再说',
             onOk: () => {
-              window.open(info.downloadUrl, '_blank')
+              void openExternalUrl(info.downloadUrl)
             },
           })
         }

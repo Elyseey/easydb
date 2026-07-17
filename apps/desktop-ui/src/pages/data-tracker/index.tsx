@@ -18,6 +18,7 @@ import type {
   ConnectionConfig, ChangeEvent, TrackerSessionStatus,
   TrackerServerCheck, BinlogFileInfo, SseTick, HistoryStats,
 } from '@/types'
+import { filterConnectionsByDiagnosticCapability } from '@/utils/dbCapabilities'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 
@@ -66,6 +67,7 @@ export const DataTrackerPage: React.FC = () => {
 
   // 连接与会话状态
   const [connections, setConnections] = useState<ConnectionConfig[]>([])
+  const trackerConnections = filterConnectionsByDiagnosticCapability(connections, 'dataTracker')
   const [selectedConnId, setSelectedConnId] = useState<string>('')
   const [serverCheck, setServerCheck] = useState<TrackerServerCheck | null>(null)
   const [checking, setChecking] = useState(false)
@@ -1022,7 +1024,7 @@ export const DataTrackerPage: React.FC = () => {
               placeholder="选择数据库连接"
               value={selectedConnId || undefined}
               onChange={setSelectedConnId}
-              options={connections.map(c => ({
+              options={trackerConnections.map(c => ({
                 value: c.id,
                 label: `${c.name} (${c.host}:${c.port})`,
               }))}

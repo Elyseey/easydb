@@ -9,10 +9,10 @@ describe('database navigation capabilities', () => {
     },
   )
 
-  it('keeps only supported Dameng task navigation available', () => {
+  it('keeps supported Dameng task navigation available', () => {
     expect(supportsDatabaseNavigation('dameng', 'migration')).toBe(true)
-    expect(supportsDatabaseNavigation('dameng', 'sync')).toBe(false)
-    expect(supportsDatabaseNavigation('dameng', 'structureCompare')).toBe(false)
+    expect(supportsDatabaseNavigation('dameng', 'sync')).toBe(true)
+    expect(supportsDatabaseNavigation('dameng', 'structureCompare')).toBe(true)
     expect(supportsDatabaseNavigation('dameng', 'dataTracker')).toBe(false)
     expect(supportsDatabaseNavigation('dameng', 'slowQuery')).toBe(false)
   })

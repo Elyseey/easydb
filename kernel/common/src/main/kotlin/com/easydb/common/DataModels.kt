@@ -302,6 +302,8 @@ data class IndexDiff(
     val targetColumns: List<String>? = null,
     val sourceUnique: Boolean? = null,
     val targetUnique: Boolean? = null,
+    val sourcePrimary: Boolean? = null,
+    val targetPrimary: Boolean? = null,
     val details: String = ""
 )
 

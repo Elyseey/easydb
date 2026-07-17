@@ -18,6 +18,8 @@ const GITHUB_OWNER = 'qingwz1994'
 const GITHUB_REPO = 'easydb'
 const SETTINGS_KEY = 'easydb_auto_check_update'
 
+export const GITHUB_REPOSITORY_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`
+
 // 当前版本（构建时从 tauri.conf.json 注入）
 export const APP_VERSION = __APP_VERSION__ ?? '1.2.0'
 
@@ -58,7 +60,7 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
     hasUpdate,
     latestVersion,
     currentVersion: APP_VERSION,
-    downloadUrl: release.html_url || `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`,
+    downloadUrl: release.html_url || `${GITHUB_REPOSITORY_URL}/releases/latest`,
     releaseNotes: release.body || '',
     publishedAt: release.published_at || '',
   }

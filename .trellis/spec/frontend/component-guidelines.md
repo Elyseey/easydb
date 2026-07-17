@@ -697,12 +697,12 @@ supportsDatabaseTaskRole(feature, dbType, role): boolean
 
 - Unsupported role -> omit the connection option and reject programmatic selection with a clear message.
 - Individually supported roles but unsupported pair -> reject before opening a connection or loading metadata.
-- Dameng context -> migration remains discoverable because MySQL to Dameng exists; sync, compare, tracker, and slow-query navigation are absent.
+- Dameng context -> migration, sync, and structure comparison are discoverable; sync/compare selectors allow only the exact Dameng-to-Dameng pair, while tracker and slow-query navigation remain absent.
 - MySQL context -> preserve all currently supported navigation.
 
 #### 5. Good / Base / Bad Cases
 
-- Good: the shared registry allows MySQL to Dameng migration while excluding Dameng from both sync roles.
+- Good: the shared registry allows all registered migration directions, allows Dameng in both sync/compare roles only for Dameng-to-Dameng, and rejects MySQL-to-Dameng sync/compare.
 - Base: MySQL to MySQL remains available for migration, sync, and structure comparison.
 - Bad: the sidebar hides sync for Dameng while the command palette or sync connection selector still exposes it.
 
@@ -1120,3 +1120,33 @@ Required regression coverage:
 - Resolve connection B before a pending connection A request, then resolve A and verify B remains visible.
 - Verify a failed request exposes a retry action and retry can load the list.
 - Open the Select popup and verify the current database options render.
+
+---
+
+## Desktop External Links — Use the Tauri System-Browser Bridge
+
+EasyDB runs inside a Tauri WebView. A successful `window.open(...)` call in jsdom or a normal
+browser does not prove that a packaged desktop app will open a URL. WebViews may ignore or
+block the new-window request.
+
+Required pattern:
+
+- Product code must call the shared `openExternalUrl(url)` utility for GitHub, downloads,
+  documentation, and every other external URL.
+- In Tauri, the utility must delegate to the registered `@tauri-apps/plugin-shell` `open()` API,
+  which opens the system default application.
+- Browser/Vite development may fall back to `window.open(url, '_blank', 'noopener,noreferrer')`
+  inside the shared utility only.
+- Keep the Rust plugin registration, frontend plugin package, and `shell:allow-open` capability
+  synchronized. Having only one or two of these three pieces is not a working integration.
+- Do not add direct `window.open` calls to React components.
+
+Required regression coverage:
+
+- Desktop-path unit test: with `isTauri() === true`, assert the shell plugin receives the URL.
+- Browser-path unit test: assert the safe `window.open` fallback is used and the shell plugin is not.
+- Component tests should verify that the visible action routes through the shared external-link path.
+
+Root-cause lesson: DOM-level tests can validate a click handler while completely missing the
+native bridge needed for the packaged application. For desktop integrations, test the platform
+branch rather than only the browser side effect.

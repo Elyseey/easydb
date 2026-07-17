@@ -7,6 +7,7 @@ class DamengDatabaseAdapter : DatabaseAdapter {
     private val connectionAdapter = DamengConnectionAdapter()
     private val metadataAdapter = DamengMetadataAdapter()
     private val dialectAdapter = DamengDialectAdapter()
+    private val syncAdapter = DamengSyncAdapter()
     private val procedureAdapter = DamengProcedureAdapter()
     private val logicalBackupAdapter = DamengLogicalBackupAdapter()
 
@@ -33,7 +34,7 @@ class DamengDatabaseAdapter : DatabaseAdapter {
 
     override fun metadataAdapter(): MetadataAdapter = metadataAdapter
 
-    override fun syncAdapter(): SyncAdapter = unsupported("数据同步")
+    override fun syncAdapter(): SyncAdapter = syncAdapter
 
     override fun migrationAdapter(): MigrationAdapter = unsupported("数据迁移")
 

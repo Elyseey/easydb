@@ -345,6 +345,8 @@ export interface IndexDiff {
   targetColumns?: string[]
   sourceUnique?: boolean
   targetUnique?: boolean
+  sourcePrimary?: boolean
+  targetPrimary?: boolean
   details: string
 }
 

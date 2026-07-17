@@ -2,7 +2,9 @@ package com.easydb.launcher
 
 import com.easydb.common.*
 import com.easydb.drivers.dameng.DamengDatabaseAdapter
+import com.easydb.drivers.dameng.DamengStructureCompareSqlGenerator
 import com.easydb.drivers.mysql.MysqlDatabaseAdapter
+import com.easydb.drivers.mysql.MysqlStructureCompareSqlGenerator
 import com.easydb.tunnel.SshTunnelManager
 
 /**
@@ -19,6 +21,34 @@ object ServiceRegistry {
             RegisteredMigrationAdapter("mysql", "dameng", MysqlToDamengMigrationAdapter()),
             RegisteredMigrationAdapter("dameng", "mysql", DamengSourceMigrationAdapter.toMysql()),
             RegisteredMigrationAdapter("dameng", "dameng", DamengSourceMigrationAdapter.toDameng())
+        )
+    )
+    val syncAdapterRegistry = SyncAdapterRegistry(
+        listOf(
+            RegisteredSyncAdapter("mysql", "mysql", mysqlAdapter.syncAdapter()),
+            RegisteredSyncAdapter("dameng", "dameng", damengAdapter.syncAdapter())
+        )
+    )
+    val compareAdapterRegistry = CompareAdapterRegistry(
+        listOf(
+            RegisteredCompareAdapter(
+                "mysql",
+                "mysql",
+                StructureCompareService(
+                    mysqlAdapter.metadataAdapter(),
+                    mysqlAdapter.metadataAdapter(),
+                    MysqlStructureCompareSqlGenerator()
+                )
+            ),
+            RegisteredCompareAdapter(
+                "dameng",
+                "dameng",
+                StructureCompareService(
+                    damengAdapter.metadataAdapter(),
+                    damengAdapter.metadataAdapter(),
+                    DamengStructureCompareSqlGenerator()
+                )
+            )
         )
     )
     val connectionManager = ConnectionManager()

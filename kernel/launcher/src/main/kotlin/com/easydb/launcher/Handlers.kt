@@ -886,7 +886,7 @@ fun Route.migrationRoutes() {
 
 // ─── 数据同步路由 ──────────────────────────────────────────
 fun Route.syncRoutes() {
-    val adapter = ServiceRegistry.mysqlAdapter
+    val syncAdapterRegistry = ServiceRegistry.syncAdapterRegistry
     val adapterRegistry = ServiceRegistry.adapterRegistry
     val connMgr = ServiceRegistry.connectionManager
     val taskMgr = ServiceRegistry.taskManager
@@ -899,11 +899,13 @@ fun Route.syncRoutes() {
             call.fail("NOT_CONNECTED", "源或目标连接未打开")
             return@post
         }
-        if (sourceSession.config.dbType != "mysql" || targetSession.config.dbType != "mysql") {
-            call.fail("UNSUPPORTED_SYNC_PAIR", "当前仅支持 MySQL → MySQL 同步，源=${sourceSession.config.dbType}，目标=${targetSession.config.dbType}")
+        val syncAdapter = try {
+            syncAdapterRegistry.get(sourceSession.config.dbType, targetSession.config.dbType)
+        } catch (e: IllegalArgumentException) {
+            call.fail("UNSUPPORTED_SYNC_PAIR", e.message ?: "当前同步组合暂不支持")
             return@post
         }
-        val preview = adapter.syncAdapter().preview(
+        val preview = syncAdapter.preview(
             config, SessionPair(sourceSession, targetSession)
         )
         call.ok(preview)
@@ -917,8 +919,10 @@ fun Route.syncRoutes() {
             call.fail("NOT_CONNECTED", "源或目标连接未打开")
             return@post
         }
-        if (sourceSession.config.dbType != "mysql" || targetSession.config.dbType != "mysql") {
-            call.fail("UNSUPPORTED_SYNC_PAIR", "当前仅支持 MySQL → MySQL 同步，源=${sourceSession.config.dbType}，目标=${targetSession.config.dbType}")
+        val syncAdapter = try {
+            syncAdapterRegistry.get(sourceSession.config.dbType, targetSession.config.dbType)
+        } catch (e: IllegalArgumentException) {
+            call.fail("UNSUPPORTED_SYNC_PAIR", e.message ?: "当前同步组合暂不支持")
             return@post
         }
 
@@ -945,7 +949,7 @@ fun Route.syncRoutes() {
                 taskTargetSession = targetAdapter.open(targetConfig)
                 reporter.onLog("INFO", "已创建任务专用连接")
 
-                val result = adapter.syncAdapter().execute(
+                val result = syncAdapter.execute(
                     config, SessionPair(taskSourceSession, taskTargetSession), reporter
                 )
                 val duration = System.currentTimeMillis() - startTime
@@ -1023,8 +1027,7 @@ fun Route.taskRoutes() {
 // ─── 结构对比路由 ──────────────────────────────────────────
 fun Route.compareRoutes() {
     val connMgr = ServiceRegistry.connectionManager
-    val adapter = ServiceRegistry.mysqlAdapter
-    val compareService = StructureCompareService()
+    val compareAdapterRegistry = ServiceRegistry.compareAdapterRegistry
 
     post("/execute") {
         try {
@@ -1041,19 +1044,14 @@ fun Route.compareRoutes() {
                 return@post
             }
 
-            if (sourceSession.config.dbType != "mysql" || targetSession.config.dbType != "mysql") {
-                call.fail("UNSUPPORTED_COMPARE_PAIR", "当前仅支持 MySQL → MySQL 结构对比，源=${sourceSession.config.dbType}，目标=${targetSession.config.dbType}")
+            val compareAdapter = try {
+                compareAdapterRegistry.get(sourceSession.config.dbType, targetSession.config.dbType)
+            } catch (e: IllegalArgumentException) {
+                call.fail("UNSUPPORTED_COMPARE_PAIR", e.message ?: "当前结构对比组合暂不支持")
                 return@post
             }
 
-            val result = compareService.compare(
-                sourceMetadata = adapter.metadataAdapter(),
-                targetMetadata = adapter.metadataAdapter(),
-                sourceDialect = adapter.dialectAdapter(),
-                sourceSession = sourceSession,
-                targetSession = targetSession,
-                config = config
-            )
+            val result = compareAdapter.compare(config, SessionPair(sourceSession, targetSession))
             call.ok(result)
         } catch (e: Exception) {
             call.fail("COMPARE_ERROR", "结构对比失败: ${e.message}")

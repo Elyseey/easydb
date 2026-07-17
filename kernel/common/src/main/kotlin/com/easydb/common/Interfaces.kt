@@ -239,6 +239,38 @@ interface SyncAdapter {
     fun execute(config: SyncConfig, sessions: SessionPair, reporter: TaskReporter): TaskResult
 }
 
+// ─── 结构对比适配器 ────────────────────────────────────────
+interface CompareAdapter {
+    fun compare(config: CompareConfig, sessions: SessionPair): CompareResult
+}
+
+/**
+ * 生成让目标端结构向源端靠齐的 SQL。
+ *
+ * 比较编排只处理规范化后的元数据；所有目标方言语法必须留在具体数据库驱动中。
+ */
+interface StructureCompareSqlGenerator {
+    fun typesEquivalent(sourceType: String, targetType: String): Boolean
+
+    fun createTableSql(
+        sourceDdl: String,
+        sourceDatabase: String,
+        targetDatabase: String,
+        tableName: String
+    ): String
+
+    fun dropTableSql(targetDatabase: String, tableName: String): String
+
+    fun alterTableSql(
+        targetDatabase: String,
+        tableName: String,
+        sourceColumns: List<ColumnInfo>,
+        columnDiffs: List<ColumnDiff>,
+        indexDiffs: List<IndexDiff>,
+        options: CompareOptions
+    ): String
+}
+
 // ─── 迁移适配器 ───────────────────────────────────────────
 interface MigrationAdapter {
     fun preview(config: MigrationConfig, sessions: SessionPair): MigrationPreview

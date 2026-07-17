@@ -24,8 +24,13 @@ export interface DatabaseConnectionGroup {
   connections: ConnectionConfig[]
 }
 
+export interface DatabaseConnectionOptionGroup<TOption> {
+  label: string
+  options: TOption[]
+}
+
 export function groupConnectionsByDatabaseType(
-  connections: ConnectionConfig[],
+  connections: readonly ConnectionConfig[],
 ): DatabaseConnectionGroup[] {
   const connectionsByType = new Map<DbType, ConnectionConfig[]>()
 
@@ -45,4 +50,14 @@ export function groupConnectionsByDatabaseType(
       connections: groupConnections,
     }]
   })
+}
+
+export function toDatabaseConnectionOptionGroups<TOption>(
+  connections: readonly ConnectionConfig[],
+  toOption: (connection: ConnectionConfig) => TOption,
+): DatabaseConnectionOptionGroup<TOption>[] {
+  return groupConnectionsByDatabaseType(connections).map((group) => ({
+    label: group.label,
+    options: group.connections.map(toOption),
+  }))
 }
