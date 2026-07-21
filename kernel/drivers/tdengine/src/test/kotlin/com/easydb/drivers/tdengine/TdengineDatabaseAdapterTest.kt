@@ -24,12 +24,14 @@ class TdengineDatabaseAdapterTest {
         assertFalse(capabilities.supportsLogicalBackup)
         assertFalse(capabilities.supportsLogicalRestore)
         assertTrue(capabilities.supportsTimeSeriesObjectCreate)
+        assertTrue(capabilities.supportsTimeSeriesQuery)
         assertFalse(capabilities.supportsTableCreate)
         assertFalse(capabilities.supportsTableRename)
         assertFalse(capabilities.supportsTableDrop)
         assertFalse(capabilities.supportsTableTruncate)
         assertFalse(capabilities.supportsRowEdit)
         assertTrue(adapter.timeSeriesObjectAdapter() is TdengineTimeSeriesObjectAdapter)
+        assertTrue(adapter.timeSeriesQueryAdapter() is TdengineTimeSeriesQueryAdapter)
     }
 
     @Test

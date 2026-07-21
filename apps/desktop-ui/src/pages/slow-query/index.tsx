@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import {
   Card, Select, Button, Table, Tag, Space, Alert, Typography, Drawer,
   Input, InputNumber, Switch, Empty, Tooltip, message, Spin, Segmented,
-  Statistic, Row, Col, Divider, Badge, theme,
+  Statistic, Row, Col, Divider, Badge, theme, type TableColumnsType,
 } from 'antd'
 import {
   ThunderboltOutlined, SearchOutlined, ReloadOutlined,
@@ -20,6 +20,7 @@ import type {
 } from '@/services/slowQueryApi'
 import type { ConnectionConfig, DatabaseInfo } from '@/types'
 import { filterConnectionsByDiagnosticCapability } from '@/utils/dbCapabilities'
+import { getErrorMessage } from '@/utils/notification'
 
 const { Text } = Typography
 
@@ -245,8 +246,8 @@ const SlowQueryDetailDrawer: React.FC<{
       // 自动选中第一个有完整 SQL 的样本
       const first = data.find(s => s.sqlText && s.sqlText.trim())
       if (first?.sqlText) setSelectedSql(first.sqlText)
-    }).catch(e => {
-      message.error(`获取样本失败: ${e.message}`)
+    }).catch((error: unknown) => {
+      message.error(`获取样本失败: ${getErrorMessage(error, '未知错误')}`)
     }).finally(() => setLoadingSamples(false))
   }, [open, digest, connectionId])
 
@@ -266,8 +267,8 @@ const SlowQueryDetailDrawer: React.FC<{
       if (advices.length > 0) {
         doAdvise(result)
       }
-    } catch (e: any) {
-      message.error(`EXPLAIN 失败: ${e.message}`)
+    } catch (error: unknown) {
+      message.error(`EXPLAIN 失败: ${getErrorMessage(error, '未知错误')}`)
     } finally {
       setLoadingExplain(false)
     }
@@ -286,8 +287,8 @@ const SlowQueryDetailDrawer: React.FC<{
         explainResult: latestExplain ?? undefined,
       })
       setAdvices(result)
-    } catch (e: any) {
-      message.error(`诊断分析失败: ${e.message}`)
+    } catch (error: unknown) {
+      message.error(`诊断分析失败: ${getErrorMessage(error, '未知错误')}`)
     } finally {
       setLoadingAdvice(false)
     }
@@ -565,8 +566,8 @@ export const SlowQueryPage: React.FC = () => {
         await connectionApi.open(connId)
         message.success(`已连接到「${conn?.name ?? connId}」`)
         // 不需要更新有状态的 store，居中转发上寄寄可自动重连
-      } catch (e: any) {
-        message.error(`连接失败: ${e.message}`)
+      } catch (error: unknown) {
+        message.error(`连接失败: ${getErrorMessage(error, '未知错误')}`)
         return
       }
     }
@@ -581,8 +582,8 @@ export const SlowQueryPage: React.FC = () => {
       ])
       setDatabases((dbs as DatabaseInfo[]).map(d => d.name).filter(Boolean))
       setCapability(cap)
-    } catch (e: any) {
-      message.error(`能力探测失败: ${e.message}`)
+    } catch (error: unknown) {
+      message.error(`能力探测失败: ${getErrorMessage(error, '未知错误')}`)
     } finally {
       setCheckingCap(false)
       setLoadingDatabases(false)
@@ -598,8 +599,8 @@ export const SlowQueryPage: React.FC = () => {
     try {
       const cap = await slowQueryApi.getStatus(connId)
       setCapability(cap)
-    } catch (e: any) {
-      message.error(`能力探测失败: ${e.message}`)
+    } catch (error: unknown) {
+      message.error(`能力探测失败: ${getErrorMessage(error, '未知错误')}`)
     } finally {
       setCheckingCap(false)
     }
@@ -624,15 +625,15 @@ export const SlowQueryPage: React.FC = () => {
       const result = await slowQueryApi.queryDigests(req)
       setDigestPage(result)
       setPage(currentPage)
-    } catch (e: any) {
-      message.error(`查询失败: ${e.message}`)
+    } catch (error: unknown) {
+      message.error(`查询失败: ${getErrorMessage(error, '未知错误')}`)
     } finally {
       setLoading(false)
     }
   }, [selectedConnId, capability, databaseName, minLatencyMs, hasNoIndex, searchKeyword, sortBy, sortOrder, pageSize])
 
   // ── 表格列定义
-  const columns = [
+  const columns: TableColumnsType<SlowQueryDigestItem> = [
     {
       title: 'SQL 指纹',
       dataIndex: 'sqlFingerprint',
@@ -696,7 +697,7 @@ export const SlowQueryPage: React.FC = () => {
     {
       title: '操作',
       width: 80,
-      render: (_: any, record: SlowQueryDigestItem) => (
+      render: (_, record) => (
         <Button
           type="link"
           size="small"

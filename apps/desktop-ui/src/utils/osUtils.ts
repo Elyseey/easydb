@@ -1,8 +1,11 @@
 export const getOS = (): 'mac' | 'windows' | 'linux' | 'other' => {
   if (typeof window === 'undefined') return 'other'
-  
+
   // 现代浏览器推荐使用 userAgentData，降级使用 platform 和 userAgent
-  const platform = (window.navigator as any).userAgentData?.platform?.toLowerCase() 
+  const userAgentData = window.navigator as Navigator & {
+    userAgentData?: { platform?: string }
+  }
+  const platform = userAgentData.userAgentData?.platform?.toLowerCase()
     || window.navigator.platform.toLowerCase()
   const userAgent = window.navigator.userAgent.toLowerCase()
 

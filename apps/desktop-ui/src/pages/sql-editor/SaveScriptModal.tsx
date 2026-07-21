@@ -55,8 +55,8 @@ export const SaveScriptModal: React.FC<SaveScriptModalProps> = ({
       })
       toast.success('脚本已收藏')
       onSuccess(res as SavedScript)
-    } catch (e: any) {
-      if (e.errorFields) return // 表单验证失败
+    } catch (e: unknown) {
+      if (isFormValidationError(e)) return // 表单验证失败
       handleApiError(e, '保存脚本失败')
     } finally {
       setSubmitting(false)
@@ -90,4 +90,8 @@ export const SaveScriptModal: React.FC<SaveScriptModalProps> = ({
       </Form>
     </Modal>
   )
+}
+
+function isFormValidationError(error: unknown): error is { errorFields: unknown[] } {
+  return !!error && typeof error === 'object' && 'errorFields' in error
 }

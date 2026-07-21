@@ -38,6 +38,9 @@ interface DatabaseAdapter {
     /** 时序对象建模能力独立于通用关系型表设计器。 */
     fun timeSeriesObjectAdapter(): TimeSeriesObjectAdapter? = null
 
+    /** 时序查询能力使用结构化时间边界，不污染通用关系型预览契约。 */
+    fun timeSeriesQueryAdapter(): TimeSeriesQueryAdapter? = null
+
     /** 逻辑备份读取一致性由具体数据库驱动实现；不支持时返回 null。 */
     fun logicalBackupAdapter(): LogicalBackupAdapter? = null
 
@@ -158,8 +161,21 @@ interface TimeSeriesObjectAdapter {
     ): String
 }
 
+interface TimeSeriesQueryAdapter {
+    fun previewRows(
+        session: DatabaseSession,
+        database: String,
+        table: String,
+        request: TimeSeriesQueryRequest
+    ): TimeSeriesQueryPage
+}
+
 /** 父超级表在当前数据库中不存在，或当前账号无法读取其 Tag 定义。 */
 class TimeSeriesParentNotFoundException(message: String) : IllegalArgumentException(message)
+
+class InvalidTimeSeriesRangeException(message: String) : IllegalArgumentException(message)
+
+class InvalidReadOnlyClauseException(message: String) : IllegalArgumentException(message)
 
 // ─── 方言适配器 ───────────────────────────────────────────
 

@@ -112,6 +112,8 @@ data class DatabaseCapabilities(
     val supportsOverwriteRestore: Boolean = false,
     /** 专属时序对象设计器；不得用于开启通用关系型 TableDesigner。 */
     val supportsTimeSeriesObjectCreate: Boolean = false,
+    /** 带结构化时间范围与查询态分页的专属时序预览。 */
+    val supportsTimeSeriesQuery: Boolean = false,
     val supportsTableCreate: Boolean = true,
     val supportsTableRename: Boolean = true,
     val supportsTableDrop: Boolean = true,

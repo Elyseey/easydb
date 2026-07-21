@@ -16,6 +16,7 @@
  */
 import { create } from 'zustand'
 import type { DatabaseInfo, TableInfo, ColumnInfo, IndexInfo, DbType, TableKind, TimeSeriesTagDefinition, TimeSeriesTagValue } from '@/types'
+import type { TimeSeriesRangeState } from '@/utils/timeSeriesQuery'
 
 /**
  * 工作台上下文 Store
@@ -39,6 +40,7 @@ export interface TableDataQuery {
   appliedWhere?: string
   sortColumn?: string | null
   sortDirection?: 'ASC' | 'DESC' | null
+  timeRange?: TimeSeriesRangeState
 }
 
 /** 表详情 Tab 状态 */

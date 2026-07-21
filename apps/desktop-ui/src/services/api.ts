@@ -20,7 +20,13 @@
  */
 
 import { downloadKernelFile, kernelFetch } from './kernelAuth'
-import type { TimeSeriesCreateDefinition, TimeSeriesCreatePreview, TimeSeriesCreateResult } from '@/types'
+import type {
+  TimeSeriesCreateDefinition,
+  TimeSeriesCreatePreview,
+  TimeSeriesCreateResult,
+  TimeSeriesQueryPage,
+  TimeSeriesQueryRequest,
+} from '@/types'
 
 /** 内核启动中最大重试次数 */
 const MAX_RETRIES = 10
@@ -230,6 +236,18 @@ export const metadataApi = {
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/stables/${pathSegment(stable)}/tags`),
   timeSeriesTagValues: (connectionId: string, database: string, table: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/tables/${pathSegment(table)}/tags`),
+  timeSeriesPreviewRows: (
+    connectionId: string,
+    database: string,
+    table: string,
+    query: TimeSeriesQueryRequest,
+  ) => request<TimeSeriesQueryPage>(
+    `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/tables/${pathSegment(table)}/preview`,
+    {
+      method: 'POST',
+      body: JSON.stringify(query),
+    },
+  ),
   previewTimeSeriesObject: (connectionId: string, database: string, definition: TimeSeriesCreateDefinition) =>
     request<TimeSeriesCreatePreview>(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/objects/preview`, {
       method: 'POST',

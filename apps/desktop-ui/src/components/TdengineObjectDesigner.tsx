@@ -38,6 +38,11 @@ const initialColumns = (): FieldRow[] => [
 const initialTags = (): FieldRow[] => [
   { id: newId(), name: 'location', type: 'VARCHAR', length: 64 },
 ]
+const IDENTIFIER_INPUT_PROPS = {
+  autoCapitalize: 'none',
+  autoCorrect: 'off',
+  spellCheck: false,
+} as const
 
 interface Props {
   connectionId: string
@@ -113,6 +118,7 @@ export const TdengineObjectDesigner: React.FC<Props> = ({
         return (
           <div key={field.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 220px 130px 36px', gap: 8, alignItems: 'center' }}>
             <Input
+              {...IDENTIFIER_INPUT_PROPS}
               aria-label={`${role}名称 ${index + 1}`}
               value={field.name}
               maxLength={64}
@@ -215,7 +221,15 @@ export const TdengineObjectDesigner: React.FC<Props> = ({
               </div>
               <div>
                 <Text strong style={{ display: 'block', marginBottom: 8 }}>对象名称</Text>
-                <Input aria-label="对象名称" value={name} maxLength={192} onBlur={() => setTouched(true)} onChange={(event) => setName(event.target.value)} placeholder="请输入对象名称" />
+                <Input
+                  {...IDENTIFIER_INPUT_PROPS}
+                  aria-label="对象名称"
+                  value={name}
+                  maxLength={192}
+                  onBlur={() => setTouched(true)}
+                  onChange={(event) => setName(event.target.value)}
+                  placeholder="请输入对象名称"
+                />
               </div>
 
               {kind !== 'CHILD_TABLE' ? (

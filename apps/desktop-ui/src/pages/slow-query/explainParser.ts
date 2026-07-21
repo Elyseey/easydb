@@ -17,6 +17,66 @@ import type {
 } from './explainTypes'
 import type { ExplainPlanNode } from '@/services/slowQueryApi'
 
+interface JsonCostInfo {
+  prefix_cost?: string | number
+  query_cost?: string | number
+}
+
+interface JsonExplainTable {
+  access_type?: string
+  rows_examined_per_scan?: number
+  rows_produced_per_join?: number
+  filtered?: string | number
+  cost_info?: JsonCostInfo
+  possible_keys?: unknown
+  key?: string | null
+  table_name?: string
+  key_length?: string | null
+  ref?: string
+  attached_condition?: string
+  used_columns?: unknown
+}
+
+interface JsonExplainEntry {
+  table?: JsonExplainTable
+  query_block?: JsonQueryBlock
+}
+
+interface JsonExplainSubquery extends JsonExplainEntry {
+  dependent?: boolean
+  cacheable?: boolean
+}
+
+interface JsonQueryBlock {
+  select_id?: number
+  cost_info?: JsonCostInfo
+  table?: JsonExplainTable
+  nested_loop?: JsonExplainEntry[]
+  ordering_operation?: JsonQueryBlock
+  grouping_operation?: JsonQueryBlock
+  select_list_subqueries?: JsonExplainSubquery[]
+  attached_subqueries?: JsonExplainSubquery[]
+  using_filesort?: boolean
+  using_temporary_table?: boolean
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function toOptionalNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string' || value.trim() === '') return undefined
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function toStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const strings = value.filter((item): item is string => typeof item === 'string')
+  return strings.length > 0 ? strings : undefined
+}
+
 // ─── ID 生成 ─────────────────────────────────────────────
 
 let _counter = 0
@@ -86,25 +146,20 @@ function buildTableWarnings(
 /**
  * 解析 table 对象（JSON 格式）
  */
-function parseTableObj(tableObj: any, execTimes: number): ExplainVisualNode {
-  const accessType = tableObj.access_type as string | undefined
+function parseTableObj(tableObj: JsonExplainTable, execTimes: number): ExplainVisualNode {
+  const accessType = tableObj.access_type
   const estRows: number | undefined = tableObj.rows_examined_per_scan
   const estRowsProduced: number | undefined = tableObj.rows_produced_per_join
-  const filteredRaw = tableObj.filtered
-  const estFiltered: number | undefined =
-    typeof filteredRaw === 'string'  ? parseFloat(filteredRaw) :
-    typeof filteredRaw === 'number'  ? filteredRaw : undefined
+  const estFiltered = toOptionalNumber(tableObj.filtered)
   const costInfo = tableObj.cost_info ?? {}
-  const estCost: number | undefined = costInfo.prefix_cost
-    ? parseFloat(costInfo.prefix_cost)
-    : undefined
+  const estCost = toOptionalNumber(costInfo.prefix_cost)
 
   const totalEstRows = (estRows ?? 0) * execTimes
   const nodeType = accessTypeToNodeType(accessType)
   const severity = accessTypeSeverity(accessType)
 
-  const possibleKeys = Array.isArray(tableObj.possible_keys) ? tableObj.possible_keys as string[] : undefined
-  const keyUsed = (tableObj.key as string | undefined) ?? null
+  const possibleKeys = toStringArray(tableObj.possible_keys)
+  const keyUsed = tableObj.key ?? null
 
   const warnings = buildTableWarnings(
     accessType,
@@ -114,7 +169,7 @@ function parseTableObj(tableObj: any, execTimes: number): ExplainVisualNode {
     (possibleKeys?.length ?? 0) > 0,
   )
 
-  const tableName = tableObj.table_name as string | undefined
+  const tableName = tableObj.table_name
   const label = tableName ?? '未知表'
 
   return {
@@ -131,10 +186,10 @@ function parseTableObj(tableObj: any, execTimes: number): ExplainVisualNode {
     totalEstRows,
     possibleKeys,
     keyUsed,
-    keyLen: (tableObj.key_length as string | undefined) ?? null,
+    keyLen: tableObj.key_length ?? null,
     ref: typeof tableObj.ref === 'string' ? tableObj.ref : null,
-    attachedCondition: tableObj.attached_condition as string | undefined,
-    usedColumns: Array.isArray(tableObj.used_columns) ? tableObj.used_columns as string[] : undefined,
+    attachedCondition: tableObj.attached_condition,
+    usedColumns: toStringArray(tableObj.used_columns),
     severity,
     warnings,
     children: [],
@@ -144,13 +199,12 @@ function parseTableObj(tableObj: any, execTimes: number): ExplainVisualNode {
 /**
  * 从 query_block 中提取 "产出行数"（用来计算子查询执行次数）
  */
-function extractRowsProduced(block: any): number {
+function extractRowsProduced(block: JsonQueryBlock): number {
   if (typeof block.table?.rows_produced_per_join === 'number') {
     return block.table.rows_produced_per_join
   }
   if (Array.isArray(block.nested_loop)) {
-    const loops = block.nested_loop as any[]
-    const last = loops[loops.length - 1]
+    const last = block.nested_loop[block.nested_loop.length - 1]
     if (typeof last?.table?.rows_produced_per_join === 'number') {
       return last.table.rows_produced_per_join
     }
@@ -162,23 +216,21 @@ function extractRowsProduced(block: any): number {
  * 递归解析 query_block（JSON 格式）
  */
 function parseQueryBlock(
-  block: any,
+  block: JsonQueryBlock,
   execTimes = 1,
   isDependent = false,
   isCacheable = true,
 ): ExplainVisualNode {
-  const selectId = block.select_id as number | undefined
+  const selectId = block.select_id
   const costInfo = block.cost_info ?? {}
-  const estCost: number | undefined = costInfo.query_cost
-    ? parseFloat(costInfo.query_cost)
-    : undefined
+  const estCost = toOptionalNumber(costInfo.query_cost)
 
   const children: ExplainVisualNode[] = []
   let usingFilesort = false
   let usingTemporary = false
 
   // 剥离 ordering/grouping 包装层
-  let dataLevel: any = block
+  let dataLevel: JsonQueryBlock = block
   if (block.ordering_operation) {
     usingFilesort = block.ordering_operation.using_filesort === true
     dataLevel = block.ordering_operation
@@ -196,16 +248,14 @@ function parseQueryBlock(
     children.push(parseTableObj(dataLevel.table, execTimes))
   }
   if (Array.isArray(dataLevel.nested_loop)) {
-    for (const loop of dataLevel.nested_loop as any[]) {
+    for (const loop of dataLevel.nested_loop) {
       if (loop.table) children.push(parseTableObj(loop.table, execTimes))
       else if (loop.query_block) children.push(parseQueryBlock(loop.query_block, execTimes))
     }
   }
 
   // SELECT 列表子查询（最常见的关联子查询位置）
-  const subqueries = (
-    (block.select_list_subqueries ?? dataLevel.select_list_subqueries) as any[] | undefined
-  )
+  const subqueries = block.select_list_subqueries ?? dataLevel.select_list_subqueries
   if (subqueries) {
     for (const subEntry of subqueries) {
       const dep = subEntry.dependent === true
@@ -234,7 +284,7 @@ function parseQueryBlock(
   }
 
   // WHERE 子句中的子查询
-  const attachedSubs = block.attached_subqueries as any[] | undefined
+  const attachedSubs = block.attached_subqueries
   if (attachedSubs) {
     for (const sub of attachedSubs) {
       if (sub.query_block) {
@@ -342,9 +392,9 @@ function computeSummary(roots: ExplainVisualNode[]): ExplainVisualSummary {
 export function parseJsonExplain(rawJson: string): ExplainVisualModel | null {
   _counter = 0
   try {
-    const parsed = JSON.parse(rawJson) as any
-    const queryBlock = parsed.query_block
-    if (!queryBlock) return null
+    const parsed: unknown = JSON.parse(rawJson)
+    if (!isRecord(parsed) || !isRecord(parsed.query_block)) return null
+    const queryBlock = parsed.query_block as JsonQueryBlock
 
     const rootNode = parseQueryBlock(queryBlock)
     const roots = [rootNode]

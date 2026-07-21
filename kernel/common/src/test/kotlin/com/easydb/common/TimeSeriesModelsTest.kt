@@ -67,4 +67,27 @@ class TimeSeriesModelsTest {
         assertEquals("BIGINT UNSIGNED", field.type.sql)
         assertTrue(Json.encodeToString(field).contains("BIGINT_UNSIGNED"))
     }
+
+    @Test
+    fun `time series query request and page preserve explicit bounds and null cells`() {
+        val request = TimeSeriesQueryRequest(
+            startInclusive = "2026-07-17T20:00:00+08:00",
+            endExclusive = "2026-07-17T21:00:00+08:00",
+            where = "voltage > 220",
+            limit = 100,
+            offset = 200
+        )
+        val requestJson = Json.encodeToString(request)
+        assertEquals(request, Json.decodeFromString<TimeSeriesQueryRequest>(requestJson))
+
+        val page = TimeSeriesQueryPage(
+            rows = listOf(mapOf("ts" to "2026-07-17 20:30:00.000", "value" to null)),
+            offset = 200,
+            limit = 100,
+            hasMore = true,
+            startInclusive = request.startInclusive,
+            endExclusive = request.endExclusive
+        )
+        assertEquals(page, Json.decodeFromString<TimeSeriesQueryPage>(Json.encodeToString(page)))
+    }
 }

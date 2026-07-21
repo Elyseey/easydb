@@ -442,6 +442,18 @@ Correct pattern for heavy workbench panes:
 
 Do not keep every opened table tab permanently mounted; that trades one tab switch pause for cumulative DOM and memory pressure as users open more tables. Use bounded KeepAlive for render-instance performance, and store-backed tab sessions for recovery after eviction.
 
+### Workbench Large Metadata Lists
+
+Database object categories can contain thousands of tables. These lists must use the same bounded-rendering contract as data grids:
+
+- Render object lists with Ant Design `<Table virtual>` and numeric, wrapper-measured `scroll.x` / `scroll.y` values.
+- Keep filtering over the complete cached object array; virtualization must limit DOM rows, not search scope.
+- Do not use a large pagination size (for example 1000 rows) as a substitute for virtualization.
+- Inactive `category-list` panes must be unmounted. Their search value is stored in `WorkbenchTab`, so retaining the hidden table DOM provides no state benefit.
+- Tree data may contain every searchable object, but rich titles such as tags must be constructed by `titleRender` for visible nodes rather than eagerly stored as thousands of React element trees.
+
+Regression coverage must verify the inactive-pane mount policy. Production build and lint catch invalid Ant Design virtual-table sizing contracts.
+
 ### Workbench KeepAlive — Monaco Editor Lifecycle
 
 Monaco editors are imperative components and must be treated differently from plain React panes. Workbench SQL tab state is durable in `sqlEditorStore`, and SQL panes can remain mounted for result/state continuity, but inactive SQL editor DOM instances must not be kept mounted with `display: none`.

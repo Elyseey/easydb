@@ -154,4 +154,37 @@ describe('EditableDataTable export menu', () => {
     expect(container.querySelector('.anticon-save')).toBeNull()
     expect(container.querySelector('.anticon-download')).toBeNull()
   })
+
+  it('allows TDengine loaded-row CSV and JSON export without SQL INSERT', async () => {
+    const user = userEvent.setup()
+    const { container } = render(
+      <EditableDataTable
+        connectionId="connection-1"
+        dbType="tdengine"
+        database="database-1"
+        tableName="meters"
+        columns={[{
+          name: 'ts',
+          type: 'TIMESTAMP',
+          nullable: false,
+          isPrimaryKey: true,
+          isAutoIncrement: false,
+        }]}
+        dataSource={[{ ts: '2026-07-17 00:00:00.000' }]}
+        hasMore
+        readOnly
+        allowExport
+        allowSqlExport={false}
+        onRefresh={() => {}}
+      />,
+    )
+
+    const exportButton = container.querySelector('.anticon-download')?.closest('button')
+    expect(exportButton).not.toBeNull()
+    await user.click(exportButton!)
+
+    expect(await screen.findByText('导出全部已加载为 CSV')).toBeInTheDocument()
+    expect(screen.getByText('导出全部已加载为 JSON')).toBeInTheDocument()
+    expect(container.querySelector('.anticon-copy')).toBeNull()
+  })
 })

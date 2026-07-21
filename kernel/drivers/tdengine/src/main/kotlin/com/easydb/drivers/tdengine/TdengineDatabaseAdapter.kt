@@ -11,12 +11,14 @@ import com.easydb.common.ProcedureAdapter
 import com.easydb.common.SyncAdapter
 import com.easydb.common.TimeSeriesMetadataAdapter
 import com.easydb.common.TimeSeriesObjectAdapter
+import com.easydb.common.TimeSeriesQueryAdapter
 
 class TdengineDatabaseAdapter : DatabaseAdapter {
     private val connection = TdengineConnectionAdapter()
     private val metadata = TdengineMetadataAdapter()
     private val dialect = TdengineDialectAdapter()
     private val timeSeriesObjects = TdengineTimeSeriesObjectAdapter(metadata, dialect)
+    private val timeSeriesQuery = TdengineTimeSeriesQueryAdapter(dialect)
 
     override fun dbType(): DbType = DbType.TDENGINE
 
@@ -34,6 +36,7 @@ class TdengineDatabaseAdapter : DatabaseAdapter {
         supportsLogicalRestore = false,
         supportsOverwriteRestore = false,
         supportsTimeSeriesObjectCreate = true,
+        supportsTimeSeriesQuery = true,
         supportsTableCreate = false,
         supportsTableRename = false,
         supportsTableDrop = false,
@@ -46,6 +49,7 @@ class TdengineDatabaseAdapter : DatabaseAdapter {
     override fun dialectAdapter(): DialectAdapter = dialect
     override fun timeSeriesMetadataAdapter(): TimeSeriesMetadataAdapter = metadata
     override fun timeSeriesObjectAdapter(): TimeSeriesObjectAdapter = timeSeriesObjects
+    override fun timeSeriesQueryAdapter(): TimeSeriesQueryAdapter = timeSeriesQuery
     override fun syncAdapter(): SyncAdapter = unsupported("数据同步")
     override fun migrationAdapter(): MigrationAdapter = unsupported("数据迁移")
     override fun procedureAdapter(): ProcedureAdapter = unsupported("存储过程")

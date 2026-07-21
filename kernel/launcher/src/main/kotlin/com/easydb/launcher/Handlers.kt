@@ -238,6 +238,7 @@ private fun parseTableDefinition(body: kotlinx.serialization.json.JsonObject): T
 fun Route.metadataRoutes() {
     val connMgr = ServiceRegistry.connectionManager
     val timeSeriesCreateService = TimeSeriesObjectCreateService(ServiceRegistry.adapterRegistry)
+    val timeSeriesQueryService = TimeSeriesQueryService(ServiceRegistry.adapterRegistry)
 
     fun adapterFor(session: DatabaseSession): DatabaseAdapter =
         ServiceRegistry.adapterRegistry.get(session.config.dbType)
@@ -315,6 +316,24 @@ fun Route.metadataRoutes() {
             call.ok(adapter.listTagValues(session, database, table))
         } catch (error: Exception) {
             call.fail("METADATA_FAILED", error.message ?: "加载 TDengine tag values 失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/tables/{table}/preview") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        val request = try {
+            call.receive<TimeSeriesQueryRequest>()
+        } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesQueryService.previewRows(session, database, table, request))
+        } catch (error: TimeSeriesQueryException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_PREVIEW_FAILED", error.message ?: "TDengine 时序预览失败")
         }
     }
 

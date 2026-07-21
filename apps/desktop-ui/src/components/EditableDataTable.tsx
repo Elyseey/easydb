@@ -1422,7 +1422,7 @@ export const EditableDataTable: React.FC<EditableDataTableProps> = ({
                 sortColumn: null,
                 sortDirection: null,
               })
-              onFilter?.({})
+              onFilter?.({ where: undefined, orderBy: undefined })
             }}>重置</Button>
           )}
         </div>

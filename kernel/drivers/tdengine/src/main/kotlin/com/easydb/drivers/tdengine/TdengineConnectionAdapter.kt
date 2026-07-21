@@ -4,17 +4,64 @@ import com.easydb.common.ConnectionAdapter
 import com.easydb.common.ConnectionConfig
 import com.easydb.common.ConnectionTestResult
 import com.easydb.common.DatabaseSession
+import java.net.HttpURLConnection
+import java.net.URI
 import java.sql.Connection
 import java.sql.DriverManager
+import java.sql.SQLException
 import java.util.Properties
 
-class TdengineConnectionAdapter : ConnectionAdapter {
+internal enum class TdengineJdbcProtocol(
+    val driverClass: String,
+    val jdbcScheme: String
+) {
+    WEBSOCKET(
+        driverClass = "com.taosdata.jdbc.ws.WebSocketDriver",
+        jdbcScheme = "jdbc:TAOS-WS"
+    ),
+    REST(
+        driverClass = "com.taosdata.jdbc.rs.RestfulDriver",
+        jdbcScheme = "jdbc:TAOS-RS"
+    )
+}
+
+internal fun interface TdengineJdbcConnectionOpener {
+    fun open(config: ConnectionConfig, protocol: TdengineJdbcProtocol): Connection
+}
+
+internal fun interface TdengineRestEndpointProbe {
+    fun isAvailable(config: ConnectionConfig): Boolean
+}
+
+class TdengineConnectionAdapter private constructor(
+    private val connectionOpener: TdengineJdbcConnectionOpener,
+    private val restEndpointProbe: TdengineRestEndpointProbe
+) : ConnectionAdapter {
+
+    constructor() : this(
+        TdengineJdbcConnectionOpener { config, protocol ->
+            createJdbcConnection(config, protocol)
+        },
+        TdengineRestEndpointProbe(::isRestEndpointAvailable)
+    )
+
+    internal constructor(
+        connectionOpener: (ConnectionConfig, TdengineJdbcProtocol) -> Connection
+    ) : this(connectionOpener, ::isRestEndpointAvailable)
+
+    internal constructor(
+        connectionOpener: (ConnectionConfig, TdengineJdbcProtocol) -> Connection,
+        restEndpointProbe: (ConnectionConfig) -> Boolean
+    ) : this(
+        TdengineJdbcConnectionOpener(connectionOpener),
+        TdengineRestEndpointProbe(restEndpointProbe)
+    )
 
     override fun testConnection(config: ConnectionConfig): ConnectionTestResult {
         val startedAt = System.currentTimeMillis()
         return try {
-            createJdbcConnection(config).use { connection ->
-                val valid = connection.isValid(5)
+            openCompatibleConnection(config).use { connection ->
+                val valid = validateTdengineConnection(connection)
                 if (valid) {
                     ConnectionTestResult(
                         success = true,
@@ -34,7 +81,7 @@ class TdengineConnectionAdapter : ConnectionAdapter {
         TdengineDatabaseSession(
             connectionId = config.id,
             config = config,
-            connection = createJdbcConnection(config)
+            connection = openCompatibleConnection(config)
         )
     } catch (error: Exception) {
         throw RuntimeException(translateTdengineException(error, config.password), error)
@@ -44,23 +91,29 @@ class TdengineConnectionAdapter : ConnectionAdapter {
         session.close()
     }
 
+    private fun openCompatibleConnection(config: ConnectionConfig): Connection = try {
+        connectionOpener.open(config, TdengineJdbcProtocol.WEBSOCKET)
+    } catch (webSocketError: Exception) {
+        val shouldFallback = shouldFallbackToRest(webSocketError) ||
+            isTdengineWebSocketAggregateTimeout(webSocketError) &&
+            runCatching { restEndpointProbe.isAvailable(config) }.getOrDefault(false)
+        if (!shouldFallback) throw webSocketError
+
+        try {
+            connectionOpener.open(config, TdengineJdbcProtocol.REST)
+        } catch (restError: Exception) {
+            throw TdengineProtocolFallbackException(webSocketError, restError)
+        }
+    }
+
     companion object {
-        private const val DRIVER_CLASS = "com.taosdata.jdbc.ws.WebSocketDriver"
         private const val DEFAULT_PORT = 6041
 
-        internal fun buildJdbcUrl(config: ConnectionConfig): String {
-            val host = config.host.trim()
-            require(host.isNotEmpty()) { "TDengine 主机不能为空" }
-            require(',' !in host) { "TDengine MVP 暂不支持多 endpoint，请填写单个主机" }
-
-            val port = if (config.port == 0) DEFAULT_PORT else config.port
-            require(port in 1..65535) { "TDengine 端口必须在 1 到 65535 之间" }
-
-            val formattedHost = when {
-                host.startsWith("[") && host.endsWith("]") -> host
-                ':' in host -> "[$host]"
-                else -> host
-            }
+        internal fun buildJdbcUrl(
+            config: ConnectionConfig,
+            protocol: TdengineJdbcProtocol = TdengineJdbcProtocol.WEBSOCKET
+        ): String {
+            val endpoint = resolveEndpoint(config)
             val database = config.database?.trim()?.takeIf { it.isNotEmpty() }
             if (database != null) {
                 require(database.none { it in "/?#&\r\n" }) {
@@ -69,17 +122,41 @@ class TdengineConnectionAdapter : ConnectionAdapter {
             }
 
             return buildString {
-                append("jdbc:TAOS-WS://")
-                append(formattedHost)
+                append(protocol.jdbcScheme)
+                append("://")
+                append(endpoint.formattedHost)
                 append(':')
-                append(port)
+                append(endpoint.port)
                 append('/')
                 if (database != null) append(database)
             }
         }
 
-        internal fun createJdbcConnection(config: ConnectionConfig): Connection {
-            Class.forName(DRIVER_CLASS)
+        internal fun buildRestHealthUrl(config: ConnectionConfig): String {
+            val endpoint = resolveEndpoint(config)
+            val scheme = if (config.ssl?.enabled == true) "https" else "http"
+            return "$scheme://${endpoint.formattedHost}:${endpoint.port}/-/ping"
+        }
+
+        private fun resolveEndpoint(config: ConnectionConfig): TdengineEndpoint {
+            val host = config.host.trim()
+            require(host.isNotEmpty()) { "TDengine 主机不能为空" }
+            require(',' !in host) { "TDengine MVP 暂不支持多 endpoint，请填写单个主机" }
+            val port = if (config.port == 0) DEFAULT_PORT else config.port
+            require(port in 1..65535) { "TDengine 端口必须在 1 到 65535 之间" }
+            val formattedHost = when {
+                host.startsWith("[") && host.endsWith("]") -> host
+                ':' in host -> "[$host]"
+                else -> host
+            }
+            return TdengineEndpoint(formattedHost, port)
+        }
+
+        internal fun createJdbcConnection(
+            config: ConnectionConfig,
+            protocol: TdengineJdbcProtocol = TdengineJdbcProtocol.WEBSOCKET
+        ): Connection {
+            Class.forName(protocol.driverClass)
             val properties = Properties().apply {
                 setProperty("user", config.username)
                 setProperty("password", config.password)
@@ -92,23 +169,94 @@ class TdengineConnectionAdapter : ConnectionAdapter {
                     setProperty("disableSSLCertValidation", (!ssl.rejectUnauthorized).toString())
                 }
             }
-            return DriverManager.getConnection(buildJdbcUrl(config), properties)
+            return DriverManager.getConnection(buildJdbcUrl(config, protocol), properties)
         }
     }
 }
 
+private data class TdengineEndpoint(
+    val formattedHost: String,
+    val port: Int
+)
+
+internal class TdengineProtocolFallbackException(
+    webSocketError: Exception,
+    val restError: Exception
+) : SQLException("TDengine WebSocket endpoint unavailable and REST fallback failed") {
+    init {
+        addSuppressed(webSocketError)
+        addSuppressed(restError)
+    }
+}
+
+internal fun shouldFallbackToRest(error: Exception): Boolean {
+    val message = collectExceptionMessages(error)
+    val hasWebSocketContext = message.contains("websocket", ignoreCase = true) ||
+        message.contains("web socket", ignoreCase = true) ||
+        message.contains("handshake", ignoreCase = true) ||
+        message.contains("upgrade", ignoreCase = true) ||
+        message.contains("/ws", ignoreCase = true) ||
+        exceptionChain(error).any { throwable ->
+            throwable.javaClass.simpleName.contains("websocket", ignoreCase = true) ||
+                throwable.javaClass.simpleName.contains("handshake", ignoreCase = true)
+        }
+    val hasHttpStatusContext = message.contains("http", ignoreCase = true) ||
+        message.contains("status", ignoreCase = true)
+    val hasUnsupportedHttpStatus = UNSUPPORTED_WEBSOCKET_HTTP_STATUS.containsMatchIn(message)
+    return hasWebSocketContext && hasHttpStatusContext && hasUnsupportedHttpStatus
+}
+
+internal fun isTdengineWebSocketAggregateTimeout(error: Exception): Boolean {
+    val message = collectExceptionMessages(error)
+    return message.contains("can't create connection with any server within", ignoreCase = true) ||
+        message.contains("cannot create connection with any server within", ignoreCase = true)
+}
+
+internal fun isRestEndpointAvailable(config: ConnectionConfig): Boolean {
+    var connection: HttpURLConnection? = null
+    return try {
+        connection = URI.create(TdengineConnectionAdapter.buildRestHealthUrl(config))
+            .toURL()
+            .openConnection() as HttpURLConnection
+        connection.requestMethod = "GET"
+        connection.connectTimeout = REST_HEALTH_TIMEOUT_MS
+        connection.readTimeout = REST_HEALTH_TIMEOUT_MS
+        connection.useCaches = false
+        connection.responseCode in 200..399
+    } catch (_: Exception) {
+        false
+    } finally {
+        connection?.disconnect()
+    }
+}
+
+internal fun validateTdengineConnection(connection: Connection): Boolean {
+    if (connection.isClosed) return false
+    return connection.createStatement().use { statement ->
+        statement.executeQuery("SELECT 1").use { result -> result.next() }
+    }
+}
+
 internal fun translateTdengineException(error: Exception, password: String = ""): String {
-    val rawMessage = sequenceOf(error.message, error.cause?.message)
-        .filterNotNull()
-        .joinToString(" ")
-        .replace(password.takeIf { it.isNotEmpty() } ?: "\u0000", "<redacted>")
+    if (error is TdengineProtocolFallbackException) {
+        return "TDengine WebSocket 接口不可用，REST 回退也失败：" +
+            translateTdengineException(error.restError, password)
+    }
+
+    val collectedMessage = collectExceptionMessages(error)
+    val rawMessage = if (password.isEmpty()) {
+        collectedMessage
+    } else {
+        collectedMessage.replace(password, "<redacted>")
+    }
     val firstLine = rawMessage.lineSequence().firstOrNull()?.trim().orEmpty()
 
     return when {
         error is ClassNotFoundException || rawMessage.contains("ClassNotFoundException", ignoreCase = true) ->
             "TDengine JDBC 驱动未找到，请检查应用打包配置"
 
-        rawMessage.contains("timeout", ignoreCase = true) ||
+        isTdengineWebSocketAggregateTimeout(error) ||
+            rawMessage.contains("timeout", ignoreCase = true) ||
             rawMessage.contains("timed out", ignoreCase = true) ->
             "TDengine 连接超时，请检查主机、6041 端口和 taosAdapter 状态"
 
@@ -133,4 +281,24 @@ internal fun translateTdengineException(error: Exception, password: String = "")
         firstLine.isNotEmpty() -> firstLine
         else -> "TDengine 连接失败，请检查连接配置"
     }
+}
+
+private val UNSUPPORTED_WEBSOCKET_HTTP_STATUS = Regex("""\b(?:404|405|501)\b""")
+private const val REST_HEALTH_TIMEOUT_MS = 2000
+
+private fun collectExceptionMessages(error: Throwable): String {
+    return exceptionChain(error)
+        .mapNotNull { it.message?.takeIf(String::isNotBlank) }
+        .joinToString(" ")
+}
+
+private fun exceptionChain(error: Throwable): List<Throwable> {
+    val chain = mutableListOf<Throwable>()
+    val visited = mutableSetOf<Throwable>()
+    var current: Throwable? = error
+    while (current != null && visited.add(current)) {
+        chain += current
+        current = current.cause
+    }
+    return chain
 }

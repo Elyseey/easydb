@@ -134,6 +134,37 @@ describe('TdengineObjectDesigner preview gate', () => {
     })
   })
 
+  it('preserves identifier casing and disables natural-language input transforms', async () => {
+    render(
+      <TdengineObjectDesigner
+        connectionId="connection-1"
+        database="power"
+        stableNames={[]}
+        onSuccess={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    const objectName = screen.getByLabelText('对象名称')
+    const fieldName = screen.getByLabelText('字段名称 1')
+    const tagName = screen.getByLabelText('Tag名称 1')
+    for (const input of [objectName, fieldName, tagName]) {
+      expect(input).toHaveAttribute('autocapitalize', 'none')
+      expect(input).toHaveAttribute('autocorrect', 'off')
+      expect(input).toHaveAttribute('spellcheck', 'false')
+    }
+
+    fireEvent.change(objectName, { target: { value: 'test001' } })
+    fireEvent.change(fieldName, { target: { value: 'sampletime' } })
+    fireEvent.change(tagName, { target: { value: 'devicegroup' } })
+    fireEvent.click(screen.getByRole('button', { name: '生成 DDL 预览' }))
+
+    await waitFor(() => expect(apiMocks.preview).toHaveBeenCalledTimes(1))
+    expect(apiMocks.preview.mock.calls[0][2].name).toBe('test001')
+    expect(apiMocks.preview.mock.calls[0][2].columns[0].name).toBe('sampletime')
+    expect(apiMocks.preview.mock.calls[0][2].tags[0].name).toBe('devicegroup')
+  })
+
   it('does not expose create before preview and rebuilds preview after returning to modify', async () => {
     render(
       <TdengineObjectDesigner

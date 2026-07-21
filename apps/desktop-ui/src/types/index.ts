@@ -158,6 +158,24 @@ export interface TimeSeriesCreateResult {
   stableName?: string | null
 }
 
+export interface TimeSeriesQueryRequest {
+  startInclusive?: string | null
+  endExclusive?: string | null
+  where?: string | null
+  orderBy?: string | null
+  limit?: number
+  offset?: number
+}
+
+export interface TimeSeriesQueryPage {
+  rows: Record<string, unknown>[]
+  offset: number
+  limit: number
+  hasMore: boolean
+  startInclusive?: string | null
+  endExclusive?: string | null
+}
+
 // 字段信息
 export interface ColumnInfo {
   name: string

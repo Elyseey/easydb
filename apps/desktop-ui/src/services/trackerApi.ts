@@ -12,6 +12,19 @@ import { KERNEL_BASE_URL, kernelFetch } from './kernelAuth'
 
 const BASE = '/api/tracker'
 
+interface ApiEnvelope<T> {
+  success?: boolean
+  data?: T
+  error?: { message?: string }
+  message?: string
+}
+
+function responseMessage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const envelope = payload as ApiEnvelope<unknown>
+  return envelope.error?.message ?? envelope.message
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await kernelFetch(`${BASE}${path}`, {
     cache: 'no-store',
@@ -20,23 +33,25 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const text = await res.text()
   if (!res.ok) {
     // HTTP error — try to parse error message from body
+    let message: string | undefined
     try {
-      const errJson = JSON.parse(text)
-      throw new Error(errJson.error?.message || errJson.message || `HTTP ${res.status}`)
+      message = responseMessage(JSON.parse(text))
     } catch {
-      throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+      // 非 JSON 错误响应沿用原始文本
     }
+    throw new Error(message || `HTTP ${res.status}: ${text || res.statusText}`)
   }
   if (!text) throw new Error('Empty response from server')
-  let json: any
+  let json: ApiEnvelope<T>
   try {
-    json = JSON.parse(text)
+    json = JSON.parse(text) as ApiEnvelope<T>
   } catch {
     throw new Error(`Invalid JSON response: ${text.substring(0, 200)}`)
   }
   if (json.success === false) {
     throw new Error(json.error?.message || 'Request failed')
   }
+  if (json.data === undefined) throw new Error('Missing response data')
   return json.data
 }
 

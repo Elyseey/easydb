@@ -15,7 +15,7 @@ import {
 import { PlayCircleOutlined, LoadingOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons'
 import type { ProcedureParam, ProcedureInspectResult, ProcedureExecuteResult, ProcedureResultSet } from '@/services/api'
 import { procedureApi } from '@/services/api'
-import { handleApiError } from '@/utils/notification'
+import { getErrorMessage, handleApiError } from '@/utils/notification'
 
 const { Text } = Typography
 
@@ -180,7 +180,13 @@ interface ParamState {
   isNull: boolean
 }
 
-export const CallProcedurePanel: React.FC<CallProcedurePanelProps> = ({ target, onClose }) => {
+export const CallProcedurePanel: React.FC<CallProcedurePanelProps> = (props) => {
+  const { target } = props
+  const targetKey = `${target.connectionId}:${target.database}:${target.type}:${target.name}`
+  return <CallProcedurePanelContent key={targetKey} {...props} />
+}
+
+const CallProcedurePanelContent: React.FC<CallProcedurePanelProps> = ({ target, onClose }) => {
   const { token } = theme.useToken()
   const [step, setStep] = useState<Step>('loading')
   const [inspectResult, setInspectResult] = useState<ProcedureInspectResult | null>(null)
@@ -192,14 +198,14 @@ export const CallProcedurePanel: React.FC<CallProcedurePanelProps> = ({ target, 
 
   // Step 0: 自动 inspect
   useEffect(() => {
-    setStep('loading')
-    setLoadError(null)
+    let cancelled = false
     procedureApi.inspect({
       connectionId: target.connectionId,
       database: target.database,
       name: target.name,
       type: target.type,
     }).then((res) => {
+      if (cancelled) return
       const result = (res as { data: ProcedureInspectResult }).data ?? res as ProcedureInspectResult
       setInspectResult(result)
 
@@ -212,10 +218,14 @@ export const CallProcedurePanel: React.FC<CallProcedurePanelProps> = ({ target, 
       }
       setParamStates(init)
       setStep('params')
-    }).catch((e) => {
-      setLoadError(e?.message ?? '加载参数元数据失败')
+    }).catch((error: unknown) => {
+      if (cancelled) return
+      setLoadError(getErrorMessage(error, '加载参数元数据失败'))
       setStep('error')
     })
+    return () => {
+      cancelled = true
+    }
   }, [target])
 
   // 执行

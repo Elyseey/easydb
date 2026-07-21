@@ -148,6 +148,31 @@ object TimeSeriesMetadataLimits {
 }
 
 @Serializable
+data class TimeSeriesQueryRequest(
+    val startInclusive: String? = null,
+    val endExclusive: String? = null,
+    val where: String? = null,
+    val orderBy: String? = null,
+    val limit: Int = TimeSeriesQueryLimits.DEFAULT_PAGE_SIZE,
+    val offset: Int = 0
+)
+
+@Serializable
+data class TimeSeriesQueryPage(
+    val rows: List<Map<String, String?>>,
+    val offset: Int,
+    val limit: Int,
+    val hasMore: Boolean,
+    val startInclusive: String? = null,
+    val endExclusive: String? = null
+)
+
+object TimeSeriesQueryLimits {
+    const val DEFAULT_PAGE_SIZE = 1_000
+    const val MAX_PAGE_SIZE = 1_000
+}
+
+@Serializable
 data class TriggerInfo(
     val name: String,
     val table: String? = null,

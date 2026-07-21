@@ -32,7 +32,7 @@ import {
 } from 'lucide-react'
 import type {
   TableInfo, ColumnInfo, ConnectionConfig, SavedScript, DatabaseInfo, TableKind,
-  TimeSeriesChildTablePage, TimeSeriesTagDefinition, TimeSeriesTagValue,
+  TimeSeriesChildTablePage, TimeSeriesQueryPage, TimeSeriesTagDefinition, TimeSeriesTagValue,
 } from '@/types'
 import { useWorkbenchStore, type TableDataQuery, type TableTabState, type WorkbenchTab } from '@/stores/workbenchStore'
 import { useConnectionStore } from '@/stores/connectionStore'
@@ -51,6 +51,7 @@ import BackupDatabaseModal from '@/components/BackupDatabaseModal'
 import RestoreDatabaseModal from '@/components/RestoreDatabaseModal'
 import { TableDesigner, type TableDesignerSaveResult } from '@/components/TableDesigner'
 import { TdengineObjectDesigner } from '@/components/TdengineObjectDesigner'
+import { TimeSeriesRangeControl } from '@/components/TimeSeriesRangeControl'
 import { DdlViewer } from '@/components/DdlViewer'
 import { QueryEditorPane } from '@/components/QueryEditorPane'
 import { ShortcutsModal } from '@/components/ShortcutsModal'
@@ -64,12 +65,26 @@ import {
   normalizeQueryTabTitle,
   resolveWorkbenchTabKey,
 } from './queryTabTitle'
+import { shouldKeepInactiveWorkbenchPaneMounted } from './paneMountPolicy'
 import { tableDetailLoadPlan, type TableDetailLoadTarget } from './tableDetailLoadPlan'
+import {
+  filterSavedScriptsForTree,
+  filterTdengineTreeObjects,
+  filterTreeItemsByName,
+  matchesTreeSearch,
+} from './treeSearch'
 import { timeSeriesRefreshTarget } from '@/utils/timeSeriesDesigner'
+import {
+  createDefaultTimeSeriesRange,
+  prepareTimeSeriesPreviewRequest,
+} from '@/utils/timeSeriesQuery'
 
 const { Sider, Content } = Layout
 const { Text } = Typography
-type TreeDataNode = DataNode & { 'data-node-key'?: string }
+type TreeDataNode = DataNode & {
+  'data-node-key'?: string
+  objectKindLabel?: string
+}
 type WorkbenchPaneRenderState = {
   keepAliveKeys: string[]
   dirtyKeys: string[]
@@ -88,7 +103,7 @@ const removeItems = (items: string[], removing: string[]) => items.filter((item)
 /** 分类列表视图 — 独立组件，搜索状态通过 props 持久化 */
 import type { MenuProps } from 'antd'
 
-const CategoryListView: React.FC<{
+export const CategoryListView: React.FC<{
   connectionId: string
   database: string
   category: string
@@ -100,6 +115,8 @@ const CategoryListView: React.FC<{
 }> = ({ database, category, objects, objectCategories, onSelectObject, search, onSearchChange }) => {
   const { token } = theme.useToken()
   const deferredSearch = useDeferredValue(search)
+  const tableWrapperRef = useRef<HTMLDivElement>(null)
+  const [tableScrollY, setTableScrollY] = useState(400)
   const compactPanelStyle = useMemo<CSSProperties>(() => ({
     background: 'var(--glass-panel)',
     backdropFilter: 'var(--glass-blur-sm)',
@@ -125,6 +142,23 @@ const CategoryListView: React.FC<{
           (t.comment && t.comment.toLowerCase().includes(deferredSearch.toLowerCase()))
       )
     : categoryObjects
+
+  const updateTableScrollY = useCallback(() => {
+    const wrapper = tableWrapperRef.current
+    if (!wrapper || wrapper.clientHeight === 0) return
+    const header = wrapper.querySelector('.ant-table-thead')
+    const headerHeight = header ? Math.ceil(header.getBoundingClientRect().height) : 42
+    setTableScrollY(Math.max(120, wrapper.clientHeight - headerHeight - 2))
+  }, [])
+
+  useLayoutEffect(() => {
+    const wrapper = tableWrapperRef.current
+    if (!wrapper) return undefined
+    updateTableScrollY()
+    const observer = new ResizeObserver(updateTableScrollY)
+    observer.observe(wrapper)
+    return () => observer.disconnect()
+  }, [filtered.length, updateTableScrollY])
 
   const isTables = category === 'tables'
 
@@ -247,14 +281,15 @@ const CategoryListView: React.FC<{
         </div>
       )}
 
-      <div style={{ ...compactPanelStyle, flex: 1, overflow: 'hidden' }}>
+      <div ref={tableWrapperRef} style={{ ...compactPanelStyle, flex: 1, minHeight: 0, overflow: 'hidden' }}>
         <Table
+          virtual
           dataSource={filtered}
           columns={catColumns}
           rowKey="name"
           size="small"
-          pagination={{ defaultPageSize: 1000, hideOnSinglePage: true, showSizeChanger: true, pageSizeOptions: ['100', '500', '1000', '2000'], showTotal: (t) => `共 ${t} 项` }}
-          scroll={{ y: 'calc(100vh - 300px)' }}
+          pagination={false}
+          scroll={{ x: isTables ? 960 : 560, y: tableScrollY }}
           onRow={(record) => ({
             onClick: () => onSelectObject(record.name),
             style: { cursor: 'pointer' },
@@ -347,9 +382,13 @@ export const WorkbenchPage: React.FC = () => {
     const openKeys = new Set(Object.keys(openTableTabs))
     const keys = paneState.keepAliveKeys.filter((key) => openKeys.has(key))
     if (activeTableTabKey && openKeys.has(activeTableTabKey) && !keys.includes(activeTableTabKey)) {
-      return [...keys, activeTableTabKey]
+      keys.push(activeTableTabKey)
     }
-    return keys
+    return keys.filter((key) => {
+      if (key === activeTableTabKey) return true
+      const tab = openTableTabs[key]
+      return tab ? shouldKeepInactiveWorkbenchPaneMounted(tab) : false
+    })
   }, [activeTableTabKey, openTableTabs, paneState.keepAliveKeys])
 
   const pruneKeepAliveKeys = useCallback((
@@ -650,7 +689,55 @@ export const WorkbenchPage: React.FC = () => {
     })
   }, [setOpenTableTabs])
 
-  const refreshTableRows = useCallback(async (tabKey: string, query?: TableDataQuery, errorMessage = '刷新数据失败') => {
+  const fetchTablePreview = useCallback(async (
+    tab: Pick<TableTabState, 'connectionId' | 'database' | 'tableName'>,
+    dataQuery: TableDataQuery,
+    offset = 0,
+    reanchorTimeRange = false,
+  ): Promise<{ rows: Record<string, unknown>[]; hasMore: boolean; dataQuery: TableDataQuery }> => {
+    const capabilities = getDbCapabilities(openConnectionDbTypes.get(tab.connectionId) ?? null)
+    if (capabilities.workbench.timeSeriesQuery) {
+      const prepared = prepareTimeSeriesPreviewRequest({
+        timeRange: dataQuery.timeRange,
+        where: dataQuery.where,
+        orderBy: dataQuery.orderBy,
+        limit: PREVIEW_PAGE_SIZE,
+        offset,
+      }, reanchorTimeRange)
+      const page = await metadataApi.timeSeriesPreviewRows(
+        tab.connectionId,
+        tab.database,
+        tab.tableName,
+        prepared.request,
+      ) as TimeSeriesQueryPage
+      return {
+        rows: page.rows,
+        hasMore: page.hasMore,
+        dataQuery: { ...dataQuery, timeRange: prepared.timeRange },
+      }
+    }
+
+    const rows = await metadataApi.previewRows(
+      tab.connectionId,
+      tab.database,
+      tab.tableName,
+      {
+        where: dataQuery.where,
+        orderBy: dataQuery.orderBy,
+        limit: PREVIEW_PAGE_SIZE,
+        offset,
+      },
+    ) as Record<string, unknown>[]
+    const hasQuery = Boolean(dataQuery.where || dataQuery.orderBy)
+    return { rows, hasMore: !hasQuery && rows.length >= PREVIEW_PAGE_SIZE, dataQuery }
+  }, [openConnectionDbTypes])
+
+  const refreshTableRows = useCallback(async (
+    tabKey: string,
+    query?: TableDataQuery,
+    errorMessage = '刷新数据失败',
+    reanchorTimeRange = false,
+  ) => {
     const requestKey = `${tabKey}::data`
     const seq = (loadSeqRef.current[requestKey] ?? 0) + 1
     loadSeqRef.current[requestKey] = seq
@@ -659,8 +746,6 @@ export const WorkbenchPage: React.FC = () => {
     if (!stateTab || stateTab.type !== 'table') return
 
     const dataQuery = query ? { ...(stateTab.dataQuery ?? {}), ...query } : stateTab.dataQuery ?? {}
-    const hasQuery = Boolean(dataQuery.where || dataQuery.orderBy)
-
     updateTabState(tabKey, (prev) => ({
       dataQuery,
       loadingMoreRows: false,
@@ -668,17 +753,12 @@ export const WorkbenchPage: React.FC = () => {
     }))
 
     try {
-      const rows = await metadataApi.previewRows(
-        stateTab.connectionId,
-        stateTab.database,
-        stateTab.tableName,
-        { ...dataQuery, limit: PREVIEW_PAGE_SIZE }
-      ) as Record<string, unknown>[]
+      const result = await fetchTablePreview(stateTab, dataQuery, 0, reanchorTimeRange)
       if (!isCurrentRequest()) return
       updateTabState(tabKey, (prev) => ({
-        previewRows: rows,
-        dataQuery,
-        hasMoreRows: !hasQuery && rows.length >= PREVIEW_PAGE_SIZE,
+        previewRows: result.rows,
+        dataQuery: result.dataQuery,
+        hasMoreRows: result.hasMore,
         loadedTabs: addUnique(prev.loadedTabs, 'data'),
       }))
     } catch (e) {
@@ -691,7 +771,7 @@ export const WorkbenchPage: React.FC = () => {
         }))
       }
     }
-  }, [updateTabState])
+  }, [fetchTablePreview, updateTabState])
 
   const loadTabDataForTab = useCallback(async (tabKey: string, connId: string, dbName: string, tableName: string, tab: TableDetailLoadTarget) => {
     const requestKey = `${tabKey}::${tab}`
@@ -729,14 +809,20 @@ export const WorkbenchPage: React.FC = () => {
       if (needTab) {
         if (tab === 'data') {
           const dataQuery = tableTab?.dataQuery ?? {}
-          const hasQuery = Boolean(dataQuery.where || dataQuery.orderBy)
           promises.push(
-            metadataApi.previewRows(connId, dbName, tableName, { ...dataQuery, limit: PREVIEW_PAGE_SIZE }).then((rows: unknown) => {
+            fetchTablePreview(
+              tableTab ?? {
+                connectionId: connId,
+                database: dbName,
+                tableName,
+              },
+              dataQuery,
+            ).then((result) => {
               if (!isCurrentRequest()) return
-              const rowArr = rows as Record<string, unknown>[]
               updateTabState(tabKey, (prev) => ({
-                previewRows: rowArr,
-                hasMoreRows: !hasQuery && rowArr.length >= PREVIEW_PAGE_SIZE,
+                previewRows: result.rows,
+                dataQuery: result.dataQuery,
+                hasMoreRows: result.hasMore,
                 loadedTabs: addUnique(prev.loadedTabs, 'data'),
               }))
             })
@@ -786,7 +872,7 @@ export const WorkbenchPage: React.FC = () => {
         }))
       }
     }
-  }, [openTableTabs, updateTabState])
+  }, [fetchTablePreview, openTableTabs, updateTabState])
 
   const applyRenamedTableState = useCallback((connId: string, dbName: string, oldName: string, newName: string) => {
     const oldTabKey = `table:${connId}::${dbName}::${oldName}`
@@ -905,6 +991,7 @@ export const WorkbenchPage: React.FC = () => {
     const tabKey = `table:${connId}::${dbName}::${tableName}`
     const existing = openTableTabs[tabKey]
     if (!existing) {
+      const capabilities = getDbCapabilities(openConnectionDbTypes.get(connId) ?? null)
       const newTab: TableTabState = {
         type: 'table',
         connectionId: connId,
@@ -920,7 +1007,9 @@ export const WorkbenchPage: React.FC = () => {
         indexes: [],
         ddl: '',
         previewRows: [],
-        dataQuery: {},
+        dataQuery: capabilities.workbench.timeSeriesQuery
+          ? { timeRange: createDefaultTimeSeriesRange() }
+          : {},
         hasMoreRows: false,
         loadingMoreRows: false,
         detailTab: defaultTab,
@@ -947,7 +1036,7 @@ export const WorkbenchPage: React.FC = () => {
         activeTable: tableName,
       })
     }
-  }, [openTableTabs, batchUpdate, loadTabDataForTab])
+  }, [openConnectionDbTypes, openTableTabs, batchUpdate, loadTabDataForTab])
 
   const handleOpenObjectDetailFromQuery = useCallback((request: OpenObjectDetailRequest) => {
     const connection = connections.find((item) => item.id === request.connectionId)
@@ -1354,11 +1443,13 @@ export const WorkbenchPage: React.FC = () => {
   const treeData: TreeDataNode[] = useMemo(() => {
     if (deferTree) return [] // 初次渲染不计算
 
-    const scriptsNode: TreeDataNode = {
+    const searchingTree = deferredSearch.trim().length > 0
+    const filteredScripts = filterSavedScriptsForTree(savedScripts, deferredSearch)
+    const scriptsNode: TreeDataNode | null = searchingTree && filteredScripts.length === 0 ? null : {
       key: 'saved-scripts',
       'data-node-key': 'saved-scripts',
       title: <span style={{ fontWeight: 600 }}>📚 收藏脚本</span>,
-      children: savedScripts.map(s => ({
+      children: filteredScripts.map(s => ({
         key: `script:${s.id}`,
         'data-node-key': `script:${s.id}`,
         title: s.name,
@@ -1375,35 +1466,38 @@ export const WorkbenchPage: React.FC = () => {
       .map((db) => {
         const objKey = `${conn.id}::${db.name}`
         const dbObjects = objectsMap[objKey] || []
-        const lowerSearch = deferredSearch.toLowerCase()
-        const dbNameMatches = !deferredSearch || db.name.toLowerCase().includes(lowerSearch)
-        // 数据库内是否有匹配的对象
-        const hasMatchingObjects = deferredSearch && dbObjects.some(
-          (t) => t.name.toLowerCase().includes(lowerSearch)
-        )
-
-        // 数据库名不匹配且子对象也不匹配 → 过滤掉
-        if (deferredSearch && !dbNameMatches && !hasMatchingObjects) return null
+        const dbNameMatches = matchesTreeSearch(deferredSearch, db.name)
+        const objectQuery = dbNameMatches ? '' : deferredSearch
 
         const categoryChildren: TreeDataNode[] = conn.dbType === 'tdengine'
-          ? [
+          ? (() => {
+              const childTablesByStable = Object.fromEntries(
+                dbObjects
+                  .filter((item) => item.tableKind === 'SUPER_TABLE')
+                  .map((stable) => {
+                    const childKey = `${conn.id}::${db.name}::${stable.name}`
+                    return [stable.name, childTablesMap[childKey]?.items ?? []]
+                  })
+              )
+              const filteredObjects = filterTdengineTreeObjects(dbObjects, childTablesByStable, objectQuery)
+              return [
               {
                 key: `cat:${conn.id}:${db.name}:stables`,
                 'data-node-key': `cat:${conn.id}:${db.name}:stables`,
-                title: `超级表 (${dbObjects.filter((item) => item.tableKind === 'SUPER_TABLE').length})`,
+                title: `超级表 (${filteredObjects.superTables.length})`,
                 icon: <Activity size={15} />,
-                children: dbObjects
-                  .filter((item) => item.tableKind === 'SUPER_TABLE')
-                  .map((stable) => {
+                children: filteredObjects.superTables
+                  .map(({ table: stable, children: filteredChildren }) => {
                     const childKey = `${conn.id}::${db.name}::${stable.name}`
                     const childState = childTablesMap[childKey]
                     return {
                       key: `tsstable:${conn.id}:${db.name}:${stable.name}`,
                       'data-node-key': `tsstable:${conn.id}:${db.name}:${stable.name}`,
-                      title: <Space size={6}><span>{stable.name}</span><Tag style={{ margin: 0 }}>STABLE</Tag></Space>,
+                      title: stable.name,
+                      objectKindLabel: 'STABLE',
                       icon: <Activity size={14} color={token.colorPrimary} />,
                       children: [
-                        {
+                        ...(!searchingTree ? [{
                           key: `tssearch:${conn.id}:${db.name}:${stable.name}`,
                           'data-node-key': `tssearch:${conn.id}:${db.name}:${stable.name}`,
                           selectable: false,
@@ -1419,21 +1513,22 @@ export const WorkbenchPage: React.FC = () => {
                               style={{ width: 170 }}
                             />
                           ),
-                        },
-                        ...(childState?.items ?? []).map((child) => ({
+                        }] : []),
+                        ...filteredChildren.map((child) => ({
                           key: `tschild:${conn.id}:${db.name}:${stable.name}:${child.name}`,
                           'data-node-key': `tschild:${conn.id}:${db.name}:${stable.name}:${child.name}`,
-                          title: <Space size={6}><span>{child.name}</span><Tag style={{ margin: 0 }}>子表</Tag></Space>,
+                          title: child.name,
+                          objectKindLabel: '子表',
                           icon: iconTable,
                           isLeaf: true,
                         })),
-                        ...(childState?.loading ? [{
+                        ...(!searchingTree && childState?.loading ? [{
                           key: `tsloading:${conn.id}:${db.name}:${stable.name}`,
                           title: '正在加载子表...',
                           selectable: false,
                           isLeaf: true,
                         }] : []),
-                        ...(childState?.hasMore ? [{
+                        ...(!searchingTree && childState?.hasMore ? [{
                           key: `tsmore:${conn.id}:${db.name}:${stable.name}`,
                           selectable: false,
                           isLeaf: true,
@@ -1458,23 +1553,24 @@ export const WorkbenchPage: React.FC = () => {
               {
                 key: `cat:${conn.id}:${db.name}:tables`,
                 'data-node-key': `cat:${conn.id}:${db.name}:tables`,
-                title: `普通表 (${dbObjects.filter((item) => item.tableKind === 'BASIC_TABLE').length})`,
+                title: `普通表 (${filteredObjects.basicTables.length})`,
                 icon: <Table2 size={16} />,
-                children: dbObjects
-                  .filter((item) => item.tableKind === 'BASIC_TABLE')
+                children: filteredObjects.basicTables
                   .map((table) => ({
                     key: `obj:${conn.id}:${db.name}:${table.name}`,
                     'data-node-key': `obj:${conn.id}:${db.name}:${table.name}`,
-                    title: <Space size={6}><span>{table.name}</span><Tag style={{ margin: 0 }}>普通表</Tag></Space>,
+                    title: table.name,
+                    objectKindLabel: '普通表',
                     icon: iconTable,
                     isLeaf: true,
                   })),
               },
-            ]
+            ].filter((category) => !searchingTree || category.children.length > 0) as TreeDataNode[]
+            })()
           : objectCategories.map((cat) => {
-            const items = dbObjects.filter(
-              (t) => cat.types.includes(t.type)
-                && (!deferredSearch || dbNameMatches || t.name.toLowerCase().includes(lowerSearch))
+            const items = filterTreeItemsByName(
+              dbObjects.filter((t) => cat.types.includes(t.type)),
+              objectQuery,
             )
             return {
               key: `cat:${conn.id}:${db.name}:${cat.key}`,
@@ -1489,7 +1585,9 @@ export const WorkbenchPage: React.FC = () => {
                 isLeaf: true,
               })),
             } as TreeDataNode
-          }).filter((cat) => !deferredSearch || (cat.children && cat.children.length > 0))
+          }).filter((cat) => !searchingTree || (cat.children && cat.children.length > 0))
+
+        if (searchingTree && !dbNameMatches && categoryChildren.length === 0) return null
 
         return {
           key: `db:${conn.id}:${db.name}`,
@@ -1501,7 +1599,7 @@ export const WorkbenchPage: React.FC = () => {
       })
       .filter(Boolean) as TreeDataNode[]
 
-    return {
+    const connNode = {
       key: `conn:${conn.id}`,
       'data-node-key': `conn:${conn.id}`,
       title: (
@@ -1523,18 +1621,19 @@ export const WorkbenchPage: React.FC = () => {
       icon: iconConn,
       children: isLoading ? [{ key: `loading:${conn.id}`, 'data-node-key': `loading:${conn.id}`, title: '加载中...', isLeaf: true, selectable: false }] : dbChildren,
     } as TreeDataNode
-  })
+    return searchingTree && !isLoading && dbChildren.length === 0 ? null : connNode
+  }).filter(Boolean) as TreeDataNode[]
 
-  return [scriptsNode, ...connNodes]
+  return [...(scriptsNode ? [scriptsNode] : []), ...connNodes]
   }, [deferTree, openConnections, databasesMap, objectsMap, loadingConns, deferredSearch, objectCategories, token, handleRemoveConnection, iconConn, iconDb, iconTable, iconTrigger, iconView, iconProcedure, iconFunction, savedScripts, childTablesMap, loadChildTables])
 
   // --- 搜索时自动展开所有匹配的节点 ---
-  const prevExpandedRef = useRef<React.Key[]>([])
+  const prevExpandedRef = useRef<React.Key[] | null>(null)
   useEffect(() => {
     if (deferredSearch) {
       // 保存搜索前的展开状态
-      if (prevExpandedRef.current.length === 0) {
-        prevExpandedRef.current = [...expandedKeys]
+      if (prevExpandedRef.current === null) {
+        prevExpandedRef.current = [...useWorkbenchStore.getState().treeExpandedKeys]
       }
       // 展开所有有子节点的节点
       const allKeys: React.Key[] = []
@@ -1548,13 +1647,12 @@ export const WorkbenchPage: React.FC = () => {
       }
       collectKeys(treeData)
       setExpandedKeys(allKeys)
-    } else if (prevExpandedRef.current.length > 0) {
+    } else if (prevExpandedRef.current !== null) {
       // 搜索清空时恢复之前的展开状态
       setExpandedKeys(prevExpandedRef.current)
-      prevExpandedRef.current = []
+      prevExpandedRef.current = null
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deferredSearch])
+  }, [deferredSearch, setExpandedKeys, treeData])
 
   // --- 树节点选中 ---
   const handleTreeSelect = (_: React.Key[], info: { node: DataNode }) => {
@@ -2172,15 +2270,18 @@ export const WorkbenchPage: React.FC = () => {
                   (nodeData: any) => {
                   const key = String(nodeData.key)
                   const title = nodeData.title as React.ReactNode
+                  const renderedTitle = nodeData.objectKindLabel
+                    ? <Space size={6}><span>{title}</span><Tag style={{ margin: 0 }}>{nodeData.objectKindLabel}</Tag></Space>
+                    : title
                   // 叶子对象节点保留 Tooltip（名称可能被截断）
                   if (nodeData.isLeaf && key.startsWith('obj:')) {
                     return (
                       <Tooltip title={String(nodeData.title)} mouseEnterDelay={0.5} placement="right">
-                        <span data-tree-key={key} style={{ display: 'contents' }}>{title}</span>
+                        <span data-tree-key={key} style={{ display: 'contents' }}>{renderedTitle}</span>
                       </Tooltip>
                     )
                   }
-                  return <span data-tree-key={key} style={{ display: 'contents' }}>{title}</span>
+                  return <span data-tree-key={key} style={{ display: 'contents' }}>{renderedTitle}</span>
                 }}
                 onRightClick={({ event, node }) => {
                   const nodeKey = String(node.key)
@@ -2571,6 +2672,8 @@ export const WorkbenchPage: React.FC = () => {
                 const t = activeTab
                 const paneDbType = openConnectionDbTypes.get(t.connectionId)
                 const paneCapabilities = getDbCapabilities(paneDbType ?? null)
+                const canExportLoadedData = paneCapabilities.workbench.exportData ||
+                  paneCapabilities.workbench.timeSeriesLoadedDataExport
                 const tableKindLabel = t.tableKind === 'SUPER_TABLE'
                   ? '超级表'
                   : t.tableKind === 'CHILD_TABLE'
@@ -2676,17 +2779,17 @@ export const WorkbenchPage: React.FC = () => {
                                       icon={<ReloadOutlined />}
                                       loading={isDataLoading}
                                       style={quietButtonStyle}
-                                      onClick={() => refreshTableRows(tabKey)}
+                                      onClick={() => refreshTableRows(tabKey, undefined, '刷新数据失败', true)}
                                     >
                                       刷新
                                     </Button>
                                   </Tooltip>
-                                  {t.previewRows.length > 0 && paneCapabilities.workbench.exportData && (
+                                  {t.previewRows.length > 0 && canExportLoadedData && (
                                     <Dropdown menu={{
                                       items: [
                                         { key: 'csv', label: '导出为 CSV', onClick: () => confirmDataExport({ columns: t.columns.map((c: ColumnInfo) => c.name), rows: t.previewRows, format: 'csv', filenameBase: t.tableName, tableName: t.tableName, loadedOnly: t.hasMoreRows }) },
                                         { key: 'json', label: '导出为 JSON', onClick: () => confirmDataExport({ columns: t.columns.map((c: ColumnInfo) => c.name), rows: t.previewRows, format: 'json', filenameBase: t.tableName, tableName: t.tableName, loadedOnly: t.hasMoreRows }) },
-                                        ...(openConnectionDbTypes.get(t.connectionId) ? [{
+                                        ...(paneCapabilities.workbench.exportData && openConnectionDbTypes.get(t.connectionId) ? [{
                                           key: 'sql',
                                           label: '导出为 SQL INSERT',
                                           onClick: () => confirmDataExport({
@@ -2706,6 +2809,24 @@ export const WorkbenchPage: React.FC = () => {
                                   )}
                                 </Space>
                               </div>
+                              {paneCapabilities.workbench.timeSeriesQuery && (
+                                <TimeSeriesRangeControl
+                                  value={t.dataQuery.timeRange ?? createDefaultTimeSeriesRange()}
+                                  disabled={isDataLoading}
+                                  onChange={(timeRange) => {
+                                    updateTabState(tabKey, (prev) => ({
+                                      dataQuery: { ...(prev.dataQuery ?? {}), timeRange },
+                                      hasMoreRows: false,
+                                    }))
+                                  }}
+                                  onQuery={(timeRange) => refreshTableRows(
+                                    tabKey,
+                                    { timeRange },
+                                    '查询时序数据失败',
+                                    true,
+                                  )}
+                                />
+                              )}
                               <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
                                 <EditableDataTable
                                   connectionId={t.connectionId}
@@ -2719,7 +2840,7 @@ export const WorkbenchPage: React.FC = () => {
                                   loading={isDataLoading}
                                   active={isActivePane && t.detailTab === 'data'}
                                   readOnly={!paneCapabilities.workbench.rowEdit}
-                                  allowExport={paneCapabilities.workbench.exportData}
+                                  allowExport={canExportLoadedData}
                                   allowSqlExport={paneCapabilities.workbench.exportData}
                                   onDirtyChange={(dirty) => setPaneDirty(tabKey, dirty)}
                                   filterState={{
@@ -2742,15 +2863,17 @@ export const WorkbenchPage: React.FC = () => {
                                     const isCurrentRequest = () => loadSeqRef.current[requestKey] === seq
                                     updateTabState(tabKey, () => ({ loadingMoreRows: true }))
                                     try {
-                                      const rows = await metadataApi.previewRows(
-                                        t.connectionId, t.database, t.tableName,
-                                        { ...(t.dataQuery ?? {}), limit: PREVIEW_PAGE_SIZE, offset: t.previewRows.length }
-                                      ) as Record<string, unknown>[]
+                                      const result = await fetchTablePreview(
+                                        t,
+                                        t.dataQuery ?? {},
+                                        t.previewRows.length,
+                                        false,
+                                      )
                                       if (!isCurrentRequest()) return
-                                      const hasQuery = Boolean(t.dataQuery?.where || t.dataQuery?.orderBy)
                                       updateTabState(tabKey, (prev) => ({
-                                        previewRows: [...prev.previewRows, ...rows],
-                                        hasMoreRows: !hasQuery && rows.length >= PREVIEW_PAGE_SIZE,
+                                        previewRows: [...prev.previewRows, ...result.rows],
+                                        dataQuery: result.dataQuery,
+                                        hasMoreRows: result.hasMore,
                                       }))
                                     } catch (e) {
                                       if (!isCurrentRequest()) return
@@ -2761,7 +2884,7 @@ export const WorkbenchPage: React.FC = () => {
                                       }
                                     }
                                   }}
-                                  onRefresh={() => refreshTableRows(tabKey)}
+                                  onRefresh={() => refreshTableRows(tabKey, undefined, '刷新数据失败', true)}
                                   onFilter={(params) => refreshTableRows(tabKey, params, '筛选数据失败')}
                                 />
                               </div>

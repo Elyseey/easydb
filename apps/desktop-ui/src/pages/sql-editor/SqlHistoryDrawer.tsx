@@ -86,7 +86,7 @@ export const SqlHistoryDrawer: React.FC<SqlHistoryDrawerProps> = ({
       onOk: async () => {
         setClearing(true)
         try {
-          await (sqlApi as any).historyClearByConnection(connectionId)
+          await sqlApi.historyClearByConnection(connectionId)
           setAllItems([])
           toast.success('历史记录已清空')
         } catch {

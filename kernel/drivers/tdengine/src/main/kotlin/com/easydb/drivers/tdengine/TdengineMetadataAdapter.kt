@@ -4,6 +4,7 @@ import com.easydb.common.ColumnInfo
 import com.easydb.common.DatabaseInfo
 import com.easydb.common.DatabaseSession
 import com.easydb.common.IndexInfo
+import com.easydb.common.InvalidReadOnlyClauseException
 import com.easydb.common.MetadataAdapter
 import com.easydb.common.TableDefinition
 import com.easydb.common.TableInfo
@@ -237,8 +238,8 @@ class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
     ): List<Map<String, String?>> {
         val safeLimit = limit.coerceIn(1, TdengineMetadataSql.MAX_PREVIEW_ROWS)
         val safeOffset = offset.coerceAtLeast(0)
-        val safeWhere = validateReadOnlyClause(where, "where")
-        val safeOrderBy = validateReadOnlyClause(orderBy, "orderBy")
+        val safeWhere = validateTdengineReadOnlyClause(where, "where")
+        val safeOrderBy = validateTdengineReadOnlyClause(orderBy, "orderBy")
         val sql = buildString {
             append("SELECT * FROM ")
             append(qualified(database, table))
@@ -248,7 +249,7 @@ class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
         }
 
         return session.getJdbcConnection().createStatement().use { statement ->
-            statement.executeQuery(sql).use { result -> result.readRows() }
+            statement.executeQuery(sql).use { result -> result.readTdengineStringRows() }
         }
     }
 
@@ -473,35 +474,8 @@ class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
         }
     }
 
-    private fun validateReadOnlyClause(value: String?, label: String): String? {
-        val clause = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        require(!clause.contains(';') && !clause.contains("--") && !clause.contains("/*")) {
-            "TDengine $label 不允许多语句或 SQL 注释"
-        }
-        val forbidden = Regex(
-            "(?i)\\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|USE)\\b"
-        )
-        require(!forbidden.containsMatchIn(clause)) { "TDengine $label 仅允许只读表达式" }
-        return clause
-    }
-
     private fun qualified(database: String, table: String): String =
         "${dialect.quoteIdentifier(database)}.${dialect.quoteIdentifier(table)}"
-
-    private fun ResultSet.readRows(): List<Map<String, String?>> {
-        val metadata = metaData
-        return buildList {
-            while (next()) {
-                add(
-                    buildMap {
-                        for (index in 1..metadata.columnCount) {
-                            put(metadata.getColumnLabel(index), getString(index))
-                        }
-                    }
-                )
-            }
-        }
-    }
 
     private fun ResultSet.readTagValues(): List<TimeSeriesTagValue> = buildList {
         while (next()) add(readTagValue())
@@ -520,4 +494,33 @@ class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
 
     private fun unsupportedMutation(): Nothing =
         throw UnsupportedOperationException("TDengine 当前阶段仅支持时序元数据浏览和只读预览")
+}
+
+internal fun validateTdengineReadOnlyClause(value: String?, label: String): String? {
+    val clause = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    if (clause.contains(';') || clause.contains("--") || clause.contains("/*")) {
+        throw InvalidReadOnlyClauseException("TDengine $label 不允许多语句或 SQL 注释")
+    }
+    val forbidden = Regex(
+        "(?i)\\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE|USE)\\b"
+    )
+    if (forbidden.containsMatchIn(clause)) {
+        throw InvalidReadOnlyClauseException("TDengine $label 仅允许只读表达式")
+    }
+    return clause
+}
+
+internal fun ResultSet.readTdengineStringRows(): List<Map<String, String?>> {
+    val metadata = metaData
+    return buildList {
+        while (next()) {
+            add(
+                buildMap {
+                    for (index in 1..metadata.columnCount) {
+                        put(metadata.getColumnLabel(index), getString(index))
+                    }
+                }
+            )
+        }
+    }
 }

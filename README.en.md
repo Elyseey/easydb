@@ -25,7 +25,8 @@
 ## ✨ Features
 
 ### 🔌 Connection Management
-- Create, edit, test, group, and search MySQL connections
+- Create, edit, test, group, and search MySQL, DM, and TDengine connections
+- TDengine uses pure WebSocket JDBC (port 6041 by default), with no local `libtaos` dependency
 - **SSH Tunnel**: JSch local port forwarding — bypass jump servers to access internal databases (password & private key authentication)
 - **SSL/TLS Encryption**: CA certificate verification, mutual TLS authentication (PEM format, no JKS conversion needed)
 - **Encrypted Credential Storage**: Connection passwords encrypted at rest with AES-256-GCM (machine-bound key); API responses automatically masked
@@ -36,6 +37,8 @@
 - View support: data preview (read-only) and DDL viewer
 - Stored procedure / function / trigger DDL viewer
 - Table structure designer and DDL viewer
+- TDengine time-series object browsing and creation for supertables, regular tables, and child tables
+- TDengine time-series querying with a last-hour default, relative/absolute/all-time ranges, filtering, sorting, fixed-boundary pagination, and CSV/JSON export of currently loaded rows
 
 ### ⚙️ Stored Procedure Execution
 - Right-click menu entry in workbench object tree (⚙ Execute Procedure / ⨍ Call Function)

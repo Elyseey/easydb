@@ -3,6 +3,7 @@ import {
   Card, Button, Select, Space, Tag, Table, Empty, Alert, Tooltip,
   Badge, Typography, Divider, Checkbox, Modal, Input,
   Segmented, message, theme, InputNumber, DatePicker,
+  type TableColumnsType,
 } from 'antd'
 import {
   ThunderboltOutlined, PauseCircleOutlined, PlayCircleOutlined,
@@ -16,9 +17,10 @@ import { connectionApi } from '@/services/api'
 import { trackerApi } from '@/services/trackerApi'
 import type {
   ConnectionConfig, ChangeEvent, TrackerSessionStatus,
-  TrackerServerCheck, BinlogFileInfo, SseTick, HistoryStats,
+  TrackerServerCheck, BinlogFileInfo, SseTick, HistoryStats, TrackerSessionConfig,
 } from '@/types'
 import { filterConnectionsByDiagnosticCapability } from '@/utils/dbCapabilities'
+import { getErrorMessage } from '@/utils/notification'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 
@@ -50,6 +52,21 @@ const ddlRiskConfig: Record<string, { color: string; label: string }> = {
   high:     { color: 'red',    label: '高风险' },
   critical: { color: '#cf1322',label: '极危险' },
 }
+
+type TxGroup = {
+  _isTxGroup: true
+  transactionId: string
+  events: ChangeEvent[]
+  timestamp: number
+  tables: string[]
+  eventTypes: string[]
+  totalRows: number
+}
+
+type FlatEventRow = ChangeEvent & { _isTxGroup?: false }
+type TrackerTableRow = TxGroup | FlatEventRow
+
+const isTxGroup = (row: TrackerTableRow): row is TxGroup => row._isTxGroup === true
 
 export const DataTrackerPage: React.FC = () => {
   const { token } = theme.useToken()
@@ -136,6 +153,7 @@ export const DataTrackerPage: React.FC = () => {
   const fetchPageRef = useRef<(page: number, size: number) => void>(() => {})
   const requestTrackerRef = useRef<number>(0)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const initialPageFetchSessionRef = useRef<string | null>(null)
 
   // 加载连接列表
   useEffect(() => {
@@ -185,8 +203,8 @@ export const DataTrackerPage: React.FC = () => {
     try {
       const result = await trackerApi.serverCheck(selectedConnId)
       setServerCheck(result)
-    } catch (e: any) {
-      message.error(`检查失败: ${e.message}`)
+    } catch (error: unknown) {
+      message.error(`检查失败: ${getErrorMessage(error, '未知错误')}`)
     } finally {
       setChecking(false)
     }
@@ -207,8 +225,8 @@ export const DataTrackerPage: React.FC = () => {
       if (files.length > 0 && !startFile) {
         setStartFile(files[0].file)
       }
-    } catch (e: any) {
-      message.error(`加载 binlog 文件失败: ${e.message}`)
+    } catch (error: unknown) {
+      message.error(`加载 binlog 文件失败: ${getErrorMessage(error, '未知错误')}`)
     } finally {
       setLoadingFiles(false)
     }
@@ -248,19 +266,13 @@ export const DataTrackerPage: React.FC = () => {
       // 如果有更新的请求发出了，忽略旧的响应
       if (currentReqId !== requestTrackerRef.current) return
 
-      console.log(`[DEBUG] fetchPage(${page}, ${size}) type=${filterType}`, {
-        total: result.total,
-        itemCount: result.items.length,
-        firstFewItems: result.items.slice(0, 5).map(i => ({ id: i.id, type: i.eventType })),
-      })
-
       setCurrentPageData(result.items)
       setPageTotal(result.total)
       setStats(result.stats)
-    } catch (e: any) {
-      if (e.name === 'AbortError') return
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'AbortError') return
       if (currentReqId === requestTrackerRef.current) {
-        console.error('获取分页数据失败:', e)
+        console.error('获取分页数据失败:', error)
       }
     } finally {
       if (currentReqId === requestTrackerRef.current) {
@@ -278,10 +290,12 @@ export const DataTrackerPage: React.FC = () => {
   // 当系统首次接收到数据且当前列表为空时，自动拉取第一页（仅触发一次，解决启动时看不到数据的问题）
   // 注意：sseStatus === 'completed' 时不触发（回放完成后由 SSE completed 回调统一加载，避免重复 fetch）
   useEffect(() => {
-    if (totalCount > 0 && currentPageData.length === 0 && currentPage === 1 && !loadingPage && sseStatus !== 'completed') {
-      fetchPageRef.current(1, pageSize)
-    }
-  }, [totalCount]) // 仅监听 totalCount 变化
+    if (!sessionId || initialPageFetchSessionRef.current === sessionId) return
+    if (totalCount <= 0 || currentPageData.length > 0 || currentPage !== 1 || loadingPage || sseStatus === 'completed') return
+
+    initialPageFetchSessionRef.current = sessionId
+    fetchPageRef.current(1, pageSize)
+  }, [sessionId, totalCount, currentPageData.length, currentPage, loadingPage, sseStatus, pageSize])
 
   // 当没有处于筛选状态时，实时同步总数，避免 SSE Ticking 增加而分页条没更新的问题
   useEffect(() => {
@@ -312,7 +326,7 @@ export const DataTrackerPage: React.FC = () => {
     if (!selectedConnId) return
     setStarting(true)
     try {
-      const config: any = { connectionId: selectedConnId, mode }
+      const config: TrackerSessionConfig = { connectionId: selectedConnId, mode }
       if (targetTables.length > 0) config.targetTables = targetTables
       if (mode === 'replay') {
         config.startFile = startFile
@@ -371,8 +385,8 @@ export const DataTrackerPage: React.FC = () => {
       }, 3000)
 
       // (实时刷新定时器已被彻底删除，由每次请求时的结果和SSE单次通知接管)
-    } catch (e: any) {
-      message.error(`启动失败: ${e.message}`)
+    } catch (error: unknown) {
+      message.error(`启动失败: ${getErrorMessage(error, '未知错误')}`)
     } finally {
       setStarting(false)
     }
@@ -391,8 +405,8 @@ export const DataTrackerPage: React.FC = () => {
       message.success('追踪已停止')
       // 停止后刷新一页
       fetchPage(currentPage, pageSize)
-    } catch (e: any) {
-      message.error(`停止失败: ${e.message}`)
+    } catch (error: unknown) {
+      message.error(`停止失败: ${getErrorMessage(error, '未知错误')}`)
     }
   }
 
@@ -685,12 +699,12 @@ export const DataTrackerPage: React.FC = () => {
 
   // ─── 表格列定义 ─────────────────────────────────────────────
 
-  const columns = [
+  const columns: TableColumnsType<ChangeEvent> = [
     {
       title: '',
       width: 40,
       onCell: () => ({ onClick: (e: React.MouseEvent) => e.stopPropagation() }),
-      render: (_: any, record: ChangeEvent) => (
+      render: (_, record) => (
         <Checkbox
           checked={selectedEventIds.has(record.id)}
           onChange={(e) => {
@@ -755,7 +769,7 @@ export const DataTrackerPage: React.FC = () => {
     {
       title: '位点',
       width: 200,
-      render: (_: any, record: ChangeEvent) => (
+      render: (_, record) => (
         <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>
           {record.sourceInfo?.file}:{record.sourceInfo?.position}
         </Text>
@@ -1497,19 +1511,7 @@ export const DataTrackerPage: React.FC = () => {
             <div style={{ position: 'relative', flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
               {groupByTx ? (() => {
                 // 事务分组视图：按 transactionId 聚合
-                type TxGroup = {
-                  _isTxGroup: true
-                  transactionId: string
-                  events: ChangeEvent[]
-                  timestamp: number   // 最早事件时间
-                  tables: string[]    // 涉及的表（去重）
-                  eventTypes: string[] // 涉及的操作类型（去重）
-                  totalRows: number
-                }
-                type FlatRow = ChangeEvent & { _isTxGroup?: false }
-                type TableRow = TxGroup | FlatRow
-
-                const grouped: TableRow[] = []
+                const grouped: TrackerTableRow[] = []
                 const txMap = new Map<string, TxGroup>()
 
                 for (const ev of currentPageData) {
@@ -1538,10 +1540,10 @@ export const DataTrackerPage: React.FC = () => {
                   }
                 }
 
-                const txColumns = [
+                const txColumns: TableColumnsType<TrackerTableRow> = [
                   {
                     title: '时间', width: 200,
-                    render: (_: any, row: TableRow) => {
+                    render: (_, row) => {
                       const ts = row.timestamp
                       const d = new Date(ts)
                       return <Text style={{ fontSize: 12, fontFamily: 'monospace' }}>
@@ -1551,59 +1553,58 @@ export const DataTrackerPage: React.FC = () => {
                   },
                   {
                     title: '事务 / 操作', width: 200,
-                    render: (_: any, row: TableRow) => {
-                      if (row._isTxGroup) {
+                    render: (_, row) => {
+                      if (isTxGroup(row)) {
                         return <Space size={4}>
                           <Tag color="purple" style={{ fontFamily: 'monospace', fontSize: 11 }}>
-                            TX {(row as TxGroup).transactionId}
+                            TX {row.transactionId}
                           </Tag>
-                          {(row as TxGroup).eventTypes.map(t => {
+                          {row.eventTypes.map(t => {
                             const cfg = eventTypeConfig[t]
                             return <Tag key={t} color={cfg?.color} style={{ fontSize: 10 }}>{cfg?.label || t}</Tag>
                           })}
                         </Space>
                       }
-                      const cfg = eventTypeConfig[(row as ChangeEvent).eventType]
+                      const cfg = eventTypeConfig[row.eventType]
                       return <Tag color={cfg?.color} style={{ fontWeight: 600, fontSize: 11 }}>{cfg?.label}</Tag>
                     },
                   },
                   {
                     title: '表', width: 200,
-                    render: (_: any, row: TableRow) => {
-                      if (row._isTxGroup) {
-                        return <Space size={2} wrap>{(row as TxGroup).tables.map(t => <Tag key={t} style={{ fontSize: 11 }}>{t}</Tag>)}</Space>
+                    render: (_, row) => {
+                      if (isTxGroup(row)) {
+                        return <Space size={2} wrap>{row.tables.map(t => <Tag key={t} style={{ fontSize: 11 }}>{t}</Tag>)}</Space>
                       }
-                      return <Text strong style={{ fontSize: 13 }}>{(row as ChangeEvent).table}</Text>
+                      return <Text strong style={{ fontSize: 13 }}>{row.table}</Text>
                     },
                   },
                   {
                     title: '事件/行数', width: 120,
-                    render: (_: any, row: TableRow) => {
-                      if (row._isTxGroup) {
-                        const g = row as TxGroup
+                    render: (_, row) => {
+                      if (isTxGroup(row)) {
+                        const g = row
                         return <Space size={4}>
                           <Tag>{g.events.length} 事件</Tag>
                           <Tag>{g.totalRows} 行</Tag>
                         </Space>
                       }
-                      return <Tag>{(row as ChangeEvent).rowCount} 行</Tag>
+                      return <Tag>{row.rowCount} 行</Tag>
                     },
                   },
                 ]
 
-                return <Table<TableRow>
-                  dataSource={grouped as TableRow[]}
-                  columns={txColumns as any}
-                  rowKey={(r) => (r as any)._isTxGroup ? `tx-${(r as TxGroup).transactionId}` : (r as ChangeEvent).id}
+                return <Table<TrackerTableRow>
+                  dataSource={grouped}
+                  columns={txColumns}
+                  rowKey={(row) => isTxGroup(row) ? `tx-${row.transactionId}` : row.id}
                   size="small"
                   loading={loadingPage}
                   expandable={{
                     expandedRowRender: (row) => {
-                      if (!(row as TxGroup)._isTxGroup) return null
-                      const g = row as TxGroup
-                      return <Table
-                        dataSource={g.events}
-                        columns={columns as any}
+                      if (!isTxGroup(row)) return null
+                      return <Table<ChangeEvent>
+                        dataSource={row.events}
+                        columns={columns}
                         rowKey="id"
                         size="small"
                         pagination={false}
@@ -1611,7 +1612,7 @@ export const DataTrackerPage: React.FC = () => {
                         style={{ margin: '0 8px 8px 8px', borderRadius: 6, overflow: 'hidden' }}
                       />
                     },
-                    rowExpandable: (row) => !!(row as TxGroup)._isTxGroup,
+                    rowExpandable: isTxGroup,
                     expandRowByClick: true,
                   }}
                   pagination={{
@@ -1621,7 +1622,7 @@ export const DataTrackerPage: React.FC = () => {
                   scroll={{ y: 'calc(100vh - 380px)' }}
                   onRow={(row) => ({
                     onClick: () => {
-                      if (!(row as TxGroup)._isTxGroup) setSelectedEvent(row as ChangeEvent)
+                      if (!isTxGroup(row)) setSelectedEvent(row)
                     },
                     style: { cursor: 'pointer' },
                   })}

@@ -41,11 +41,24 @@ export const notify = {
     notificationApi.info({ message: title, description }),
 }
 
+export function getErrorMessage(error: unknown, fallbackMessage = '操作失败'): string {
+  if (error instanceof Error && error.message) return error.message
+  if (
+    error
+    && typeof error === 'object'
+    && 'message' in error
+    && typeof error.message === 'string'
+    && error.message
+  ) {
+    return error.message
+  }
+  return fallbackMessage
+}
+
 /**
  * API 错误统一处理
  * 在 services/api.ts 的 catch 中使用
  */
 export function handleApiError(error: unknown, fallbackMessage = '操作失败') {
-  const msg = error instanceof Error ? error.message : fallbackMessage
-  toast.error(msg)
+  toast.error(getErrorMessage(error, fallbackMessage))
 }

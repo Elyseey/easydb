@@ -11,7 +11,7 @@ class TdengineDatabaseSession(
 ) : DatabaseSession {
 
     override fun isValid(): Boolean = try {
-        !connection.isClosed && connection.isValid(3)
+        validateTdengineConnection(connection)
     } catch (_: Exception) {
         false
     }

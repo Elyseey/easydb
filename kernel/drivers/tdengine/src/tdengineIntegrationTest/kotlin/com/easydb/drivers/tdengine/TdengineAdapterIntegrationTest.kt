@@ -4,6 +4,7 @@ import com.easydb.common.ConnectionManager
 import com.easydb.common.SqlExecutionService
 import com.easydb.common.TableKind
 import com.easydb.common.TimeSeriesMetadataLimits
+import com.easydb.common.TimeSeriesQueryRequest
 import com.easydb.common.TimeSeriesCreateDefinition
 import com.easydb.common.TimeSeriesCreateKind
 import com.easydb.common.TimeSeriesDataType
@@ -25,7 +26,7 @@ class TdengineAdapterIntegrationTest {
     private val dialect = TdengineDialectAdapter()
 
     @Test
-    fun `easydb adapter connects and executes basic queries over websocket`() {
+    fun `easydb adapter connects and executes basic queries with compatible jdbc protocol`() {
         val connectionConfig = config.toConnectionConfig()
 
         val testResult = adapter.connectionAdapter().testConnection(connectionConfig)
@@ -294,6 +295,97 @@ class TdengineAdapterIntegrationTest {
     }
 
     @Test
+    fun `time series query applies half-open bounds latest-first paging to every table kind`() {
+        assumeTrue(config.allowDdl, "Set EASYDB_TDENGINE_ALLOW_DDL=true for query lifecycle coverage")
+
+        val token = UUID.randomUUID().toString().replace("-", "").take(10)
+        val stable = "easydb_it_${token}_query_stable"
+        val childOne = "easydb_it_${token}_query_child_1"
+        val childTwo = "easydb_it_${token}_query_child_2"
+        val basic = "easydb_it_${token}_query_basic"
+        val cleanup = mutableListOf<String>()
+        var primaryFailure: Throwable? = null
+        val session = adapter.connectionAdapter().open(config.toConnectionConfig())
+        val query = requireNotNull(adapter.timeSeriesQueryAdapter())
+
+        try {
+            execute(
+                session,
+                "CREATE STABLE ${qualified(stable)} (ts TIMESTAMP, reading INT) TAGS (site VARCHAR(16))"
+            )
+            cleanup += "DROP STABLE IF EXISTS ${qualified(stable)}"
+            execute(session, "CREATE TABLE ${qualified(childOne)} USING ${qualified(stable)} TAGS ('north')")
+            cleanup += "DROP TABLE IF EXISTS ${qualified(childOne)}"
+            execute(session, "CREATE TABLE ${qualified(childTwo)} USING ${qualified(stable)} TAGS ('south')")
+            cleanup += "DROP TABLE IF EXISTS ${qualified(childTwo)}"
+            execute(session, "CREATE TABLE ${qualified(basic)} (ts TIMESTAMP, reading INT)")
+            cleanup += "DROP TABLE IF EXISTS ${qualified(basic)}"
+
+            execute(
+                session,
+                "INSERT INTO ${qualified(childOne)} VALUES " +
+                    "('2026-07-17T12:00:00+08:00', 1) " +
+                    "('2026-07-17T12:01:00+08:00', 2) " +
+                    "('2026-07-17T12:02:00+08:00', 3)"
+            )
+            execute(
+                session,
+                "INSERT INTO ${qualified(childTwo)} VALUES ('2026-07-17T12:00:30+08:00', 10)"
+            )
+            execute(
+                session,
+                "INSERT INTO ${qualified(basic)} VALUES " +
+                    "('2026-07-17T12:00:00+08:00', 101) " +
+                    "('2026-07-17T12:01:00+08:00', 102) " +
+                    "('2026-07-17T12:02:00+08:00', 103)"
+            )
+
+            val range = TimeSeriesQueryRequest(
+                startInclusive = "2026-07-17T12:00:00+08:00",
+                endExclusive = "2026-07-17T12:02:00+08:00",
+                where = "reading > 0",
+                limit = 1
+            )
+            val firstChildPage = query.previewRows(session, config.database, childOne, range)
+            assertEquals(listOf("2"), firstChildPage.rows.map { it["reading"] })
+            assertTrue(firstChildPage.hasMore)
+            assertEquals("2026-07-17T12:00:00+08:00", firstChildPage.startInclusive)
+
+            val secondChildPage = query.previewRows(
+                session,
+                config.database,
+                childOne,
+                range.copy(offset = 1)
+            )
+            assertEquals(listOf("1"), secondChildPage.rows.map { it["reading"] })
+            assertFalse(secondChildPage.hasMore)
+
+            val stablePage = query.previewRows(session, config.database, stable, range.copy(limit = 10))
+            assertEquals(setOf("1", "2", "10"), stablePage.rows.map { it["reading"] }.toSet())
+            assertFalse(stablePage.hasMore)
+
+            val basicPage = query.previewRows(session, config.database, basic, range.copy(limit = 10))
+            assertEquals(listOf("102", "101"), basicPage.rows.map { it["reading"] })
+            assertFalse(basicPage.hasMore)
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            val cleanupFailures = cleanup.asReversed().mapNotNull { sql ->
+                runCatching { execute(session, sql) }.exceptionOrNull()
+            }
+            adapter.connectionAdapter().close(session)
+            if (cleanupFailures.isNotEmpty()) {
+                val cleanupFailure = AssertionError(
+                    "Failed to clean TDengine query integration object(s)"
+                )
+                cleanupFailures.forEach(cleanupFailure::addSuppressed)
+                if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure) else throw cleanupFailure
+            }
+        }
+    }
+
+    @Test
     fun `timestamp precision special types and long cell preview survive the websocket path`() {
         assumeTrue(config.allowDdl, "Set EASYDB_TDENGINE_ALLOW_DDL=true for precision lifecycle coverage")
 
@@ -335,6 +427,43 @@ class TdengineAdapterIntegrationTest {
                 assertEquals("true", rawRow["enabled"]?.lowercase())
                 assertEquals("42", rawRow["counter"])
                 assertEquals(payload, rawRow["payload"])
+
+                val timeSeriesPage = requireNotNull(adapter.timeSeriesQueryAdapter()).previewRows(
+                    session,
+                    database,
+                    table,
+                    TimeSeriesQueryRequest(
+                        startInclusive = "2026-07-16T00:00:00Z",
+                        endExclusive = "2026-07-18T00:00:00Z",
+                        limit = 10
+                    )
+                )
+                assertTrue(timeSeriesPage.rows.single().getValue("ts")?.contains(".$fraction") == true)
+                assertFalse(timeSeriesPage.hasMore)
+
+                val exactBoundaryPage = requireNotNull(adapter.timeSeriesQueryAdapter()).previewRows(
+                    session,
+                    database,
+                    table,
+                    TimeSeriesQueryRequest(
+                        startInclusive = "2026-07-17T12:34:56.${fraction}Z",
+                        endExclusive = "2026-07-17T12:34:57Z",
+                        limit = 10
+                    )
+                )
+                assertEquals(1, exactBoundaryPage.rows.size)
+
+                val exclusiveEndPage = requireNotNull(adapter.timeSeriesQueryAdapter()).previewRows(
+                    session,
+                    database,
+                    table,
+                    TimeSeriesQueryRequest(
+                        startInclusive = "2026-07-17T12:34:55Z",
+                        endExclusive = "2026-07-17T12:34:56.${fraction}Z",
+                        limit = 10
+                    )
+                )
+                assertTrue(exclusiveEndPage.rows.isEmpty())
 
                 val preview = SqlExecutionService().previewQuery(
                     session = session,
