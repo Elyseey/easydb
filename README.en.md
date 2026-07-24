@@ -22,7 +22,7 @@
 
 ---
 
-> [!IMPORTANT]
+> [!CAUTION]
 > ## This project is no longer maintained
 >
 > EasyDB largely overlaps with [dbx](https://github.com/t8y2/dbx/) in product scope and capabilities, while **dbx is more complete and actively maintained**. To avoid reinventing the wheel, this repository is **archived and will receive no further updates**.
