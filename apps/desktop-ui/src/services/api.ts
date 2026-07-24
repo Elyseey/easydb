@@ -21,9 +21,40 @@
 
 import { downloadKernelFile, kernelFetch } from './kernelAuth'
 import type {
+  MetadataPage,
+  MetadataPageRequest,
+  TableInfo,
   TimeSeriesCreateDefinition,
   TimeSeriesCreatePreview,
   TimeSeriesCreateResult,
+  TimeSeriesChildPropertyApplyRequest,
+  TimeSeriesChildPropertyCommand,
+  TimeSeriesChildPropertyPreview,
+  TimeSeriesChildPropertyResult,
+  TimeSeriesChildPropertySnapshot,
+  TimeSeriesDeleteApplyRequest,
+  TimeSeriesDeletePreview,
+  TimeSeriesDeleteResult,
+  TimeSeriesLifecycleApplyRequest,
+  TimeSeriesLifecycleCommand,
+  TimeSeriesLifecyclePreview,
+  TimeSeriesLifecycleResult,
+  TimeSeriesLifecycleSnapshot,
+  TimeSeriesBasicTableApplyRequest,
+  TimeSeriesBasicTableCommand,
+  TimeSeriesBasicTablePreview,
+  TimeSeriesBasicTableResult,
+  TimeSeriesBasicTableSnapshot,
+  TimeSeriesWriteApplyRequest,
+  TimeSeriesWritePreview,
+  TimeSeriesWriteRequest,
+  TimeSeriesWriteResult,
+  TimeSeriesCsvImportConfig,
+  TimeSeriesCsvImportStartRequest,
+  TimeSeriesCsvImportStartResult,
+  TimeSeriesCsvPreview,
+  TimeSeriesChildTablePage,
+  TimeSeriesChildTableQuery,
   TimeSeriesQueryPage,
   TimeSeriesQueryRequest,
 } from '@/types'
@@ -169,6 +200,17 @@ export const metadataApi = {
     request(`/api/metadata/${pathSegment(connectionId)}/databases`),
   objects: (connectionId: string, database: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/objects`),
+  objectsPage: (connectionId: string, database: string, page: MetadataPageRequest = {}) => {
+    const query = new URLSearchParams()
+    if (page.search) query.set('search', page.search)
+    if (page.type) query.set('type', page.type)
+    if (page.offset !== undefined) query.set('offset', String(page.offset))
+    if (page.limit !== undefined) query.set('limit', String(page.limit))
+    const suffix = query.size > 0 ? `?${query.toString()}` : ''
+    return request<MetadataPage<TableInfo>>(
+      `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/objects/page${suffix}`,
+    )
+  },
   tableDefinition: (connectionId: string, database: string, table: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/tables/${pathSegment(table)}/definition`),
   tableDesign: (connectionId: string, database: string, table: string) =>
@@ -232,10 +274,63 @@ export const metadataApi = {
     const suffix = query.size > 0 ? `?${query.toString()}` : ''
     return request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/stables/${pathSegment(stable)}/children${suffix}`)
   },
+  queryTimeSeriesChildren: (
+    connectionId: string,
+    database: string,
+    stable: string,
+    query: TimeSeriesChildTableQuery,
+  ) => request<TimeSeriesChildTablePage>(
+    `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/stables/${pathSegment(stable)}/children/query`,
+    { method: 'POST', body: JSON.stringify(query) },
+  ),
   timeSeriesTagDefinitions: (connectionId: string, database: string, stable: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/stables/${pathSegment(stable)}/tags`),
   timeSeriesTagValues: (connectionId: string, database: string, table: string) =>
     request(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/tables/${pathSegment(table)}/tags`),
+  timeSeriesChildProperties: (connectionId: string, database: string, table: string) =>
+    request<TimeSeriesChildPropertySnapshot>(
+      `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/tables/${pathSegment(table)}/properties`,
+    ),
+  previewTimeSeriesChildProperty: (
+    connectionId: string,
+    database: string,
+    table: string,
+    command: TimeSeriesChildPropertyCommand,
+  ) => request<TimeSeriesChildPropertyPreview>(
+    `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/tables/${pathSegment(table)}/properties/preview`,
+    { method: 'POST', body: JSON.stringify(command) },
+  ),
+  applyTimeSeriesChildProperty: (
+    connectionId: string,
+    database: string,
+    table: string,
+    applyRequest: TimeSeriesChildPropertyApplyRequest,
+  ) => request<TimeSeriesChildPropertyResult>(
+    `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/tables/${pathSegment(table)}/properties/apply`,
+    { method: 'POST', body: JSON.stringify(applyRequest) },
+  ),
+  timeSeriesLifecycle: (connectionId: string, database: string, stable: string) =>
+    request<TimeSeriesLifecycleSnapshot>(
+      `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/stables/${pathSegment(stable)}/lifecycle`,
+    ),
+  previewTimeSeriesLifecycle: (
+    connectionId: string,
+    database: string,
+    stable: string,
+    command: TimeSeriesLifecycleCommand,
+  ) => request<TimeSeriesLifecyclePreview>(
+    `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/stables/${pathSegment(stable)}/lifecycle/preview`,
+    { method: 'POST', body: JSON.stringify(command) },
+  ),
+  applyTimeSeriesLifecycle: (
+    connectionId: string,
+    database: string,
+    stable: string,
+    applyRequest: TimeSeriesLifecycleApplyRequest,
+  ) => request<TimeSeriesLifecycleResult>(
+    `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/stables/${pathSegment(stable)}/lifecycle/apply`,
+    { method: 'POST', body: JSON.stringify(applyRequest) },
+  ),
   timeSeriesPreviewRows: (
     connectionId: string,
     database: string,
@@ -258,6 +353,34 @@ export const metadataApi = {
       method: 'POST',
       body: JSON.stringify(definition),
     }),
+  previewTimeSeriesObjectDelete: (connectionId: string, database: string, objectName: string) =>
+    request<TimeSeriesDeletePreview>(
+      `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/objects/${pathSegment(objectName)}/delete/preview`,
+      { method: 'POST' },
+    ),
+  applyTimeSeriesObjectDelete: (
+    connectionId: string,
+    database: string,
+    objectName: string,
+    applyRequest: TimeSeriesDeleteApplyRequest,
+  ) => request<TimeSeriesDeleteResult>(
+    `/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/objects/${pathSegment(objectName)}/delete/apply`,
+    { method: 'POST', body: JSON.stringify(applyRequest) },
+  ),
+  timeSeriesBasicTableLifecycle: (connectionId: string, database: string, table: string) =>
+    request<TimeSeriesBasicTableSnapshot>(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/basic-tables/${pathSegment(table)}/lifecycle`),
+  previewTimeSeriesBasicTableLifecycle: (connectionId: string, database: string, table: string, command: TimeSeriesBasicTableCommand) =>
+    request<TimeSeriesBasicTablePreview>(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/basic-tables/${pathSegment(table)}/lifecycle/preview`, { method: 'POST', body: JSON.stringify(command) }),
+  applyTimeSeriesBasicTableLifecycle: (connectionId: string, database: string, table: string, applyRequest: TimeSeriesBasicTableApplyRequest) =>
+    request<TimeSeriesBasicTableResult>(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/basic-tables/${pathSegment(table)}/lifecycle/apply`, { method: 'POST', body: JSON.stringify(applyRequest) }),
+  previewTimeSeriesWrite: (connectionId: string, database: string, writeRequest: TimeSeriesWriteRequest) =>
+    request<TimeSeriesWritePreview>(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/write/preview`, { method: 'POST', body: JSON.stringify(writeRequest) }),
+  applyTimeSeriesWrite: (connectionId: string, database: string, applyRequest: TimeSeriesWriteApplyRequest) =>
+    request<TimeSeriesWriteResult>(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/write/apply`, { method: 'POST', body: JSON.stringify(applyRequest) }),
+  previewTimeSeriesCsvImport: (connectionId: string, database: string, config: TimeSeriesCsvImportConfig) =>
+    request<TimeSeriesCsvPreview>(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/csv-import/preview`, { method: 'POST', body: JSON.stringify(config) }),
+  startTimeSeriesCsvImport: (connectionId: string, database: string, startRequest: TimeSeriesCsvImportStartRequest) =>
+    request<TimeSeriesCsvImportStartResult>(`/api/metadata/${pathSegment(connectionId)}/${pathSegment(database)}/timeseries/csv-import/start`, { method: 'POST', body: JSON.stringify(startRequest) }),
 }
 
 // ─── SQL 执行 ────────────────────────────────────────────
@@ -371,6 +494,8 @@ export const taskApi = {
     request('/api/task/clear-completed', { method: 'POST' }),
   downloadLog: (taskId: string, fileName: string) =>
     downloadKernelFile(`/api/task/${pathSegment(taskId)}/download-log`, fileName),
+  downloadArtifact: (taskId: string, fileName: string) =>
+    downloadKernelFile(`/api/task/${pathSegment(taskId)}/artifact`, fileName),
 }
 
 // ─── 结构对比 ────────────────────────────────────────────

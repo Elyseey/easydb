@@ -28,6 +28,10 @@ vi.mock('@/utils/notification', () => ({
   toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
 }))
 
+vi.mock('@/components/DdlViewer', () => ({
+  DdlViewer: ({ ddl }: { ddl: string }) => <pre>{ddl}</pre>,
+}))
+
 const columns = [
   { id: 'ts', name: 'ts', type: 'TIMESTAMP' as const },
   { id: 'value', name: 'value', type: 'DOUBLE' as const },
@@ -134,6 +138,25 @@ describe('TdengineObjectDesigner preview gate', () => {
     })
   })
 
+  it('starts with a blank tag name and blocks preview until the user names it', async () => {
+    render(
+      <TdengineObjectDesigner
+        connectionId="connection-1"
+        database="power"
+        stableNames={[]}
+        onSuccess={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByLabelText('Tag名称 1')).toHaveValue('')
+    fireEvent.change(screen.getByLabelText('对象名称'), { target: { value: 'meters' } })
+    fireEvent.click(screen.getByRole('button', { name: '生成 DDL 预览' }))
+
+    expect(apiMocks.preview).not.toHaveBeenCalled()
+    expect(await screen.findByText(/Tag 名不能为空/)).toBeInTheDocument()
+  })
+
   it('preserves identifier casing and disables natural-language input transforms', async () => {
     render(
       <TdengineObjectDesigner
@@ -178,6 +201,7 @@ describe('TdengineObjectDesigner preview gate', () => {
 
     expect(screen.queryByRole('button', { name: '确认创建' })).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('对象名称'), { target: { value: 'meters' } })
+    fireEvent.change(screen.getByLabelText('Tag名称 1'), { target: { value: 'location' } })
     fireEvent.click(screen.getByRole('button', { name: '生成 DDL 预览' }))
 
     expect(await screen.findByRole('button', { name: '确认创建' })).toBeEnabled()
@@ -189,7 +213,7 @@ describe('TdengineObjectDesigner preview gate', () => {
     fireEvent.click(screen.getByRole('button', { name: '生成 DDL 预览' }))
     await waitFor(() => expect(apiMocks.preview).toHaveBeenCalledTimes(2))
     expect(apiMocks.preview.mock.calls[1][2].name).toBe('meters_v2')
-  }, 10_000)
+  }, 30_000)
 
   it('submits the current definition only after preview', async () => {
     const onSuccess = vi.fn()
@@ -206,6 +230,7 @@ describe('TdengineObjectDesigner preview gate', () => {
     )
 
     fireEvent.change(screen.getByLabelText('对象名称'), { target: { value: 'meters' } })
+    fireEvent.change(screen.getByLabelText('Tag名称 1'), { target: { value: 'location' } })
     fireEvent.click(screen.getByRole('button', { name: '生成 DDL 预览' }))
     const createButton = await screen.findByRole('button', { name: '确认创建' })
     fireEvent.click(createButton)

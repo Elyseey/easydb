@@ -22,6 +22,19 @@
 
 ---
 
+> [!IMPORTANT]
+> ## This project is no longer maintained
+>
+> EasyDB largely overlaps with [dbx](https://github.com/t8y2/dbx/) in product scope and capabilities, while **dbx is more complete and actively maintained**. To avoid reinventing the wheel, this repository is **archived and will receive no further updates**.
+>
+> For continued use, or similar database management tooling, please visit:
+>
+> **https://github.com/t8y2/dbx/**
+>
+> Thank you to everyone who tried or followed EasyDB. Historical code and documentation remain available here for reference only; no new features or issue follow-ups will be accepted.
+
+---
+
 ## ✨ Features
 
 ### 🔌 Connection Management

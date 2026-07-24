@@ -24,15 +24,16 @@ import {
   DatabaseOutlined, ReloadOutlined, 
   CodeOutlined, StarOutlined,
   DeleteOutlined, EditOutlined,
-  CloseOutlined, PlusOutlined, UploadOutlined, DownloadOutlined, ExportOutlined
+  CloseOutlined, PlusOutlined, UploadOutlined, DownloadOutlined, ExportOutlined, FilterOutlined
 } from '@ant-design/icons'
 import type { DataNode } from 'antd/es/tree'
 import {
   FileText, Table2, Activity, Zap, Eye, KeyRound, Search, Plus, Database, Cog, FunctionSquare,
 } from 'lucide-react'
 import type {
-  TableInfo, ColumnInfo, ConnectionConfig, SavedScript, DatabaseInfo, TableKind,
-  TimeSeriesChildTablePage, TimeSeriesQueryPage, TimeSeriesTagDefinition, TimeSeriesTagValue,
+  TableInfo, ColumnInfo, ConnectionConfig, SavedScript, DatabaseInfo, TableKind, MetadataPage,
+  TimeSeriesChildPropertySnapshot, TimeSeriesChildTablePage, TimeSeriesQueryPage,
+  TimeSeriesDeleteResult, TimeSeriesTagDefinition, TimeSeriesTagFilter, TimeSeriesTagValue,
 } from '@/types'
 import { useWorkbenchStore, type TableDataQuery, type TableTabState, type WorkbenchTab } from '@/stores/workbenchStore'
 import { useConnectionStore } from '@/stores/connectionStore'
@@ -51,6 +52,13 @@ import BackupDatabaseModal from '@/components/BackupDatabaseModal'
 import RestoreDatabaseModal from '@/components/RestoreDatabaseModal'
 import { TableDesigner, type TableDesignerSaveResult } from '@/components/TableDesigner'
 import { TdengineObjectDesigner } from '@/components/TdengineObjectDesigner'
+import { TdengineChildPropertiesPanel } from '@/components/TdengineChildPropertiesPanel'
+import { TdengineTagFilterModal } from '@/components/TdengineTagFilterModal'
+import { TdengineObjectDeleteModal, type TdengineObjectDeleteTarget } from '@/components/TdengineObjectDeleteModal'
+import { TdengineStableStructurePanel } from '@/components/TdengineStableStructurePanel'
+import { TdengineBasicTableStructurePanel } from '@/components/TdengineBasicTableStructurePanel'
+import { TdengineDataWriteAction } from '@/components/TdengineDataWriteModal'
+import { TdengineCsvImportAction } from '@/components/TdengineCsvImportWizard'
 import { TimeSeriesRangeControl } from '@/components/TimeSeriesRangeControl'
 import { DdlViewer } from '@/components/DdlViewer'
 import { QueryEditorPane } from '@/components/QueryEditorPane'
@@ -75,6 +83,18 @@ import {
 } from './treeSearch'
 import { timeSeriesRefreshTarget } from '@/utils/timeSeriesDesigner'
 import {
+  beginPagedObjectRequest,
+  emptyPagedObjectState,
+  failPagedObjectRequest,
+  mergePagedObjects,
+  MonotonicRequestIdentity,
+  OBJECT_PAGE_SIZE,
+  tdengineCategoryType,
+  type PagedObjectState,
+} from './objectPaging'
+import { deletedTdengineTabKeys, tdengineChildPageKey } from './tdengineDeleteState'
+import { invalidateTdengineLifecycleTabs } from './tdengineLifecycleState'
+import {
   createDefaultTimeSeriesRange,
   prepareTimeSeriesPreviewRequest,
 } from '@/utils/timeSeriesQuery'
@@ -92,11 +112,14 @@ type WorkbenchPaneRenderState = {
 type ChildTableTreeState = TimeSeriesChildTablePage & {
   loading: boolean
   search: string
+  filters: TimeSeriesTagFilter[]
 }
 
 /** 每次 previewRows 加载的行数（与后端 limit 对齐） */
 const PREVIEW_PAGE_SIZE = 1000
 const WORKBENCH_KEEP_ALIVE_LIMIT = 8
+const objectPageKey = (connectionId: string, database: string, category: 'stables' | 'tables') =>
+  `${connectionId}::${database}::${category}`
 const addUnique = (items: string[], item: string) => items.includes(item) ? items : [...items, item]
 const removeItems = (items: string[], removing: string[]) => items.filter((item) => !removing.includes(item))
 
@@ -109,10 +132,27 @@ export const CategoryListView: React.FC<{
   category: string
   objects: TableInfo[]
   objectCategories: { key: string; label: string; types: string[]; icon: React.ReactNode }[]
-  onSelectObject: (name: string) => void
+  onSelectObject: (object: TableInfo) => void
   search: string
   onSearchChange: (value: string) => void
-}> = ({ database, category, objects, objectCategories, onSelectObject, search, onSearchChange }) => {
+  loadPage?: (search: string, offset: number) => Promise<MetadataPage<TableInfo>>
+  pagedState?: PagedObjectState
+  onPagedStateChange?: (state: PagedObjectState) => void
+  refreshToken?: number
+}> = ({
+  connectionId,
+  database,
+  category,
+  objects,
+  objectCategories,
+  onSelectObject,
+  search,
+  onSearchChange,
+  loadPage,
+  pagedState,
+  onPagedStateChange,
+  refreshToken = 0,
+}) => {
   const { token } = theme.useToken()
   const deferredSearch = useDeferredValue(search)
   const tableWrapperRef = useRef<HTMLDivElement>(null)
@@ -133,15 +173,89 @@ export const CategoryListView: React.FC<{
     minHeight: 112,
   }), [compactPanelStyle])
 
-  const catDef = objectCategories.find((c) => c.key === category)
-  const categoryObjects = objects.filter((t) => catDef?.types.includes(t.type))
-  const filtered = deferredSearch
+  const [localServerPage, setLocalServerPage] = useState<PagedObjectState>(() => emptyPagedObjectState(search))
+  const serverPage = pagedState ?? localServerPage
+  const serverPageRef = useRef(serverPage)
+  const serverRequestIdentityRef = useRef(new MonotonicRequestIdentity())
+  const loadPageRef = useRef(loadPage)
+  const onPagedStateChangeRef = useRef(onPagedStateChange)
+  useEffect(() => {
+    serverPageRef.current = serverPage
+  }, [serverPage])
+  useEffect(() => {
+    loadPageRef.current = loadPage
+  }, [loadPage])
+  useEffect(() => {
+    onPagedStateChangeRef.current = onPagedStateChange
+  }, [onPagedStateChange])
+  const serverPagingEnabled = !!loadPage
+  const updateServerPage = useCallback((updater: (current: PagedObjectState) => PagedObjectState) => {
+    const next = updater(serverPageRef.current)
+    serverPageRef.current = next
+    setLocalServerPage(next)
+    onPagedStateChangeRef.current?.(next)
+  }, [])
+  const catDef = objectCategories.find((c) => c.key === category) ?? (
+    category === 'stables' ? { key: 'stables', label: '超级表', types: ['stable'], icon: <Activity size={16} /> } : undefined
+  )
+  const currentServerPage = serverPage.search === search.trim() ? serverPage : emptyPagedObjectState(search.trim())
+  const categoryObjects = serverPagingEnabled
+    ? currentServerPage.items
+    : objects.filter((t) => catDef?.types.includes(t.type))
+  const filtered = !serverPagingEnabled && deferredSearch
     ? categoryObjects.filter(
         (t) =>
           t.name.toLowerCase().includes(deferredSearch.toLowerCase()) ||
           (t.comment && t.comment.toLowerCase().includes(deferredSearch.toLowerCase()))
       )
     : categoryObjects
+
+  const requestServerPage = useCallback(async (append: boolean) => {
+    const pageLoader = loadPageRef.current
+    if (!pageLoader) return
+    const normalizedSearch = search.trim()
+    const identity = serverRequestIdentityRef.current.next()
+    const offset = append && serverPageRef.current.search === normalizedSearch
+      ? serverPageRef.current.nextOffset
+      : 0
+    updateServerPage((previous) => beginPagedObjectRequest(previous, normalizedSearch, append))
+    try {
+      const page = await pageLoader(normalizedSearch, offset)
+      if (!serverRequestIdentityRef.current.isCurrent(identity)) return
+      updateServerPage((previous) => mergePagedObjects(previous, page, normalizedSearch, append))
+    } catch (error) {
+      if (!serverRequestIdentityRef.current.isCurrent(identity)) return
+      const message = error instanceof Error ? error.message : '加载对象列表失败'
+      updateServerPage((previous) => failPagedObjectRequest(previous, normalizedSearch, append, message))
+    }
+  }, [search, updateServerPage])
+
+  useEffect(() => {
+    if (!serverPagingEnabled) return undefined
+    const identityGuard = serverRequestIdentityRef.current
+    const identity = identityGuard.next()
+    const normalizedSearch = search.trim()
+    const cached = serverPageRef.current
+    if (cached.search === normalizedSearch && cached.loaded) {
+      return () => identityGuard.next()
+    }
+    const timer = window.setTimeout(async () => {
+      updateServerPage((previous) => beginPagedObjectRequest(previous, normalizedSearch, false))
+      try {
+        const page = await loadPageRef.current!(normalizedSearch, 0)
+        if (!identityGuard.isCurrent(identity)) return
+        updateServerPage((previous) => mergePagedObjects(previous, page, normalizedSearch, false))
+      } catch (error) {
+        if (!identityGuard.isCurrent(identity)) return
+        const message = error instanceof Error ? error.message : '加载对象列表失败'
+        updateServerPage((previous) => failPagedObjectRequest(previous, normalizedSearch, false, message))
+      }
+    }, normalizedSearch ? 250 : 0)
+    return () => {
+      window.clearTimeout(timer)
+      identityGuard.next()
+    }
+  }, [category, connectionId, database, refreshToken, search, serverPagingEnabled, updateServerPage])
 
   const updateTableScrollY = useCallback(() => {
     const wrapper = tableWrapperRef.current
@@ -233,12 +347,12 @@ export const CategoryListView: React.FC<{
           <Space size={8} style={{ marginTop: 6 }} wrap>
             <Text type="secondary" style={{ fontSize: 12 }}>{database}</Text>
             <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
-              {categoryObjects.length} 个对象
+              {serverPagingEnabled ? currentServerPage.total : categoryObjects.length} 个对象
             </Tag>
           </Space>
         </div>
         <Input
-          placeholder="筛选对象名称或注释"
+          placeholder={serverPagingEnabled ? '搜索对象名称' : '筛选对象名称或注释'}
           prefix={<Search size={14} color={token.colorTextQuaternary} style={{ marginRight: 4 }}/>}
           size="middle"
           style={{ width: 300, borderRadius: 10 }}
@@ -248,7 +362,7 @@ export const CategoryListView: React.FC<{
         />
       </div>
 
-      {isTables && categoryObjects.length > 0 && (
+      {isTables && !serverPagingEnabled && categoryObjects.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginBottom: 16, flexShrink: 0 }}>
           <div style={summaryCardStyle}>
             <Text type="secondary" style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -281,20 +395,34 @@ export const CategoryListView: React.FC<{
         </div>
       )}
 
-      <div ref={tableWrapperRef} style={{ ...compactPanelStyle, flex: 1, minHeight: 0, overflow: 'hidden' }}>
-        <Table
-          virtual
-          dataSource={filtered}
-          columns={catColumns}
-          rowKey="name"
-          size="small"
-          pagination={false}
-          scroll={{ x: isTables ? 960 : 560, y: tableScrollY }}
-          onRow={(record) => ({
-            onClick: () => onSelectObject(record.name),
-            style: { cursor: 'pointer' },
-          })}
-        />
+      <div style={{ ...compactPanelStyle, flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <div ref={tableWrapperRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <Table
+            virtual
+            dataSource={filtered}
+            columns={catColumns}
+            rowKey={(record) => `${record.type}:${record.name}`}
+            size="small"
+            loading={serverPagingEnabled ? currentServerPage.loading && currentServerPage.items.length === 0 : false}
+            pagination={false}
+            scroll={{ x: isTables ? 960 : 560, y: tableScrollY }}
+            onRow={(record) => ({
+              onClick: () => onSelectObject(record),
+              style: { cursor: 'pointer' },
+            })}
+          />
+        </div>
+        {serverPagingEnabled && (currentServerPage.hasMore || currentServerPage.error) && (
+          <div style={{ padding: 8, textAlign: 'center', borderTop: '1px solid var(--edb-border-default)' }}>
+            <Button
+              type="link"
+              loading={currentServerPage.loading}
+              onClick={() => requestServerPage(currentServerPage.items.length > 0 && currentServerPage.hasMore)}
+            >
+              {currentServerPage.error ? '加载失败，点击重试' : '加载更多'}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -351,7 +479,20 @@ export const WorkbenchPage: React.FC = () => {
   const [searchText, setSearchText] = useState('')
   const deferredSearch = useDeferredValue(searchText)
   const [childTablesMap, setChildTablesMap] = useState<Record<string, ChildTableTreeState>>({})
+  const childTablesMapRef = useRef(childTablesMap)
+  childTablesMapRef.current = childTablesMap
+  const databaseLoadSeqRef = useRef<Record<string, number>>({})
   const childTableLoadSeqRef = useRef<Record<string, number>>({})
+  const [treeObjectPages, setTreeObjectPages] = useState<Record<string, PagedObjectState>>({})
+  const [treeSearchPages, setTreeSearchPages] = useState<Record<string, PagedObjectState>>({})
+  const [categoryObjectPages, setCategoryObjectPages] = useState<Record<string, PagedObjectState>>({})
+  const [categoryPageRefreshTokens, setCategoryPageRefreshTokens] = useState<Record<string, number>>({})
+  const treeObjectPagesRef = useRef(treeObjectPages)
+  const treeSearchPagesRef = useRef(treeSearchPages)
+  treeObjectPagesRef.current = treeObjectPages
+  treeSearchPagesRef.current = treeSearchPages
+  const objectPageLoadSeqRef = useRef<Record<string, number>>({})
+  const globalSearchIdentityRef = useRef(new MonotonicRequestIdentity())
 
   // --- 树组件虚拟列表高度 ---
   const [treeHeight, setTreeHeight] = useState(600)
@@ -444,6 +585,9 @@ export const WorkbenchPage: React.FC = () => {
       keepAliveKeys: prev.keepAliveKeys.filter((key) => !removing.has(key)),
       dirtyKeys: prev.dirtyKeys.filter((key) => !removing.has(key)),
     }))
+    setCategoryObjectPages((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([key]) => !removing.has(key)),
+    ))
   }, [])
 
   useEffect(() => {
@@ -516,6 +660,14 @@ export const WorkbenchPage: React.FC = () => {
   const [renameTableTarget, setRenameTableTarget] = useState<{ connectionId: string; database: string; tableName: string } | null>(null)
   const [renameTableInput, setRenameTableInput] = useState('')
   const [renamingTable, setRenamingTable] = useState(false)
+  const [tagFilterTarget, setTagFilterTarget] = useState<{
+    connectionId: string
+    database: string
+    stableName: string
+    definitions: TimeSeriesTagDefinition[]
+  } | null>(null)
+  const [tagFilterLoading, setTagFilterLoading] = useState(false)
+  const [tdengineDeleteTarget, setTdengineDeleteTarget] = useState<TdengineObjectDeleteTarget | null>(null)
 
   const [showShortcuts, setShowShortcuts] = useState(false)
   const [callProcedureTarget, setCallProcedureTarget] = useState<CallProcedureTarget | null>(null)
@@ -592,12 +744,19 @@ export const WorkbenchPage: React.FC = () => {
   }, [connections, updateConnection])
 
   const loadDatabases = useCallback(async (connId: string) => {
+    const seq = (databaseLoadSeqRef.current[connId] ?? 0) + 1
+    databaseLoadSeqRef.current[connId] = seq
     if (!(await ensureConnected(connId))) return
+    if (databaseLoadSeqRef.current[connId] !== seq) return
+    if (!useWorkbenchStore.getState().openConnections.some((connection) => connection.id === connId)) return
     setLoadingConns((prev) => new Set(prev).add(connId))
     try {
       const dbs = await metadataApi.databases(connId) as DatabaseInfo[]
+      if (databaseLoadSeqRef.current[connId] !== seq) return
+      if (!useWorkbenchStore.getState().openConnections.some((connection) => connection.id === connId)) return
       setDatabasesMap((prev) => ({ ...prev, [connId]: dbs }))
     } catch (e) {
+      if (databaseLoadSeqRef.current[connId] !== seq) return
       handleApiError(e, '加载数据库列表失败')
     } finally {
       setLoadingConns((prev) => {
@@ -617,29 +776,238 @@ export const WorkbenchPage: React.FC = () => {
     }
   }, [openConnections, databasesMap, loadDatabases])
 
+  const loadTdengineCategoryPage = useCallback(async (
+    connId: string,
+    dbName: string,
+    category: 'stables' | 'tables',
+    options: { append?: boolean; search?: string; searchIdentity?: number } = {},
+  ) => {
+    const type = tdengineCategoryType(category)
+    if (!type) return
+    const search = options.search?.trim() ?? ''
+    const source = search ? 'search' : 'base'
+    const key = objectPageKey(connId, dbName, category)
+    const requestKey = `${source}:${key}`
+    const pages = source === 'search' ? treeSearchPagesRef.current : treeObjectPagesRef.current
+    const current = pages[key]
+    const append = options.append === true && current?.search === search
+    const offset = append ? current.nextOffset : 0
+    const seq = (objectPageLoadSeqRef.current[requestKey] ?? 0) + 1
+    objectPageLoadSeqRef.current[requestKey] = seq
+    const setPages = source === 'search' ? setTreeSearchPages : setTreeObjectPages
+    setPages((previous) => ({
+      ...previous,
+      [key]: beginPagedObjectRequest(previous[key], search, append),
+    }))
+    try {
+      const page = await metadataApi.objectsPage(connId, dbName, {
+        type,
+        search: search || undefined,
+        offset,
+        limit: OBJECT_PAGE_SIZE,
+      })
+      if (objectPageLoadSeqRef.current[requestKey] !== seq) return
+      if (options.searchIdentity !== undefined && !globalSearchIdentityRef.current.isCurrent(options.searchIdentity)) return
+      setPages((previous) => ({
+        ...previous,
+        [key]: mergePagedObjects(previous[key], page, search, append),
+      }))
+      if (source === 'base') {
+        const objectKey = `${connId}::${dbName}`
+        setObjectsMap((previous) => {
+          const existing = previous[objectKey] ?? []
+          const categoryState = mergePagedObjects(
+            { ...emptyPagedObjectState(), items: existing.filter((item) => item.type === type) },
+            page,
+            '',
+            append,
+          )
+          return {
+            ...previous,
+            [objectKey]: [...existing.filter((item) => item.type !== type), ...categoryState.items],
+          }
+        })
+      }
+    } catch (error) {
+      if (objectPageLoadSeqRef.current[requestKey] !== seq) return
+      if (options.searchIdentity !== undefined && !globalSearchIdentityRef.current.isCurrent(options.searchIdentity)) return
+      const message = error instanceof Error ? error.message : '加载对象列表失败'
+      setPages((previous) => ({
+        ...previous,
+        [key]: failPagedObjectRequest(previous[key], search, append, message),
+      }))
+      if (source === 'base' && !append) {
+        const objectKey = `${connId}::${dbName}`
+        setObjectsMap((previous) => ({
+          ...previous,
+          [objectKey]: (previous[objectKey] ?? []).filter((item) => item.type !== type),
+        }))
+      }
+    }
+  }, [setObjectsMap])
+
   // --- 加载某库下的对象列表 ---
-  const loadTables = useCallback(async (connId: string, dbName: string) => {
+  const loadTables = useCallback(async (
+    connId: string,
+    dbName: string,
+    options: { force?: boolean } = {},
+  ) => {
     if (!(await ensureConnected(connId))) return
+    if (!useWorkbenchStore.getState().openConnections.some((connection) => connection.id === connId)) return
     const key = `${connId}::${dbName}`
+    const dbType = openConnectionDbTypes.get(connId) ?? null
+    if (getDbCapabilities(dbType).metadata.pagedObjects) {
+      const stableKey = objectPageKey(connId, dbName, 'stables')
+      const tableKey = objectPageKey(connId, dbName, 'tables')
+      const stablePage = treeObjectPagesRef.current[stableKey]
+      const tablePage = treeObjectPagesRef.current[tableKey]
+      if (!options.force && stablePage?.loaded && tablePage?.loaded) return
+      if (options.force) {
+        setTreeObjectPages((previous) => Object.fromEntries(
+          Object.entries(previous).filter(([pageKey]) => !pageKey.startsWith(`${key}::`)),
+        ))
+        setTreeSearchPages((previous) => Object.fromEntries(
+          Object.entries(previous).filter(([pageKey]) => !pageKey.startsWith(`${key}::`)),
+        ))
+        setCategoryObjectPages((previous) => Object.fromEntries(
+          Object.entries(previous).map(([pageKey, page]) => [
+            pageKey,
+            pageKey.startsWith(`cat:${connId}::${dbName}::`)
+              ? emptyPagedObjectState(page.search)
+              : page,
+          ]),
+        ))
+        setCategoryPageRefreshTokens((previous) => ({
+          ...previous,
+          [`cat:${connId}::${dbName}::stables`]: (previous[`cat:${connId}::${dbName}::stables`] ?? 0) + 1,
+          [`cat:${connId}::${dbName}::tables`]: (previous[`cat:${connId}::${dbName}::tables`] ?? 0) + 1,
+        }))
+        setObjectsMap((previous) => {
+          const next = { ...previous }
+          delete next[key]
+          return next
+        })
+      }
+      const categories: Array<'stables' | 'tables'> = options.force
+        ? ['stables', 'tables']
+        : [
+            ...(!stablePage?.loaded && !stablePage?.loading ? ['stables' as const] : []),
+            ...(!tablePage?.loaded && !tablePage?.loading ? ['tables' as const] : []),
+          ]
+      const requests = categories.map((category) => loadTdengineCategoryPage(connId, dbName, category))
+      const currentSearch = searchText.trim()
+      if (options.force && currentSearch) {
+        const searchIdentity = globalSearchIdentityRef.current.value()
+        requests.push(
+          loadTdengineCategoryPage(connId, dbName, 'stables', { search: currentSearch, searchIdentity }),
+          loadTdengineCategoryPage(connId, dbName, 'tables', { search: currentSearch, searchIdentity }),
+        )
+      }
+      await Promise.all(requests)
+      return
+    }
+    if (!options.force && Object.prototype.hasOwnProperty.call(objectsMap, key)) return
     try {
       const tbls = await metadataApi.objects(connId, dbName) as TableInfo[]
       setObjectsMap((prev) => ({ ...prev, [key]: tbls }))
     } catch (e) {
       handleApiError(e, '加载对象列表失败')
     }
-  }, [ensureConnected, setObjectsMap])
+  }, [ensureConnected, loadTdengineCategoryPage, objectsMap, openConnectionDbTypes, searchText, setObjectsMap])
+
+  const refreshTdengineCategory = useCallback(async (
+    connId: string,
+    dbName: string,
+    category: 'stables' | 'tables',
+  ) => {
+    const key = objectPageKey(connId, dbName, category)
+    const tabKey = `cat:${connId}::${dbName}::${category}`
+    const type = tdengineCategoryType(category)
+    setTreeObjectPages((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([pageKey]) => pageKey !== key),
+    ))
+    setTreeSearchPages((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([pageKey]) => pageKey !== key),
+    ))
+    setCategoryObjectPages((previous) => ({
+      ...previous,
+      [tabKey]: emptyPagedObjectState(previous[tabKey]?.search ?? ''),
+    }))
+    setCategoryPageRefreshTokens((previous) => ({
+      ...previous,
+      [tabKey]: (previous[tabKey] ?? 0) + 1,
+    }))
+    if (type) {
+      setObjectsMap((previous) => ({
+        ...previous,
+        [`${connId}::${dbName}`]: (previous[`${connId}::${dbName}`] ?? [])
+          .filter((item) => item.type !== type),
+      }))
+    }
+    const requests = [loadTdengineCategoryPage(connId, dbName, category)]
+    const query = searchText.trim()
+    if (query) {
+      requests.push(loadTdengineCategoryPage(connId, dbName, category, {
+        search: query,
+        searchIdentity: globalSearchIdentityRef.current.value(),
+      }))
+    }
+    await Promise.all(requests)
+  }, [loadTdengineCategoryPage, searchText, setObjectsMap])
+
+  useEffect(() => {
+    const identity = globalSearchIdentityRef.current.next()
+    setTreeSearchPages({})
+    const query = searchText.trim()
+    if (!query) return undefined
+    const timer = window.setTimeout(() => {
+      for (const connection of openConnections) {
+        if (!getDbCapabilities(connection.dbType).metadata.pagedObjects) continue
+        for (const database of databasesMap[connection.id] ?? []) {
+          if (matchesTreeSearch(query, database.name)) continue
+          void ensureConnected(connection.id).then((connected) => {
+            if (!connected || !globalSearchIdentityRef.current.isCurrent(identity)) return
+            void loadTdengineCategoryPage(connection.id, database.name, 'stables', { search: query, searchIdentity: identity })
+            void loadTdengineCategoryPage(connection.id, database.name, 'tables', { search: query, searchIdentity: identity })
+          })
+        }
+      }
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [databasesMap, ensureConnected, loadTdengineCategoryPage, openConnections, searchText])
+
+  const findLoadedObject = useCallback((connId: string, dbName: string, objectName: string) => {
+    const objectKey = `${connId}::${dbName}`
+    const stableKey = objectPageKey(connId, dbName, 'stables')
+    const tableKey = objectPageKey(connId, dbName, 'tables')
+    const sources = [
+      treeSearchPages[stableKey]?.items,
+      treeSearchPages[tableKey]?.items,
+      treeObjectPages[stableKey]?.items,
+      treeObjectPages[tableKey]?.items,
+      objectsMap[objectKey],
+    ]
+    for (const source of sources) {
+      const object = source?.find((item) => item.name === objectName)
+      if (object) return object
+    }
+    return undefined
+  }, [objectsMap, treeObjectPages, treeSearchPages])
 
   const loadChildTables = useCallback(async (
     connId: string,
     dbName: string,
     stableName: string,
-    options?: { append?: boolean; search?: string },
+    options?: { append?: boolean; search?: string; filters?: TimeSeriesTagFilter[] },
   ) => {
     if (!(await ensureConnected(connId))) return
+    if (!useWorkbenchStore.getState().openConnections.some((connection) => connection.id === connId)) return
     const key = `${connId}::${dbName}::${stableName}`
-    const current = childTablesMap[key]
+    const current = childTablesMapRef.current[key]
     const search = options?.search ?? current?.search ?? ''
-    const append = options?.append === true && search === current?.search
+    const filters = options?.filters ?? current?.filters ?? []
+    const sameFilters = JSON.stringify(filters) === JSON.stringify(current?.filters ?? [])
+    const append = options?.append === true && search === current?.search && sameFilters
     const offset = append ? current.items.length : 0
     const seq = (childTableLoadSeqRef.current[key] ?? 0) + 1
     childTableLoadSeqRef.current[key] = seq
@@ -652,14 +1020,22 @@ export const WorkbenchPage: React.FC = () => {
         hasMore: prev[key]?.hasMore ?? false,
         loading: true,
         search,
+        filters,
       },
     }))
     try {
-      const page = await metadataApi.timeSeriesChildren(connId, dbName, stableName, {
-        offset,
-        limit: 100,
-        search: search || undefined,
-      }) as TimeSeriesChildTablePage
+      const page = filters.length > 0
+        ? await metadataApi.queryTimeSeriesChildren(connId, dbName, stableName, {
+          offset,
+          limit: 100,
+          search: search || undefined,
+          filters,
+        })
+        : await metadataApi.timeSeriesChildren(connId, dbName, stableName, {
+          offset,
+          limit: 100,
+          search: search || undefined,
+        }) as TimeSeriesChildTablePage
       if (childTableLoadSeqRef.current[key] !== seq) return
       setChildTablesMap((prev) => ({
         ...prev,
@@ -668,17 +1044,41 @@ export const WorkbenchPage: React.FC = () => {
           items: append ? [...(prev[key]?.items ?? []), ...page.items] : page.items,
           loading: false,
           search,
+          filters,
         },
       }))
     } catch (error) {
       if (childTableLoadSeqRef.current[key] !== seq) return
       setChildTablesMap((prev) => ({
         ...prev,
-        [key]: { ...(prev[key] ?? { items: [], offset: 0, limit: 100, hasMore: false, search }), loading: false },
+        [key]: {
+          ...(prev[key] ?? { items: [], offset: 0, limit: 100, hasMore: false, search, filters }),
+          loading: false,
+        },
       }))
       handleApiError(error, '加载 TDengine 子表失败')
     }
-  }, [childTablesMap, ensureConnected])
+  }, [ensureConnected])
+
+  const openTagFilterModal = useCallback(async (
+    connectionId: string,
+    database: string,
+    stableName: string,
+  ) => {
+    setTagFilterLoading(true)
+    try {
+      const definitions = await metadataApi.timeSeriesTagDefinitions(
+        connectionId,
+        database,
+        stableName,
+      ) as TimeSeriesTagDefinition[]
+      setTagFilterTarget({ connectionId, database, stableName, definitions })
+    } catch (error) {
+      handleApiError(error, '加载 Tag 定义失败')
+    } finally {
+      setTagFilterLoading(false)
+    }
+  }, [])
 
   // --- 多 Tab 数据加载（懒加载 + Tab 内独立缓存）---
   const updateTabState = useCallback((tabKey: string, updater: (prev: TableTabState) => Partial<TableTabState>) => {
@@ -827,12 +1227,12 @@ export const WorkbenchPage: React.FC = () => {
               }))
             })
           )
-        } else if (tab === 'design') {
-          // TableDesigner handles its own data loading internally, so nothing is strictly required here except marking it loaded.
+        } else if (tab === 'design' || tab === 'structure') {
+          // Editors handle their own data loading internally, so the shell only marks the tab as visited.
           promises.push(Promise.resolve().then(() => {
               if (!isCurrentRequest()) return
               updateTabState(tabKey, (prev) => ({
-                loadedTabs: addUnique(prev.loadedTabs, 'design'),
+                loadedTabs: addUnique(prev.loadedTabs, tab),
               }))
           }))
         } else if (tab === 'ddl') {
@@ -848,13 +1248,17 @@ export const WorkbenchPage: React.FC = () => {
         } else if (tab === 'tags' && tableTab?.tableKind) {
           const tagRequest = tableTab.tableKind === 'SUPER_TABLE'
             ? metadataApi.timeSeriesTagDefinitions(connId, dbName, tableName)
-            : metadataApi.timeSeriesTagValues(connId, dbName, tableName)
+            : metadataApi.timeSeriesChildProperties(connId, dbName, tableName)
           promises.push(
             tagRequest.then((tags: unknown) => {
               if (!isCurrentRequest()) return
+              const childProperties = tableTab.tableKind === 'CHILD_TABLE'
+                ? tags as TimeSeriesChildPropertySnapshot
+                : undefined
               updateTabState(tabKey, (prev) => ({
                 tagDefinitions: prev.tableKind === 'SUPER_TABLE' ? tags as TimeSeriesTagDefinition[] : [],
-                tagValues: prev.tableKind === 'CHILD_TABLE' ? tags as TimeSeriesTagValue[] : [],
+                tagValues: childProperties?.tagValues ?? [],
+                childProperties,
                 loadedTabs: addUnique(prev.loadedTabs, 'tags'),
               }))
             })
@@ -873,6 +1277,62 @@ export const WorkbenchPage: React.FC = () => {
       }
     }
   }, [fetchTablePreview, openTableTabs, updateTabState])
+
+  const refreshChildProperties = useCallback(async (
+    tabKey: string,
+    connectionId: string,
+    database: string,
+    table: string,
+    stableName: string,
+  ) => {
+    const snapshot = await metadataApi.timeSeriesChildProperties(connectionId, database, table)
+    updateTabState(tabKey, (prev) => ({
+      childProperties: snapshot,
+      tagValues: snapshot.tagValues,
+      loadedTabs: addUnique(prev.loadedTabs, 'tags'),
+    }))
+    const childKey = `${connectionId}::${database}::${stableName}`
+    const current = childTablesMapRef.current[childKey]
+    await loadChildTables(connectionId, database, stableName, {
+      search: current?.search,
+      filters: current?.filters,
+    })
+  }, [loadChildTables, updateTabState])
+
+  const handleStableStructureApplied = useCallback(async (
+    connectionId: string,
+    database: string,
+    stable: string,
+  ) => {
+    const state = useWorkbenchStore.getState()
+    const invalidation = invalidateTdengineLifecycleTabs(
+      state.openTableTabs,
+      state.activeTableTabKey,
+      connectionId,
+      database,
+      stable,
+    )
+    invalidation.invalidatedTabKeys.forEach((tabKey) => {
+      const invalidatedResources = ['columns', 'data', 'tags', 'ddl']
+      invalidatedResources.forEach((resource) => {
+        const requestKey = `${tabKey}::${resource}`
+        loadSeqRef.current[requestKey] = (loadSeqRef.current[requestKey] ?? 0) + 1
+      })
+    })
+    batchUpdate({ openTableTabs: invalidation.tabs })
+    if (invalidation.activeReload) {
+      const tab = invalidation.tabs[invalidation.activeReload.tabKey]
+      if (tab?.type === 'table') {
+        await loadTabDataForTab(
+          invalidation.activeReload.tabKey,
+          tab.connectionId,
+          tab.database,
+          tab.tableName,
+          invalidation.activeReload.target,
+        )
+      }
+    }
+  }, [batchUpdate, loadTabDataForTab])
 
   const applyRenamedTableState = useCallback((connId: string, dbName: string, oldName: string, newName: string) => {
     const oldTabKey = `table:${connId}::${dbName}::${oldName}`
@@ -966,7 +1426,7 @@ export const WorkbenchPage: React.FC = () => {
       toast.success(`表已重命名为「${targetName}」`)
       setRenameTableTarget(null)
       setRenameTableInput('')
-      loadTables(connectionId, database)
+      loadTables(connectionId, database, { force: true })
       if (renamedTab.tabKey && renamedTab.detailTab) {
         loadTabDataForTab(renamedTab.tabKey, connectionId, database, targetName, renamedTab.detailTab)
       }
@@ -983,7 +1443,7 @@ export const WorkbenchPage: React.FC = () => {
     connName: string,
     dbName: string,
     tableName: string,
-    defaultTab: 'data' | 'ddl' | 'design' | 'tags' = 'data',
+    defaultTab: 'data' | 'ddl' | 'design' | 'structure' | 'tags' = 'data',
     objectType: 'table' | 'view' | 'procedure' | 'function' | 'trigger' = 'table',
     tableKind?: TableKind,
     stableName?: string,
@@ -1003,6 +1463,7 @@ export const WorkbenchPage: React.FC = () => {
         stableName,
         tagDefinitions: [],
         tagValues: [],
+        childProperties: undefined,
         columns: [],
         indexes: [],
         ddl: '',
@@ -1137,8 +1598,7 @@ export const WorkbenchPage: React.FC = () => {
         activeDatabase: dbName,
       })
     }
-    loadTables(connId, dbName)
-  }, [openTableTabs, batchUpdate, loadTables])
+  }, [openTableTabs, batchUpdate])
 
   // 关闭一个表 Tab
   const closeTableTab = useCallback((tabKey: string) => {
@@ -1155,6 +1615,73 @@ export const WorkbenchPage: React.FC = () => {
       return next
     })
   }, [activeTableTabKey, removePaneKeys, setOpenTableTabs, setActiveTableTabKey])
+
+  const handleTdengineObjectDeleted = useCallback((result: TimeSeriesDeleteResult) => {
+    const target = tdengineDeleteTarget
+    if (!target) return
+    const state = useWorkbenchStore.getState()
+    const deleting = { ...result.snapshot, connectionId: target.connectionId }
+    const tabKeys = deletedTdengineTabKeys(state.openTableTabs, deleting)
+    const nextTabs = { ...state.openTableTabs }
+    tabKeys.forEach((key) => { delete nextTabs[key] })
+    const remainingKeys = Object.keys(nextTabs)
+    const activeKey = state.activeTableTabKey && tabKeys.includes(state.activeTableTabKey)
+      ? remainingKeys.at(-1) ?? null
+      : state.activeTableTabKey
+
+    const selectedTable = state.selectedCtx?.connectionId === target.connectionId &&
+      state.selectedCtx.database === target.database
+      ? state.selectedCtx.table
+      : undefined
+    const selectedTab = selectedTable
+      ? state.openTableTabs[`table:${target.connectionId}::${target.database}::${selectedTable}`]
+      : undefined
+    const stableChildState = result.snapshot.kind === 'SUPER_TABLE'
+      ? childTablesMapRef.current[tdengineChildPageKey(target.connectionId, target.database, result.snapshot.name)]
+      : undefined
+    const selectedWasDeleted = selectedTable === result.snapshot.name || (
+      result.snapshot.kind === 'SUPER_TABLE' && (
+        (selectedTab?.type === 'table' && selectedTab.tableKind === 'CHILD_TABLE' && selectedTab.stableName === result.snapshot.name) ||
+        stableChildState?.items.some((child) => child.name === selectedTable)
+      )
+    )
+
+    removePaneKeys(tabKeys)
+    batchUpdate({
+      openTableTabs: nextTabs,
+      activeTableTabKey: activeKey,
+      ...(selectedWasDeleted ? {
+        selectedCtx: { connectionId: target.connectionId, database: target.database },
+        activeTable: null,
+      } : {}),
+    })
+
+    if (result.snapshot.kind === 'CHILD_TABLE' && result.snapshot.stableName) {
+      const key = tdengineChildPageKey(target.connectionId, target.database, result.snapshot.stableName)
+      const current = childTablesMapRef.current[key]
+      void loadChildTables(target.connectionId, target.database, result.snapshot.stableName, {
+        search: current?.search,
+        filters: current?.filters,
+      })
+    } else {
+      if (result.snapshot.kind === 'SUPER_TABLE') {
+        const key = tdengineChildPageKey(target.connectionId, target.database, result.snapshot.name)
+        childTableLoadSeqRef.current[key] = (childTableLoadSeqRef.current[key] ?? 0) + 1
+        setChildTablesMap((previous) => {
+          const next = { ...previous }
+          delete next[key]
+          return next
+        })
+      }
+      void refreshTdengineCategory(
+        target.connectionId,
+        target.database,
+        result.snapshot.kind === 'SUPER_TABLE' ? 'stables' : 'tables',
+      )
+    }
+    setTdengineDeleteTarget(null)
+    toast.success(`${result.snapshot.kind === 'SUPER_TABLE' ? '超级表' : '表'}「${result.snapshot.name}」已删除`)
+  }, [batchUpdate, loadChildTables, refreshTdengineCategory, removePaneKeys, tdengineDeleteTarget])
 
   const beginRenameQueryTab = useCallback((tabKey: string) => {
     const tab = openTableTabs[tabKey]
@@ -1233,6 +1760,31 @@ export const WorkbenchPage: React.FC = () => {
   // --- 从工作台移除连接 ---
   const handleRemoveConnection = useCallback((connId: string) => {
     const wasCurrent = selectedCtx?.connectionId === connId
+    globalSearchIdentityRef.current.next()
+    databaseLoadSeqRef.current[connId] = (databaseLoadSeqRef.current[connId] ?? 0) + 1
+    for (const key of Object.keys(objectPageLoadSeqRef.current)) {
+      if (key.startsWith(`base:${connId}::`) || key.startsWith(`search:${connId}::`)) {
+        objectPageLoadSeqRef.current[key] += 1
+      }
+    }
+    for (const key of Object.keys(childTableLoadSeqRef.current)) {
+      if (key.startsWith(`${connId}::`)) childTableLoadSeqRef.current[key] += 1
+    }
+    setTreeObjectPages((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([key]) => !key.startsWith(`${connId}::`)),
+    ))
+    setTreeSearchPages((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([key]) => !key.startsWith(`${connId}::`)),
+    ))
+    setChildTablesMap((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([key]) => !key.startsWith(`${connId}::`)),
+    ))
+    setCategoryObjectPages((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([key]) => !key.startsWith(`cat:${connId}::`)),
+    ))
+    setCategoryPageRefreshTokens((previous) => Object.fromEntries(
+      Object.entries(previous).filter(([key]) => !key.startsWith(`cat:${connId}::`)),
+    ))
     removeOpenConnection(connId)
     // 清理该连接下的所有已打开 Tab
     setOpenTableTabs(prev => {
@@ -1471,20 +2023,68 @@ export const WorkbenchPage: React.FC = () => {
 
         const categoryChildren: TreeDataNode[] = conn.dbType === 'tdengine'
           ? (() => {
+              const stablePageKey = objectPageKey(conn.id, db.name, 'stables')
+              const tablePageKey = objectPageKey(conn.id, db.name, 'tables')
+              const pageSource = objectQuery.trim() ? treeSearchPages : treeObjectPages
+              const stablePage = pageSource[stablePageKey]
+              const tablePage = pageSource[tablePageKey]
+              const pageObjects = [...(stablePage?.items ?? []), ...(tablePage?.items ?? [])]
               const childTablesByStable = Object.fromEntries(
-                dbObjects
+                pageObjects
                   .filter((item) => item.tableKind === 'SUPER_TABLE')
                   .map((stable) => {
                     const childKey = `${conn.id}::${db.name}::${stable.name}`
                     return [stable.name, childTablesMap[childKey]?.items ?? []]
                   })
               )
-              const filteredObjects = filterTdengineTreeObjects(dbObjects, childTablesByStable, objectQuery)
+              const filteredObjects = filterTdengineTreeObjects(pageObjects, childTablesByStable, objectQuery)
+              const categoryMoreNode = (
+                category: 'stables' | 'tables',
+                page: PagedObjectState | undefined,
+              ): TreeDataNode[] => {
+                if (page?.error) return [{
+                  key: `objretry:${conn.id}:${db.name}:${category}`,
+                  selectable: false,
+                  isLeaf: true,
+                  title: (
+                    <Button type="link" size="small" onClick={(event) => {
+                      event.stopPropagation()
+                      loadTdengineCategoryPage(conn.id, db.name, category, {
+                        append: page.items.length > 0 && page.hasMore,
+                        search: objectQuery || undefined,
+                        searchIdentity: objectQuery ? globalSearchIdentityRef.current.value() : undefined,
+                      })
+                    }}>加载失败，点击重试</Button>
+                  ),
+                }]
+                if (page?.loading && page.items.length === 0) return [{
+                  key: `objloading:${conn.id}:${db.name}:${category}`,
+                  selectable: false,
+                  isLeaf: true,
+                  title: '正在加载...',
+                }]
+                if (!page?.hasMore) return []
+                return [{
+                  key: `objmore:${conn.id}:${db.name}:${category}`,
+                  selectable: false,
+                  isLeaf: true,
+                  title: (
+                    <Button type="link" size="small" loading={page.loading} onClick={(event) => {
+                      event.stopPropagation()
+                      loadTdengineCategoryPage(conn.id, db.name, category, {
+                        append: true,
+                        search: objectQuery || undefined,
+                        searchIdentity: objectQuery ? globalSearchIdentityRef.current.value() : undefined,
+                      })
+                    }}>加载更多</Button>
+                  ),
+                }]
+              }
               return [
               {
                 key: `cat:${conn.id}:${db.name}:stables`,
                 'data-node-key': `cat:${conn.id}:${db.name}:stables`,
-                title: `超级表 (${filteredObjects.superTables.length})`,
+                title: `超级表 (${stablePage?.total ?? 0})`,
                 icon: <Activity size={15} />,
                 children: filteredObjects.superTables
                   .map(({ table: stable, children: filteredChildren }) => {
@@ -1503,15 +2103,26 @@ export const WorkbenchPage: React.FC = () => {
                           selectable: false,
                           isLeaf: true,
                           title: (
-                            <Input.Search
-                              size="small"
-                              allowClear
-                              placeholder="搜索子表"
-                              defaultValue={childState?.search}
-                              onClick={(event) => event.stopPropagation()}
-                              onSearch={(value) => loadChildTables(conn.id, db.name, stable.name, { search: value })}
-                              style={{ width: 170 }}
-                            />
+                            <Space.Compact style={{ width: 190 }} onClick={(event) => event.stopPropagation()}>
+                              <Input.Search
+                                size="small"
+                                allowClear
+                                placeholder="搜索子表"
+                                defaultValue={childState?.search}
+                                onSearch={(value) => loadChildTables(conn.id, db.name, stable.name, { search: value })}
+                                style={{ width: 142 }}
+                              />
+                              <Tooltip title={childState?.filters.length ? `已启用 ${childState.filters.length} 个 Tag 条件` : '按 Tag 筛选'}>
+                                <Button
+                                  size="small"
+                                  type={childState?.filters.length ? 'primary' : 'default'}
+                                  loading={tagFilterLoading}
+                                  icon={<FilterOutlined />}
+                                  aria-label="按 Tag 筛选子表"
+                                  onClick={() => void openTagFilterModal(conn.id, db.name, stable.name)}
+                                />
+                              </Tooltip>
+                            </Space.Compact>
                           ),
                         }] : []),
                         ...filteredChildren.map((child) => ({
@@ -1548,15 +2159,15 @@ export const WorkbenchPage: React.FC = () => {
                         }] : []),
                       ],
                     } as TreeDataNode
-                  }),
+                  }).concat(categoryMoreNode('stables', stablePage)),
               },
               {
                 key: `cat:${conn.id}:${db.name}:tables`,
                 'data-node-key': `cat:${conn.id}:${db.name}:tables`,
-                title: `普通表 (${filteredObjects.basicTables.length})`,
+                title: `普通表 (${tablePage?.total ?? 0})`,
                 icon: <Table2 size={16} />,
-                children: filteredObjects.basicTables
-                  .map((table) => ({
+                children: [
+                  ...filteredObjects.basicTables.map((table) => ({
                     key: `obj:${conn.id}:${db.name}:${table.name}`,
                     'data-node-key': `obj:${conn.id}:${db.name}:${table.name}`,
                     title: table.name,
@@ -1564,6 +2175,8 @@ export const WorkbenchPage: React.FC = () => {
                     icon: iconTable,
                     isLeaf: true,
                   })),
+                  ...categoryMoreNode('tables', tablePage),
+                ],
               },
             ].filter((category) => !searchingTree || category.children.length > 0) as TreeDataNode[]
             })()
@@ -1625,7 +2238,7 @@ export const WorkbenchPage: React.FC = () => {
   }).filter(Boolean) as TreeDataNode[]
 
   return [...(scriptsNode ? [scriptsNode] : []), ...connNodes]
-  }, [deferTree, openConnections, databasesMap, objectsMap, loadingConns, deferredSearch, objectCategories, token, handleRemoveConnection, iconConn, iconDb, iconTable, iconTrigger, iconView, iconProcedure, iconFunction, savedScripts, childTablesMap, loadChildTables])
+  }, [deferTree, openConnections, databasesMap, objectsMap, treeObjectPages, treeSearchPages, loadingConns, deferredSearch, objectCategories, token, handleRemoveConnection, iconConn, iconDb, iconTable, iconTrigger, iconView, iconProcedure, iconFunction, savedScripts, childTablesMap, loadChildTables, loadTdengineCategoryPage, openTagFilterModal, tagFilterLoading])
 
   // --- 搜索时自动展开所有匹配的节点 ---
   const prevExpandedRef = useRef<React.Key[] | null>(null)
@@ -1821,7 +2434,7 @@ export const WorkbenchPage: React.FC = () => {
           key: 'refresh-db',
           icon: <ReloadOutlined />,
           label: '刷新',
-          onClick: () => loadTables(connId, dbName),
+          onClick: () => loadTables(connId, dbName, { force: true }),
         },
         { type: 'divider' },
       ]
@@ -1931,9 +2544,48 @@ export const WorkbenchPage: React.FC = () => {
         key: 'refresh-cat',
         icon: <ReloadOutlined />,
         label: '刷新',
-        onClick: () => loadTables(connId, dbName),
+        onClick: () => loadTables(connId, dbName, { force: true }),
       })
       return items
+    }
+    if (nodeKey.startsWith('tsstable:')) {
+      const parts = nodeKey.slice('tsstable:'.length).split(':')
+      const connId = parts[0]
+      const dbName = parts[1]
+      const stableName = parts.slice(2).join(':')
+      const connection = openConnections.find((item) => item.id === connId)
+      if (!getDbCapabilities(connection?.dbType ?? null).workbench.timeSeriesObjectDelete) return []
+      return [
+        {
+          key: 'refresh-stable-children',
+          icon: <ReloadOutlined />,
+          label: '刷新子表',
+          onClick: () => void loadChildTables(connId, dbName, stableName),
+        },
+        { type: 'divider' },
+        {
+          key: 'drop-time-series-stable',
+          icon: <DeleteOutlined />,
+          label: '删除超级表',
+          danger: true,
+          onClick: () => setTdengineDeleteTarget({ connectionId: connId, database: dbName, objectName: stableName }),
+        },
+      ]
+    }
+    if (nodeKey.startsWith('tschild:')) {
+      const parts = nodeKey.slice('tschild:'.length).split(':')
+      const connId = parts[0]
+      const dbName = parts[1]
+      const childName = parts.slice(3).join(':')
+      const connection = openConnections.find((item) => item.id === connId)
+      if (!getDbCapabilities(connection?.dbType ?? null).workbench.timeSeriesObjectDelete) return []
+      return [{
+        key: 'drop-time-series-child',
+        icon: <DeleteOutlined />,
+        label: '删除子表',
+        danger: true,
+        onClick: () => setTdengineDeleteTarget({ connectionId: connId, database: dbName, objectName: childName }),
+      }]
     }
     // 表/对象节点
     if (nodeKey.startsWith('obj:')) {
@@ -1943,9 +2595,7 @@ export const WorkbenchPage: React.FC = () => {
       const objName = parts.slice(2).join(':')
 
       // 查找对象类型
-      const objKey = `${connId}::${dbName}`
-      const dbObjects = objectsMap[objKey] || []
-      const objInfo = dbObjects.find(o => o.name === objName)
+      const objInfo = findLoadedObject(connId, dbName, objName)
       const objType = objInfo?.type ?? 'table'
 
       // 非表对象（视图/存储过程/函数/触发器）
@@ -1985,7 +2635,7 @@ export const WorkbenchPage: React.FC = () => {
             key: 'refresh-obj',
             icon: <ReloadOutlined />,
             label: '刷新',
-            onClick: () => loadTables(connId, dbName),
+            onClick: () => loadTables(connId, dbName, { force: true }),
           },
         )
         return menuItems
@@ -1995,6 +2645,16 @@ export const WorkbenchPage: React.FC = () => {
       const conn = openConnections.find((item) => item.id === connId)
       const cap = getDbCapabilities(conn?.dbType ?? null)
       const tableItems: MenuProps['items'] = []
+      if (
+        cap.workbench.timeSeriesObjectDelete &&
+        (!objInfo?.tableKind || objInfo.tableKind === 'BASIC_TABLE')
+      ) tableItems.push({
+        key: 'drop-time-series-basic-table',
+        icon: <DeleteOutlined />,
+        label: '删除普通表',
+        danger: true,
+        onClick: () => setTdengineDeleteTarget({ connectionId: connId, database: dbName, objectName: objName }),
+      })
       if (cap.workbench.tableDesigner) tableItems.push({
           key: 'design-table',
           icon: <EditOutlined />,
@@ -2075,7 +2735,7 @@ export const WorkbenchPage: React.FC = () => {
                 try {
                   await metadataApi.dropTable(connId, dbName, objName)
                   toast.success(`表「${objName}」已删除`)
-                  loadTables(connId, dbName)
+                  loadTables(connId, dbName, { force: true })
                   if (selectedCtx?.connectionId === connId && selectedCtx?.database === dbName && selectedCtx?.table === objName) {
                     setSelectedCtx({ connectionId: connId, database: dbName })
                   }
@@ -2091,12 +2751,12 @@ export const WorkbenchPage: React.FC = () => {
         key: 'refresh-table',
         icon: <ReloadOutlined />,
         label: '刷新',
-        onClick: () => loadTables(connId, dbName),
+        onClick: () => loadTables(connId, dbName, { force: true }),
       })
       return tableItems
     }
     return []
-  }, [openConnections, loadDatabases, loadTables, selectedCtx, setSelectedCtx, handleTableExport, setCreateDbModal, setEditDbModal, setImportSqlModal, setExportModal, openTableDesignerTab, openTimeSeriesDesignerTab, objectsMap, openOrActivateTab])
+  }, [openConnections, loadDatabases, loadTables, loadChildTables, selectedCtx, setSelectedCtx, handleTableExport, setCreateDbModal, setEditDbModal, setImportSqlModal, setExportModal, openTableDesignerTab, openTimeSeriesDesignerTab, findLoadedObject, openOrActivateTab])
 
   // 延迟计算菜单项：仅在右键触发瞬间计算 1 次（而非 titleRender 中 N 次）
   const treeCtxMenuItems = useMemo(
@@ -2319,9 +2979,7 @@ export const WorkbenchPage: React.FC = () => {
                     const conn = openConnections.find((c) => c.id === connId)
 
                     // 检查对象类型
-                    const objKey = `${connId}::${dbName}`
-                    const dbObjects = objectsMap[objKey] || []
-                    const objInfo = dbObjects.find(o => o.name === objName)
+                    const objInfo = findLoadedObject(connId, dbName, objName)
                     const objType = objInfo?.type ?? 'table'
 
                     if (objType === 'table' || objType === 'view' || objType === 'stable') {
@@ -2745,7 +3403,7 @@ export const WorkbenchPage: React.FC = () => {
                       size="small"
                       activeKey={t.detailTab}
                       onChange={(key) => {
-                        const nextTab = key as 'data' | 'design' | 'tags' | 'ddl'
+                        const nextTab = key as TableTabState['detailTab']
                         updateTabState(tabKey, () => ({ detailTab: nextTab }))
                         loadTabDataForTab(tabKey, t.connectionId, t.database, t.tableName, nextTab)
                       }}
@@ -2770,6 +3428,45 @@ export const WorkbenchPage: React.FC = () => {
                                       : '当前表缺少主键，数据编辑功能不可用'}
                                 </Text>
                                 <Space size={8}>
+                                  {t.objectType === 'table' && t.tableKind && paneCapabilities.workbench.timeSeriesDataWrite && t.columns.length > 0 && (
+                                    <TdengineDataWriteAction
+                                      connectionId={t.connectionId}
+                                      database={t.database}
+                                      table={t.tableName}
+                                      tableKind={t.tableKind}
+                                      columns={t.columns}
+                                      onApplied={async (result) => {
+                                        const targetEntry = Object.entries(useWorkbenchStore.getState().openTableTabs).find(([, candidate]) =>
+                                          candidate.type === 'table' && candidate.connectionId === t.connectionId && candidate.database === t.database && candidate.tableName === result.targetTable,
+                                        )
+                                        if (targetEntry) await refreshTableRows(targetEntry[0], undefined, '刷新写入结果失败', true)
+                                        if (result.createdChildTable && result.stableName) {
+                                          await loadChildTables(t.connectionId, t.database, result.stableName)
+                                        }
+                                      }}
+                                    />
+                                  )}
+                                  {t.objectType === 'table' && t.tableKind && paneCapabilities.workbench.timeSeriesCsvImport && t.columns.length > 0 && (
+                                    <TdengineCsvImportAction
+                                      connectionId={t.connectionId}
+                                      database={t.database}
+                                      table={t.tableName}
+                                      tableKind={t.tableKind}
+                                      columns={t.columns}
+                                      onCompleted={async task => {
+                                        const targetTable = task.payload?.targetTable
+                                        if (targetTable) {
+                                          const targetEntry = Object.entries(useWorkbenchStore.getState().openTableTabs).find(([, candidate]) =>
+                                            candidate.type === 'table' && candidate.connectionId === t.connectionId && candidate.database === t.database && candidate.tableName === targetTable,
+                                          )
+                                          if (targetEntry) await refreshTableRows(targetEntry[0], undefined, '刷新 CSV 导入结果失败', true)
+                                        }
+                                        if (task.payload?.createdChildTable === 'true' && task.payload.stableName) {
+                                          await loadChildTables(t.connectionId, t.database, task.payload.stableName)
+                                        }
+                                      }}
+                                    />
+                                  )}
                                   <Text type="secondary" style={{ fontSize: 12 }}>
                                     {t.previewRows.length > 0 ? `共 ${t.previewRows.length} 行` : ''}
                                   </Text>
@@ -2910,7 +3607,7 @@ export const WorkbenchPage: React.FC = () => {
                                       result.previousTableName,
                                       result.tableName,
                                     )
-                                    loadTables(t.connectionId, t.database)
+                                    loadTables(t.connectionId, t.database, { force: true })
                                     if (renamedTab.tabKey && renamedTab.detailTab) {
                                       loadTabDataForTab(
                                         renamedTab.tabKey,
@@ -2934,15 +3631,76 @@ export const WorkbenchPage: React.FC = () => {
                             </div>
                           ),
                         } : null,
+                        t.tableKind === 'SUPER_TABLE' && paneCapabilities.workbench.timeSeriesLifecycle ? {
+                          key: 'structure',
+                          label: '结构管理',
+                          children: (
+                            <TdengineStableStructurePanel
+                              connectionId={t.connectionId}
+                              database={t.database}
+                              stable={t.tableName}
+                              onApplied={() => handleStableStructureApplied(
+                                t.connectionId,
+                                t.database,
+                                t.tableName,
+                              )}
+                            />
+                          ),
+                        } : null,
+                        t.tableKind === 'BASIC_TABLE' && paneCapabilities.workbench.timeSeriesBasicTableLifecycle ? {
+                          key: 'structure',
+                          label: '结构管理',
+                          children: (
+                            <TdengineBasicTableStructurePanel
+                              connectionId={t.connectionId}
+                              database={t.database}
+                              table={t.tableName}
+                              onApplied={async () => {
+                                updateTabState(tabKey, (previous) => ({
+                                  loadedTabs: previous.loadedTabs.filter(item => !['columns', 'data', 'ddl'].includes(item)),
+                                  previewRows: [],
+                                }))
+                                await loadTabDataForTab(tabKey, t.connectionId, t.database, t.tableName, 'data')
+                              }}
+                            />
+                          ),
+                        } : null,
                         (t.tableKind === 'SUPER_TABLE' || t.tableKind === 'CHILD_TABLE') ? {
                           key: 'tags',
                           label: `Tags (${t.tableKind === 'SUPER_TABLE' ? t.tagDefinitions.length : t.tagValues.length})`,
-                          children: (
+                          children: t.tableKind === 'CHILD_TABLE' && paneCapabilities.workbench.timeSeriesLifecycle ? (
+                            <TdengineChildPropertiesPanel
+                              connectionId={t.connectionId}
+                              database={t.database}
+                              table={t.tableName}
+                              snapshot={t.childProperties}
+                              loading={t.loadingTabs.includes('tags')}
+                              onOpenStableStructure={(stableName) => openOrActivateTab(
+                                t.connectionId,
+                                t.connectionName,
+                                t.database,
+                                stableName,
+                                'structure',
+                                'table',
+                                'SUPER_TABLE',
+                              )}
+                              onApplied={() => refreshChildProperties(
+                                tabKey,
+                                t.connectionId,
+                                t.database,
+                                t.tableName,
+                                t.stableName ?? t.childProperties?.stableName ?? '',
+                              )}
+                            />
+                          ) : (
                             <div style={{ ...panelStyle, height: '100%', overflow: 'auto', padding: 16 }}>
                               {t.tableKind === 'CHILD_TABLE' && t.stableName && (
                                 <div style={{ ...compactPanelStyle, padding: '10px 12px', marginBottom: 12 }}>
                                   <Text type="secondary" style={{ fontSize: 12 }}>所属超级表</Text>
-                                  <Text strong style={{ display: 'block', marginTop: 4 }}>{t.stableName}</Text>
+                                  <Space style={{ display: 'flex', marginTop: 4, justifyContent: 'space-between' }}>
+                                    <Text strong>{t.stableName}</Text>
+                                    {paneCapabilities.workbench.timeSeriesLifecycle && <Button size="small" onClick={() => openOrActivateTab(t.connectionId, t.connectionName, t.database, t.stableName!, 'structure', 'table', 'SUPER_TABLE')}>打开超级表结构管理</Button>}
+                                  </Space>
                                 </div>
                               )}
                               <Table<TimeSeriesTagDefinition | TimeSeriesTagValue>
@@ -2986,6 +3744,10 @@ export const WorkbenchPage: React.FC = () => {
                 const objKey = `${activeTab.connectionId}::${activeTab.database}`
                 const dbObjects = objectsMap[objKey] || []
                 const overviewCapabilities = getDbCapabilities(openConnectionDbTypes.get(activeTab.connectionId) ?? null)
+                const pagedOverview = overviewCapabilities.metadata.pagedObjects
+                const stableTotal = treeObjectPages[objectPageKey(activeTab.connectionId, activeTab.database, 'stables')]?.total ?? 0
+                const tableTotal = treeObjectPages[objectPageKey(activeTab.connectionId, activeTab.database, 'tables')]?.total ?? 0
+                const overviewObjectTotal = pagedOverview ? stableTotal + tableTotal : dbObjects.length
                 const totalTableBytes = dbObjects
                   .filter((item) => item.type === 'table')
                   .reduce((acc, item) => acc + (item.dataLength || 0) + (item.indexLength || 0), 0)
@@ -2995,13 +3757,16 @@ export const WorkbenchPage: React.FC = () => {
                   const order = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
                   return `${(bytes / (1024 ** order)).toFixed(order === 0 ? 0 : 1)} ${units[order]}`
                 }
-                const objectSummary = [
+                const objectSummary = pagedOverview ? [
+                  { key: 'stables', label: '超级表', value: stableTotal, icon: <Activity size={16} color={token.colorPrimary} /> },
+                  { key: 'tables', label: '普通表', value: tableTotal, icon: <Table2 size={16} color={token.colorPrimary} /> },
+                ] : [
                   { key: 'tables', label: '表', value: dbObjects.filter((t) => t.type === 'table').length, icon: <Table2 size={16} color={token.colorPrimary} /> },
                   { key: 'views', label: '视图', value: dbObjects.filter((t) => t.type === 'view').length, icon: <Eye size={16} color="#3B82F6" /> },
                   { key: 'procedures', label: '存储过程', value: dbObjects.filter((t) => t.type === 'procedure').length, icon: <Cog size={16} color="#8B5CF6" /> },
                   { key: 'functions', label: '函数', value: dbObjects.filter((t) => t.type === 'function').length, icon: <FunctionSquare size={16} color="#EC4899" /> },
                   { key: 'triggers', label: '触发器', value: dbObjects.filter((t) => t.type === 'trigger').length, icon: <Zap size={16} color="#F59E0B" /> },
-                ] as const
+                ]
 
                 return (
                   <div style={{ flex: 1, padding: '24px', overflow: 'auto', background: 'transparent' }}>
@@ -3021,15 +3786,17 @@ export const WorkbenchPage: React.FC = () => {
                                 {activeTab.connectionName}
                               </Tag>
                               <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
-                                对象 {dbObjects.length}
+                                对象 {overviewObjectTotal}
                               </Tag>
-                              <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
-                                表空间 {formatBytes(totalTableBytes)}
-                              </Tag>
+                              {!pagedOverview && (
+                                <Tag variant="filled" style={{ marginInlineEnd: 0, borderRadius: 999, paddingInline: 10 }}>
+                                  表空间 {formatBytes(totalTableBytes)}
+                                </Tag>
+                              )}
                             </Space>
                           </div>
                           <Space size={8} wrap>
-                            <Button icon={<ReloadOutlined />} style={quietButtonStyle} onClick={() => loadTables(activeTab.connectionId, activeTab.database)}>
+                            <Button icon={<ReloadOutlined />} style={quietButtonStyle} onClick={() => loadTables(activeTab.connectionId, activeTab.database, { force: true })}>
                               刷新对象
                             </Button>
                             {overviewCapabilities.workbench.tableCreate && (
@@ -3049,7 +3816,7 @@ export const WorkbenchPage: React.FC = () => {
                         </div>
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 12 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${objectSummary.length}, minmax(0, 1fr))`, gap: 12 }}>
                         {objectSummary.map((item) => (
                           <div key={item.key} style={{ ...compactPanelStyle, padding: '16px 18px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
@@ -3098,7 +3865,7 @@ export const WorkbenchPage: React.FC = () => {
                                 新建 TDengine 对象
                               </Button>
                             )}
-                            <Button block icon={<ReloadOutlined />} style={{ ...quietButtonStyle, textAlign: 'left' }} onClick={() => loadTables(activeTab.connectionId, activeTab.database)}>
+                            <Button block icon={<ReloadOutlined />} style={{ ...quietButtonStyle, textAlign: 'left' }} onClick={() => loadTables(activeTab.connectionId, activeTab.database, { force: true })}>
                               重新加载对象元数据
                             </Button>
                           </Space>
@@ -3116,6 +3883,8 @@ export const WorkbenchPage: React.FC = () => {
 
               // ===== 分类列表 Tab =====
               if (activeTab.type === 'category-list') {
+                const categoryType = tdengineCategoryType(activeTab.category)
+                const supportsPagedObjects = getDbCapabilities(openConnectionDbTypes.get(activeTab.connectionId) ?? null).metadata.pagedObjects
                 return (
                   <div style={{ flex: 1, overflow: 'hidden' }}>
                     <CategoryListView
@@ -3125,6 +3894,16 @@ export const WorkbenchPage: React.FC = () => {
                       objects={objectsMap[`${activeTab.connectionId}::${activeTab.database}`] || []}
                       objectCategories={objectCategories}
                       search={activeTab.categorySearch || ''}
+                      pagedState={categoryObjectPages[tabKey]}
+                      refreshToken={categoryPageRefreshTokens[tabKey] ?? 0}
+                      loadPage={supportsPagedObjects && categoryType ? (search, offset) => metadataApi.objectsPage(
+                        activeTab.connectionId,
+                        activeTab.database,
+                        { type: categoryType, search: search || undefined, offset, limit: OBJECT_PAGE_SIZE },
+                      ) : undefined}
+                      onPagedStateChange={(state) => {
+                        setCategoryObjectPages((previous) => ({ ...previous, [tabKey]: state }))
+                      }}
                       onSearchChange={(value) => {
                         const key = tabKey
                         setOpenTableTabs((prev) => ({
@@ -3132,14 +3911,10 @@ export const WorkbenchPage: React.FC = () => {
                           [key]: { ...prev[key], categorySearch: value } as WorkbenchTab,
                         }))
                       }}
-                      onSelectObject={(name) => {
-                        // 在概览页中查找对象类型
-                        const oKey = `${activeTab.connectionId}::${activeTab.database}`
-                        const oList = objectsMap[oKey] || []
-                        const oInfo = oList.find(o => o.name === name)
-                        const oType = (oInfo?.type ?? 'table') as 'table' | 'view' | 'procedure' | 'function' | 'trigger'
+                      onSelectObject={(object) => {
+                        const oType = (object.type === 'stable' ? 'table' : object.type) as 'table' | 'view' | 'procedure' | 'function' | 'trigger'
                         const oDefaultTab = (oType === 'table' || oType === 'view') ? 'data' : 'ddl'
-                        openOrActivateTab(activeTab.connectionId, activeTab.connectionName, activeTab.database, name, oDefaultTab, oType)
+                        openOrActivateTab(activeTab.connectionId, activeTab.connectionName, activeTab.database, object.name, oDefaultTab, oType, object.tableKind)
                       }}
                     />
                   </div>
@@ -3179,7 +3954,7 @@ export const WorkbenchPage: React.FC = () => {
                             result.tableName,
                           )
                         }
-                        loadTables(activeTab.connectionId, activeTab.database)
+                        loadTables(activeTab.connectionId, activeTab.database, { force: true })
                         closeTableTab(tabKey)
                       }}
                       onCancel={() => closeTableTab(tabKey)}
@@ -3203,7 +3978,7 @@ export const WorkbenchPage: React.FC = () => {
                         if (refresh.kind === 'children') {
                           loadChildTables(activeTab.connectionId, activeTab.database, refresh.stableName)
                         } else {
-                          loadTables(activeTab.connectionId, activeTab.database)
+                          loadTables(activeTab.connectionId, activeTab.database, { force: true })
                         }
                         closeTableTab(tabKey)
                       }}
@@ -3269,6 +4044,29 @@ export const WorkbenchPage: React.FC = () => {
           />
         </Space>
       </Modal>
+
+      {tagFilterTarget && (
+        <TdengineTagFilterModal
+          open
+          stableName={tagFilterTarget.stableName}
+          definitions={tagFilterTarget.definitions}
+          initialFilters={childTablesMapRef.current[
+            `${tagFilterTarget.connectionId}::${tagFilterTarget.database}::${tagFilterTarget.stableName}`
+          ]?.filters ?? []}
+          onCancel={() => setTagFilterTarget(null)}
+          onApply={(filters) => {
+            const target = tagFilterTarget
+            setTagFilterTarget(null)
+            void loadChildTables(target.connectionId, target.database, target.stableName, { filters })
+          }}
+        />
+      )}
+
+      <TdengineObjectDeleteModal
+        target={tdengineDeleteTarget}
+        onCancel={() => setTdengineDeleteTarget(null)}
+        onDeleted={handleTdengineObjectDeleted}
+      />
 
       {/* 新建数据库弹窗 */}
       {createDbModal && (

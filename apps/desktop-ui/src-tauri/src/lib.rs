@@ -19,6 +19,15 @@ struct SelectedSqlFile {
     size: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectedCsvFile {
+    path: String,
+    name: String,
+    size: u64,
+    last_modified: u64,
+}
+
 /// Windows 路径规范化：去掉 UNC 前缀 \\?\
 /// Java 无法处理 \\?\ 开头的路径
 fn normalize_path(path: &Path) -> PathBuf {
@@ -106,6 +115,26 @@ fn pick_sql_file() -> Result<Option<SelectedSqlFile>, String> {
 }
 
 #[tauri::command]
+fn pick_csv_file() -> Result<Option<SelectedCsvFile>, String> {
+    let picked = rfd::FileDialog::new()
+        .add_filter("CSV", &["csv", "tsv"])
+        .set_title("选择要导入的 CSV 文件")
+        .pick_file();
+    let Some(path) = picked else { return Ok(None); };
+    let metadata = std::fs::metadata(&path).map_err(|e| format!("读取文件信息失败: {}", e))?;
+    let last_modified = metadata.modified().ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or(0);
+    Ok(Some(SelectedCsvFile {
+        path: normalize_path(&path).to_string_lossy().to_string(),
+        name: path.file_name().map(|value| value.to_string_lossy().to_string()).unwrap_or_else(|| "unknown.csv".to_string()),
+        size: metadata.len(),
+        last_modified,
+    }))
+}
+
+#[tauri::command]
 fn pick_backup_folder() -> Result<Option<String>, String> {
     let picked = rfd::FileDialog::new()
         .set_title("选择备份文件存放目录")
@@ -169,6 +198,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             pick_sql_file,
+            pick_csv_file,
             pick_backup_folder,
             pick_backup_file,
             save_export_file,

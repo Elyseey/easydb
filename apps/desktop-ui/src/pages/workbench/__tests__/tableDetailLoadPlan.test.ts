@@ -22,6 +22,10 @@ describe('tableDetailLoadPlan', () => {
       loadColumns: false,
       loadTab: true,
     })
+    expect(tableDetailLoadPlan('structure', [])).toEqual({
+      loadColumns: false,
+      loadTab: true,
+    })
   })
 
   it('loads columns explicitly after a design save and skips cached resources', () => {
@@ -32,6 +36,21 @@ describe('tableDetailLoadPlan', () => {
     expect(tableDetailLoadPlan('data', ['columns', 'data'])).toEqual({
       loadColumns: false,
       loadTab: false,
+    })
+  })
+
+  it('tracks design and structure as independent shell resources', () => {
+    expect(tableDetailLoadPlan('structure', ['structure'])).toEqual({
+      loadColumns: false,
+      loadTab: false,
+    })
+    expect(tableDetailLoadPlan('design', ['structure'])).toEqual({
+      loadColumns: false,
+      loadTab: true,
+    })
+    expect(tableDetailLoadPlan('structure', ['design'])).toEqual({
+      loadColumns: false,
+      loadTab: true,
     })
   })
 })

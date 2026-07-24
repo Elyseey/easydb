@@ -15,7 +15,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 import { create } from 'zustand'
-import type { DatabaseInfo, TableInfo, ColumnInfo, IndexInfo, DbType, TableKind, TimeSeriesTagDefinition, TimeSeriesTagValue } from '@/types'
+import type { DatabaseInfo, TableInfo, ColumnInfo, IndexInfo, DbType, TableKind, TimeSeriesChildPropertySnapshot, TimeSeriesTagDefinition, TimeSeriesTagValue } from '@/types'
 import type { TimeSeriesRangeState } from '@/utils/timeSeriesQuery'
 
 /**
@@ -56,6 +56,7 @@ export interface TableTabState {
   stableName?: string
   tagDefinitions: TimeSeriesTagDefinition[]
   tagValues: TimeSeriesTagValue[]
+  childProperties?: TimeSeriesChildPropertySnapshot
   columns: ColumnInfo[]
   indexes: IndexInfo[]
   ddl: string
@@ -65,7 +66,7 @@ export interface TableTabState {
   hasMoreRows: boolean
   /** 是否正在加载更多数据 */
   loadingMoreRows: boolean
-  detailTab: 'data' | 'design' | 'tags' | 'ddl'
+  detailTab: 'data' | 'design' | 'structure' | 'tags' | 'ddl'
   loadedTabs: string[]
   loadingTabs: string[]
 }

@@ -136,6 +136,71 @@ Add a regression test that opens a real nested submenu and verifies the portaled
 
 ---
 
+## Scenario: TDengine Basic-Table Structure and Bounded Data Write
+
+### 1. Scope / Trigger
+
+Use this contract for TDengine ordinary-table column management and visual writes to ordinary tables or super-table children. These flows are independent from relational `TableDesigner` and `rowEdit`.
+
+### 2. Signatures
+
+```text
+GET/POST /api/metadata/{connectionId}/{database}/timeseries/basic-tables/{table}/lifecycle[/preview|/apply]
+POST     /api/metadata/{connectionId}/{database}/timeseries/write/{preview|apply}
+```
+
+Apply payloads contain a structured command/request, `expectedFingerprint`, `previewToken`, and an exact destructive confirmation where required. They never contain `ddl` or `sql`.
+
+### 3. Contracts
+
+- Gate ordinary-table structure and data writes with separate time-series capabilities; TDengine keeps `rowEdit=false`.
+- Ordinary-table changes are one of `ADD/DROP/MODIFY/RENAME_COLUMN`; each apply executes one driver-built DDL.
+- The primary timestamp cannot be changed, renamed, dropped, NULL, blank, or omitted. “Current time” writes a concrete timestamp string and never sends implicit `NOW`.
+- Use a conservative 48 KB estimated row-width limit for TDengine 3.0.4-compatible ordinary-table changes.
+- Writes contain an explicit column list and 1–100 structured rows. `isNull=true` remains distinct from `value=""`.
+- Super tables are templates: write through an existing child or create a child with complete typed Tags in the same structured flow.
+- Existing-child selection uses debounced server search and request identity; never preload thousands of child tables.
+- A failed preview/apply preserves the grid, Tags, and tabs. Success refreshes only the target data; new-child success also refreshes the owning stable's child page.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Missing capability or adapter | Hide entry and return `UNSUPPORTED_DB_FEATURE` server-side |
+| Timestamp blank/NULL/omitted, invalid cell, or more than 100 rows | Reject the entire batch before execution |
+| DROP confirmation differs by case or whitespace | Disable apply; server returns `DESTRUCTIVE_CONFIRMATION_MISMATCH` |
+| Fingerprint changes | `OBJECT_CHANGED`; preserve input and require a new preview |
+| Request/token changes after preview | Reject before DDL/DML |
+| Older remote child search resolves last | Ignore it by request identity |
+
+### 5. Good / Base / Bad Cases
+
+- Good: paste a TSV rectangle with explicit timestamps, preview 50 rows, then apply the same structured batch proof.
+- Base: write one row to an existing child and refresh that child's open data tab.
+- Bad: enable relational row editing, submit displayed SQL, interpret a blank timestamp as `NOW`, or load every child into a Select.
+
+### 6. Tests Required
+
+- Capability tests keep MySQL/Dameng entries false and TDengine `rowEdit` false.
+- Component tests cover exact DROP confirmation and prove apply contains no DDL.
+- Helper tests cover TSV empty cells, all three target modes, explicit timestamp rejection, and concrete current-time formatting.
+- Driver/service tests cover 48 KB, type bounds, NULL versus empty, 100 rows, metadata/token changes, and execute-nothing failure paths.
+- Opt-in integration tests cover 3.0.4, 3.3.6, 3.4.1 and eligible WebSocket/REST paths; default tests remain offline.
+
+### 7. Wrong vs Correct
+
+```ts
+// Wrong: browser SQL becomes execution authority.
+apply({ sql: preview.sql })
+
+// Correct: the server rebuilds the operation from structured values and proof.
+apply({
+  request: preview.request,
+  expectedFingerprint: preview.snapshot.fingerprint,
+  previewToken: preview.previewToken,
+})
+```
+
 ## SQL Result Grids — Row Selection and Scoped Export
 
 `SqlResultPanel` and `EditableDataTable` must expose the same selection/export contract even though one is read-only and the other supports editing.
@@ -447,12 +512,89 @@ Do not keep every opened table tab permanently mounted; that trades one tab swit
 Database object categories can contain thousands of tables. These lists must use the same bounded-rendering contract as data grids:
 
 - Render object lists with Ant Design `<Table virtual>` and numeric, wrapper-measured `scroll.x` / `scroll.y` values.
-- Keep filtering over the complete cached object array; virtualization must limit DOM rows, not search scope.
+- For database types without paged-metadata capability, keep filtering over the complete cached object array; virtualization must limit DOM rows, not search scope.
+- For database types with paged-metadata capability, never preload the complete object array. Load 100 items per object category and delegate name search to the server.
 - Do not use a large pagination size (for example 1000 rows) as a substitute for virtualization.
 - Inactive `category-list` panes must be unmounted. Their search value is stored in `WorkbenchTab`, so retaining the hidden table DOM provides no state benefit.
 - Tree data may contain every searchable object, but rich titles such as tags must be constructed by `titleRender` for visible nodes rather than eagerly stored as thousands of React element trees.
 
 Regression coverage must verify the inactive-pane mount policy. Production build and lint catch invalid Ant Design virtual-table sizing contracts.
+
+#### Scenario: TDengine Child Tag Filtering and Property Mutation
+
+- Child-table name search and structured Tag filters share one per-stable paging state. Applying or clearing filters resets the offset; load-more is valid only when search and filters still match the current state.
+- Tag conditions are bounded (currently eight), use AND semantics, and send a typed POST body. Do not encode them into query-string fragments or filter thousands of children in the browser.
+- The filter modal is controlled and obtains operators from the selected Tag type. `IS_NULL` / `IS_NOT_NULL` omit `value`; every other operator preserves `value: ''` as an intentional empty string.
+- A child property edit is a two-step preview/apply flow. The UI submits the structured command plus the preview fingerprint/token and never sends the displayed DDL as executable input.
+- After a successful mutation, reload the child snapshot directly, then refresh the owning stable's current child page using its saved search and filters. Do not clear a loaded marker and immediately invoke a loader that closes over the old tab state.
+- Capability gating must keep Tag/TTL/COMMENT editing hidden for MySQL, Dameng, and unsupported time-series drivers; the read-only Tags view may remain available where metadata exists.
+- Regression tests must cover the type/operator matrix, NULL versus empty string, preview-before-apply, and successful refresh of both the detail snapshot and owning child list.
+
+#### Scenario: Capability-Gated Workbench Object Paging
+
+##### 1. Scope / Trigger
+
+Use this contract when a database capability enables server-side object paging for the workbench tree or category-list pane.
+
+##### 2. Signatures
+
+```text
+GET /api/metadata/{connectionId}/{database}/objects/page
+  ?type=stable|table&search=<name>&offset=<non-negative>&limit=100
+
+MetadataPage<TableInfo> = { items, total, offset, limit, hasMore }
+```
+
+##### 3. Contracts
+
+- The initial tree load requests exactly one 100-item page for each supported category; server `total` drives tree and overview counts.
+- Category search is name-only and starts 250 ms after the latest non-empty input change.
+- Base pages and search pages are separate caches. Load-more merges by exact `(type, name)` identity and advances with the server cursor (`offset + returned item count`), not the de-duplicated array length.
+- Inactive `category-list` panes remain unmounted, so their page state must be lifted to the workbench/tab cache. Remounting a loaded page must not refetch it.
+- Page-loader callback identity is not a request dependency. Every request uses a monotonic identity; query change, explicit refresh, connection removal, and unmount invalidate older responses.
+- Explicit database refresh clears base/search/category page state and reloads; ordinary tab activation only ensures missing pages. Child-table paging remains a separate state machine.
+- Database types without the capability continue to use `metadataApi.objects` and local name/comment filtering.
+
+##### 4. Validation & Error Matrix
+
+| Condition | Required result |
+|---|---|
+| Search changes while an older request is pending | Ignore the older success or failure |
+| Pane unmounts with a request pending | Do not update lifted/local page state |
+| Initial request fails | Clear stale items/counts and show retry |
+| Load-more request fails | Preserve loaded items and retry from the same server cursor |
+| Connection is removed | Clear page/child caches and invalidate pending base/search requests |
+| Unrelated parent render recreates a loader callback | Do not refetch |
+
+##### 5. Good/Base/Bad Cases
+
+- Good: TDengine loads 100 stables and 100 normal tables, preserves `Sensor` and `sensor`, and restores an evicted category page without network traffic.
+- Base: MySQL and Dameng keep the legacy full metadata API and local filtering.
+- Bad: opening an already loaded overview clears both category caches, or a 2694-object TDengine database enters frontend state at once.
+
+##### 6. Tests Required
+
+- Fake-timer component test: no search call at 249 ms and one call at 250 ms.
+- Component race test: resolve the newest search before an older search and assert the older object never appears; repeat with unmount.
+- Component paging test: load more, merge exact-case names, preserve server total, and retry append failures without clearing prior rows.
+- Remount/callback test: evict and remount a category pane, then rerender its parent with a new callback identity; request count stays unchanged.
+- Regression tests: non-paged capability uses `metadataApi.objects`; child-table paging behavior is unchanged.
+
+##### 7. Wrong vs Correct
+
+```tsx
+// Wrong: local state disappears when the intentionally evicted pane unmounts.
+const [page, setPage] = useState(emptyPage)
+useEffect(() => void loadPage(search), [search, loadPage])
+
+// Correct: page data is owned above the pane; loader identity is read through a ref,
+// while request identity and the 250 ms timer control when results may commit.
+<CategoryListView
+  pagedState={categoryPages[tabKey]}
+  onPagedStateChange={(next) => cacheCategoryPage(tabKey, next)}
+  loadPage={loadCategoryPage}
+/>
+```
 
 ### Workbench KeepAlive — Monaco Editor Lifecycle
 
@@ -1179,3 +1321,103 @@ Required regression coverage:
 Root-cause lesson: DOM-level tests can validate a click handler while completely missing the
 native bridge needed for the packaged application. For desktop integrations, test the platform
 branch rather than only the browser side effect.
+
+---
+
+## Destructive Time-Series Actions — Preserve State Until Apply Succeeds
+
+TDengine ordinary tables, child tables, and super tables use a server-generated delete preview.
+The confirmation UI must show the resolved object kind, DDL, warnings, and super-table child count,
+and enable apply only when the input exactly equals the catalog object name. Do not trim or change
+case, and do not submit the displayed DDL back to the server.
+
+Cancellation and failure leave tabs, selection, paging, search, and filters unchanged. After a
+successful apply, clean up only related state: an ordinary table closes its exact tab; a child
+table refreshes its parent child-page while preserving search and tag filters; a super table closes
+its tab plus loaded child tabs identified by `stableName`, removes that stable's child-page cache,
+and refreshes the super-table category. Keep this relation cleanup in a pure tested helper so a
+large workbench does not require scanning or reloading unrelated database state.
+
+---
+
+## Scenario: TDengine Super-Table Structure Panel and Targeted Refresh
+
+### 1. Scope / Trigger
+
+Use this contract for the TDengine-only `结构管理` detail tab. Show it only when the object is a
+`SUPER_TABLE` and the connection exposes `workbench.timeSeriesLifecycle`.
+
+### 2. Signatures
+
+```ts
+<TdengineStableStructurePanel
+  connectionId={connectionId}
+  database={database}
+  stable={stable}
+  onApplied={handleStableStructureApplied}
+/>
+
+invalidateTdengineLifecycleTabs(
+  tabs, activeTabKey, connectionId, database, stable,
+): { tabs; invalidatedTabKeys; activeReload }
+```
+
+### 3. Contracts
+
+- The component owns inspect/loading/error/editor/preview state; the workbench owns durable tabs
+  and cached columns, Tags, DDL, and preview rows.
+- Every modal represents one lifecycle command. Changing any command field clears the old preview.
+- Display server DDL as read-only evidence only. Apply sends command, fingerprint, token, and exact
+  destructive confirmation; it never sends DDL.
+- Preserve catalog spelling. Identifier inputs disable platform auto-capitalization and do not trim
+  or change case before requests.
+- Mark the primary timestamp and expose no modify/delete action for it. Variable-length fields
+  expose expansion only; other type changes remain unavailable.
+- After success, the panel re-inspects itself. The workbench invalidates only the matching super
+  table and open child tabs identified by `stableName`; the active non-structure resource reloads
+  immediately and inactive resources reload on next activation.
+- Preview/apply failure preserves the current snapshot, editor fields, tabs, and paging state.
+  Apply failure invalidates the preview proof so the user must generate a new preview.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required UI behavior |
+|---|---|
+| MySQL, Dameng, ordinary table, or child table | Do not render the structure tab |
+| Duplicate/blank/edge-whitespace name or invalid expansion | Reject before preview |
+| Destructive confirmation differs by case or whitespace | Keep apply disabled; server also rejects forged requests |
+| User edits after preview | Remove old DDL/token and require preview again |
+| Apply returns `OBJECT_CHANGED` or another failure | Preserve editor context and existing tab caches; require new preview |
+| Apply succeeds while related inactive tabs exist | Clear only their stale resources; do not reload unrelated objects |
+
+### 5. Good / Base / Bad Cases
+
+- Good: drop Tag `Location`, require exact `Location`, refresh the structure panel, and invalidate
+  only `Meters` plus child tabs whose `stableName === 'Meters'`.
+- Base: add one column, preview one DDL, apply without a confirmation name, then reload inspect.
+- Bad: clear all workbench tabs after an ALTER, submit the displayed DDL, or transform `test001`
+  into `Test001` before preview.
+
+### 6. Tests Required
+
+- Snapshot test: fields, Tags, child count, and immutable primary timestamp render correctly.
+- Command test: preview receives structured fields and apply proof contains no DDL.
+- Destructive test: wrong-case confirmation stays disabled; exact confirmation applies; cancel does not.
+- Preview lifecycle test: returning to edit removes the old preview and a new request uses new values.
+- Pure invalidation test: exact connection/database/stable matching, super/child caches cleared,
+  unrelated tabs preserved, structure tab does not reload itself, and active resource reload is returned.
+- Full frontend lint, production build, and Vitest suite must pass.
+
+### 7. Wrong vs Correct
+
+```tsx
+// Wrong: broad refresh destroys state for thousands of unrelated objects.
+setOpenTableTabs({})
+await loadTables(connectionId, database, { force: true })
+
+// Correct: a pure helper invalidates only the altered super-table relation.
+const invalidation = invalidateTdengineLifecycleTabs(
+  openTableTabs, activeTableTabKey, connectionId, database, stable,
+)
+batchUpdate({ openTableTabs: invalidation.tabs })
+```

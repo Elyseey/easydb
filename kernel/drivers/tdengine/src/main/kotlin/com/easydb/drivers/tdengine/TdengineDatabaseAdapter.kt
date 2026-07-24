@@ -10,6 +10,10 @@ import com.easydb.common.MigrationAdapter
 import com.easydb.common.ProcedureAdapter
 import com.easydb.common.SyncAdapter
 import com.easydb.common.TimeSeriesMetadataAdapter
+import com.easydb.common.TimeSeriesBasicTableLifecycleAdapter
+import com.easydb.common.TimeSeriesDataWriteAdapter
+import com.easydb.common.TimeSeriesCsvImportAdapter
+import com.easydb.common.TimeSeriesLifecycleAdapter
 import com.easydb.common.TimeSeriesObjectAdapter
 import com.easydb.common.TimeSeriesQueryAdapter
 
@@ -19,6 +23,10 @@ class TdengineDatabaseAdapter : DatabaseAdapter {
     private val dialect = TdengineDialectAdapter()
     private val timeSeriesObjects = TdengineTimeSeriesObjectAdapter(metadata, dialect)
     private val timeSeriesQuery = TdengineTimeSeriesQueryAdapter(dialect)
+    private val timeSeriesLifecycle = TdengineTimeSeriesLifecycleAdapter(metadata, metadata, dialect)
+    private val timeSeriesBasicTableLifecycle = TdengineTimeSeriesBasicTableLifecycleAdapter(metadata, dialect)
+    private val timeSeriesDataWrite = TdengineTimeSeriesDataWriteAdapter(metadata, metadata, dialect)
+    private val timeSeriesCsvImport = TdengineTimeSeriesCsvImportAdapter(timeSeriesDataWrite)
 
     override fun dbType(): DbType = DbType.TDENGINE
 
@@ -35,8 +43,14 @@ class TdengineDatabaseAdapter : DatabaseAdapter {
         supportsLogicalBackup = false,
         supportsLogicalRestore = false,
         supportsOverwriteRestore = false,
+        supportsPagedMetadata = true,
         supportsTimeSeriesObjectCreate = true,
         supportsTimeSeriesQuery = true,
+        supportsTimeSeriesLifecycle = true,
+        supportsTimeSeriesObjectDelete = true,
+        supportsTimeSeriesBasicTableLifecycle = true,
+        supportsTimeSeriesDataWrite = true,
+        supportsTimeSeriesCsvImport = true,
         supportsTableCreate = false,
         supportsTableRename = false,
         supportsTableDrop = false,
@@ -50,6 +64,10 @@ class TdengineDatabaseAdapter : DatabaseAdapter {
     override fun timeSeriesMetadataAdapter(): TimeSeriesMetadataAdapter = metadata
     override fun timeSeriesObjectAdapter(): TimeSeriesObjectAdapter = timeSeriesObjects
     override fun timeSeriesQueryAdapter(): TimeSeriesQueryAdapter = timeSeriesQuery
+    override fun timeSeriesLifecycleAdapter(): TimeSeriesLifecycleAdapter = timeSeriesLifecycle
+    override fun timeSeriesBasicTableLifecycleAdapter(): TimeSeriesBasicTableLifecycleAdapter = timeSeriesBasicTableLifecycle
+    override fun timeSeriesDataWriteAdapter(): TimeSeriesDataWriteAdapter = timeSeriesDataWrite
+    override fun timeSeriesCsvImportAdapter(): TimeSeriesCsvImportAdapter = timeSeriesCsvImport
     override fun syncAdapter(): SyncAdapter = unsupported("数据同步")
     override fun migrationAdapter(): MigrationAdapter = unsupported("数据迁移")
     override fun procedureAdapter(): ProcedureAdapter = unsupported("存储过程")

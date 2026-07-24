@@ -1,4 +1,4 @@
-export type TableDetailLoadTarget = 'data' | 'design' | 'tags' | 'ddl' | 'columns'
+export type TableDetailLoadTarget = 'data' | 'design' | 'structure' | 'tags' | 'ddl' | 'columns'
 
 export interface TableDetailLoadPlan {
   loadColumns: boolean

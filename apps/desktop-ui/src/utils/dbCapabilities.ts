@@ -12,6 +12,7 @@ export interface MetadataCapability {
   triggers: boolean
   ddl: boolean
   timeSeries: boolean
+  pagedObjects: boolean
 }
 
 export interface SqlCapability {
@@ -28,6 +29,11 @@ export interface WorkbenchCapability {
   timeSeriesObjectCreate: boolean
   timeSeriesQuery: boolean
   timeSeriesLoadedDataExport: boolean
+  timeSeriesLifecycle: boolean
+  timeSeriesObjectDelete: boolean
+  timeSeriesBasicTableLifecycle: boolean
+  timeSeriesDataWrite: boolean
+  timeSeriesCsvImport: boolean
   tableRename: boolean
   tableDrop: boolean
   tableTruncate: boolean
@@ -59,25 +65,25 @@ export interface DbCapabilities {
 }
 
 const MYSQL: DbCapabilities = {
-  metadata: { schemas: true, schemaCreation: true, schemaManagement: true, schemaAlterCharset: true, tables: true, views: true, procedures: true, functions: true, triggers: true, ddl: true, timeSeries: false },
+  metadata: { schemas: true, schemaCreation: true, schemaManagement: true, schemaAlterCharset: true, tables: true, views: true, procedures: true, functions: true, triggers: true, ddl: true, timeSeries: false, pagedObjects: false },
   sql: { execute: true, paginatedPreview: true, explain: true },
-  workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, tableCreate: true, timeSeriesObjectCreate: false, timeSeriesQuery: false, timeSeriesLoadedDataExport: false, tableRename: true, tableDrop: true, tableTruncate: true, importSql: true, exportData: true, backup: true, restore: true },
+  workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, tableCreate: true, timeSeriesObjectCreate: false, timeSeriesQuery: false, timeSeriesLoadedDataExport: false, timeSeriesLifecycle: false, timeSeriesObjectDelete: false, timeSeriesBasicTableLifecycle: false, timeSeriesDataWrite: false, timeSeriesCsvImport: false, tableRename: true, tableDrop: true, tableTruncate: true, importSql: true, exportData: true, backup: true, restore: true },
   tasks: { migration: true, sync: true, structureCompare: true },
   diagnostics: { dataTracker: true, slowQuery: true },
 }
 
 const DAMENG: DbCapabilities = {
-  metadata: { schemas: true, schemaCreation: true, schemaManagement: true, schemaAlterCharset: false, tables: true, views: true, procedures: true, functions: true, triggers: true, ddl: true, timeSeries: false },
+  metadata: { schemas: true, schemaCreation: true, schemaManagement: true, schemaAlterCharset: false, tables: true, views: true, procedures: true, functions: true, triggers: true, ddl: true, timeSeries: false, pagedObjects: false },
   sql: { execute: true, paginatedPreview: true, explain: false },
-  workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, tableCreate: true, timeSeriesObjectCreate: false, timeSeriesQuery: false, timeSeriesLoadedDataExport: false, tableRename: true, tableDrop: true, tableTruncate: true, importSql: true, exportData: true, backup: true, restore: true },
+  workbench: { dataPreview: true, rowEdit: true, tableDesigner: true, tableCreate: true, timeSeriesObjectCreate: false, timeSeriesQuery: false, timeSeriesLoadedDataExport: false, timeSeriesLifecycle: false, timeSeriesObjectDelete: false, timeSeriesBasicTableLifecycle: false, timeSeriesDataWrite: false, timeSeriesCsvImport: false, tableRename: true, tableDrop: true, tableTruncate: true, importSql: true, exportData: true, backup: true, restore: true },
   tasks: { migration: true, sync: true, structureCompare: true },
   diagnostics: { dataTracker: false, slowQuery: false },
 }
 
 const STUB: DbCapabilities = {
-  metadata: { schemas: false, schemaCreation: false, schemaManagement: false, schemaAlterCharset: false, tables: false, views: false, procedures: false, functions: false, triggers: false, ddl: false, timeSeries: false },
+  metadata: { schemas: false, schemaCreation: false, schemaManagement: false, schemaAlterCharset: false, tables: false, views: false, procedures: false, functions: false, triggers: false, ddl: false, timeSeries: false, pagedObjects: false },
   sql: { execute: false, paginatedPreview: false, explain: false },
-  workbench: { dataPreview: false, rowEdit: false, tableDesigner: false, tableCreate: false, timeSeriesObjectCreate: false, timeSeriesQuery: false, timeSeriesLoadedDataExport: false, tableRename: false, tableDrop: false, tableTruncate: false, importSql: false, exportData: false, backup: false, restore: false },
+  workbench: { dataPreview: false, rowEdit: false, tableDesigner: false, tableCreate: false, timeSeriesObjectCreate: false, timeSeriesQuery: false, timeSeriesLoadedDataExport: false, timeSeriesLifecycle: false, timeSeriesObjectDelete: false, timeSeriesBasicTableLifecycle: false, timeSeriesDataWrite: false, timeSeriesCsvImport: false, tableRename: false, tableDrop: false, tableTruncate: false, importSql: false, exportData: false, backup: false, restore: false },
   tasks: { migration: false, sync: false, structureCompare: false },
   diagnostics: { dataTracker: false, slowQuery: false },
 }
@@ -86,9 +92,9 @@ const CAPABILITIES: Record<DbType, DbCapabilities> = {
   mysql: MYSQL,
   dameng: DAMENG,
   tdengine: {
-    metadata: { schemas: true, schemaCreation: false, schemaManagement: false, schemaAlterCharset: false, tables: true, views: false, procedures: false, functions: false, triggers: false, ddl: true, timeSeries: true },
+    metadata: { schemas: true, schemaCreation: false, schemaManagement: false, schemaAlterCharset: false, tables: true, views: false, procedures: false, functions: false, triggers: false, ddl: true, timeSeries: true, pagedObjects: true },
     sql: { execute: true, paginatedPreview: true, explain: false },
-    workbench: { dataPreview: true, rowEdit: false, tableDesigner: false, tableCreate: false, timeSeriesObjectCreate: true, timeSeriesQuery: true, timeSeriesLoadedDataExport: true, tableRename: false, tableDrop: false, tableTruncate: false, importSql: false, exportData: false, backup: false, restore: false },
+    workbench: { dataPreview: true, rowEdit: false, tableDesigner: false, tableCreate: false, timeSeriesObjectCreate: true, timeSeriesQuery: true, timeSeriesLoadedDataExport: true, timeSeriesLifecycle: true, timeSeriesObjectDelete: true, timeSeriesBasicTableLifecycle: true, timeSeriesDataWrite: true, timeSeriesCsvImport: true, tableRename: false, tableDrop: false, tableTruncate: false, importSql: false, exportData: false, backup: false, restore: false },
     tasks: { migration: false, sync: false, structureCompare: false },
     diagnostics: { dataTracker: false, slowQuery: false },
   },

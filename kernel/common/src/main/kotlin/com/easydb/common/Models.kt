@@ -110,10 +110,22 @@ data class DatabaseCapabilities(
     val supportsLogicalBackup: Boolean = false,
     val supportsLogicalRestore: Boolean = false,
     val supportsOverwriteRestore: Boolean = false,
+    /** 对象名称搜索和分页由数据库端执行，而不是先全量加载后切片。 */
+    val supportsPagedMetadata: Boolean = false,
     /** 专属时序对象设计器；不得用于开启通用关系型 TableDesigner。 */
     val supportsTimeSeriesObjectCreate: Boolean = false,
     /** 带结构化时间范围与查询态分页的专属时序预览。 */
     val supportsTimeSeriesQuery: Boolean = false,
+    /** 超级表结构通过 inspect/preview/apply 的单步安全命令修改。 */
+    val supportsTimeSeriesLifecycle: Boolean = false,
+    /** 普通表、子表与超级表通过专属 preview/apply 协议安全删除。 */
+    val supportsTimeSeriesObjectDelete: Boolean = false,
+    /** TDengine 普通表使用独立的单步结构生命周期，不开启关系型 TableDesigner。 */
+    val supportsTimeSeriesBasicTableLifecycle: Boolean = false,
+    /** 时序数据写入使用结构化批次，不开启关系型 rowEdit。 */
+    val supportsTimeSeriesDataWrite: Boolean = false,
+    /** 大文件 CSV 通过独立的流式后台任务导入，不受可视化写入 100 行上限影响。 */
+    val supportsTimeSeriesCsvImport: Boolean = false,
     val supportsTableCreate: Boolean = true,
     val supportsTableRename: Boolean = true,
     val supportsTableDrop: Boolean = true,

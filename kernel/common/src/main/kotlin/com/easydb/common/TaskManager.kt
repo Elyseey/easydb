@@ -133,6 +133,19 @@ class TaskManager(
     /** 创建 TaskReporter */
     fun createReporter(taskId: String): TaskReporter = InternalTaskReporter(taskId)
 
+    /** Allocate an artifact inside the TaskManager-owned retention directory. */
+    fun managedExportFile(fileName: String): File {
+        require(fileName.isNotBlank() && !fileName.contains('/') && !fileName.contains('\\')) { "非法导出文件名" }
+        exportDir.mkdirs()
+        return File(exportDir, fileName)
+    }
+
+    fun managedTaskArtifact(taskId: String): File? {
+        val path = tasks[taskId]?.payload?.get("filePath") ?: return null
+        val file = File(path)
+        return file.takeIf { it.exists() && it.isFile && isManagedExportFile(it) }
+    }
+
     // ─── 内部 Reporter ──────────────────────────────────────
 
     private inner class InternalTaskReporter(private val taskId: String) : TaskReporter {

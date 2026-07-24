@@ -6,17 +6,24 @@ import com.easydb.common.DatabaseSession
 import com.easydb.common.IndexInfo
 import com.easydb.common.InvalidReadOnlyClauseException
 import com.easydb.common.MetadataAdapter
+import com.easydb.common.MetadataPage
+import com.easydb.common.MetadataPageRequest
 import com.easydb.common.TableDefinition
 import com.easydb.common.TableInfo
 import com.easydb.common.TableKind
 import com.easydb.common.TimeSeriesChildTable
 import com.easydb.common.TimeSeriesChildTablePage
+import com.easydb.common.TimeSeriesChildTableQuery
 import com.easydb.common.TimeSeriesMetadataAdapter
 import com.easydb.common.TimeSeriesMetadataLimits
 import com.easydb.common.TimeSeriesTagDefinition
+import com.easydb.common.TimeSeriesTagFilter
+import com.easydb.common.TimeSeriesTagFilterOperator
 import com.easydb.common.TimeSeriesTagValue
+import java.math.BigDecimal
 import java.sql.Connection
 import java.sql.ResultSet
+import java.sql.Timestamp
 
 internal object TdengineMetadataSql {
     const val MAX_PREVIEW_ROWS = 1_000
@@ -40,6 +47,37 @@ internal object TdengineMetadataSql {
         WHERE db_name = ${stringLiteral(database)} AND type = 'NORMAL_TABLE'
         ORDER BY table_name
     """.trimIndent()
+
+    fun countStables(database: String, search: String?): String = """
+        SELECT COUNT(*) AS total
+        FROM information_schema.ins_stables
+        WHERE db_name = ${stringLiteral(database)}${nameFilter("stable_name", search)}
+    """.trimIndent()
+
+    fun listStablesPage(database: String, search: String?, offset: Int, limit: Int): String = """
+        SELECT stable_name, db_name, create_time, table_comment
+        FROM information_schema.ins_stables
+        WHERE db_name = ${stringLiteral(database)}${nameFilter("stable_name", search)}
+        ORDER BY stable_name
+        LIMIT $limit OFFSET $offset
+    """.trimIndent()
+
+    fun countBasicTables(database: String, search: String?): String = """
+        SELECT COUNT(*) AS total
+        FROM information_schema.ins_tables
+        WHERE db_name = ${stringLiteral(database)} AND type = 'NORMAL_TABLE'${nameFilter("table_name", search)}
+    """.trimIndent()
+
+    fun listBasicTablesPage(database: String, search: String?, offset: Int, limit: Int): String = """
+        SELECT table_name, db_name, create_time, table_comment
+        FROM information_schema.ins_tables
+        WHERE db_name = ${stringLiteral(database)} AND type = 'NORMAL_TABLE'${nameFilter("table_name", search)}
+        ORDER BY table_name
+        LIMIT $limit OFFSET $offset
+    """.trimIndent()
+
+    private fun nameFilter(column: String, search: String?): String =
+        search?.let { " AND $column LIKE ${likeContainsLiteral(it)}" }.orEmpty()
 
     fun listColumns(database: String, table: String) = """
         SELECT table_name, table_type, col_name, col_type,
@@ -80,15 +118,65 @@ internal object TdengineMetadataSql {
     ): String = buildString {
         append(
             """
-            SELECT table_name, stable_name, create_time, table_comment
+            SELECT table_name, stable_name, create_time, table_comment, `ttl` AS ttl_value
             FROM information_schema.ins_tables
             WHERE db_name = ${stringLiteral(database)}
               AND stable_name = ${stringLiteral(stable)}
               AND type = 'CHILD_TABLE'
             """.trimIndent()
         )
-        if (search != null) append(" AND table_name LIKE ${stringLiteral("%$search%")}")
+        if (search != null) append(" AND table_name LIKE ${likeContainsLiteral(search)}")
         append(" ORDER BY table_name LIMIT ${limit + 1} OFFSET $offset")
+    }
+
+    fun listChildTablesByName(database: String, stable: String, tables: List<String>): String {
+        require(tables.isNotEmpty()) { "tables must not be empty" }
+        val tableNames = tables.joinToString(", ") { stringLiteral(it) }
+        return """
+            SELECT table_name, stable_name, create_time, table_comment, `ttl` AS ttl_value
+            FROM information_schema.ins_tables
+            WHERE db_name = ${stringLiteral(database)}
+              AND stable_name = ${stringLiteral(stable)}
+              AND type = 'CHILD_TABLE'
+              AND table_name IN ($tableNames)
+            ORDER BY table_name
+        """.trimIndent()
+    }
+
+    fun findChildTable(database: String, table: String): String = """
+        SELECT table_name, stable_name, create_time, table_comment, `ttl` AS ttl_value
+        FROM information_schema.ins_tables
+        WHERE db_name = ${stringLiteral(database)}
+          AND table_name = ${stringLiteral(table)}
+          AND type = 'CHILD_TABLE'
+    """.trimIndent()
+
+    fun countChildTables(database: String, stable: String): String = """
+        SELECT COUNT(*) AS total
+        FROM information_schema.ins_tables
+        WHERE db_name = ${stringLiteral(database)}
+          AND stable_name = ${stringLiteral(stable)}
+          AND type = 'CHILD_TABLE'
+    """.trimIndent()
+
+    fun listTagFilterCandidates(
+        database: String,
+        stable: String,
+        tagNames: List<String>,
+        search: String?
+    ): String = buildString {
+        require(tagNames.isNotEmpty()) { "tagNames must not be empty" }
+        append(
+            """
+            SELECT table_name, tag_name, tag_type, tag_value
+            FROM information_schema.ins_tags
+            WHERE db_name = ${stringLiteral(database)}
+              AND stable_name = ${stringLiteral(stable)}
+              AND tag_name IN (${tagNames.joinToString(", ") { stringLiteral(it) }})
+            """.trimIndent()
+        )
+        if (search != null) append(" AND table_name LIKE ${likeContainsLiteral(search)}")
+        append(" ORDER BY table_name, tag_name")
     }
 
     fun listTagsForTables(database: String, stable: String, tables: List<String>): String {
@@ -105,6 +193,14 @@ internal object TdengineMetadataSql {
     }
 
     fun stringLiteral(value: String): String = "'${value.replace("'", "''")}'"
+
+    fun likeContainsLiteral(value: String): String {
+        val escaped = value
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        return stringLiteral("%$escaped%")
+    }
 }
 
 class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
@@ -160,6 +256,113 @@ class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
             }
         }
         return (stables + basicTables).sortedBy { it.name }
+    }
+
+    override fun listTablesPage(
+        session: DatabaseSession,
+        database: String,
+        request: MetadataPageRequest
+    ): MetadataPage<TableInfo> {
+        val search = request.search?.trim()?.takeIf { it.isNotEmpty() }
+        val type = normalizePagedObjectType(request.type)
+        if (request.type?.isNotBlank() == true && type == null) {
+            return MetadataPage(
+                items = emptyList(),
+                total = 0,
+                offset = request.offset,
+                limit = request.limit,
+                hasMore = false
+            )
+        }
+
+        val connection = session.getJdbcConnection()
+        val stableTotal = if (type == null || type == "stable") {
+            count(connection, TdengineMetadataSql.countStables(database, search))
+        } else 0L
+        val tableTotal = if (type == null || type == "table") {
+            count(connection, TdengineMetadataSql.countBasicTables(database, search))
+        } else 0L
+        val total = stableTotal + tableTotal
+        val items = buildList {
+            if ((type == null || type == "stable") && request.offset.toLong() < stableTotal) {
+                val stableLimit = minOf(request.limit.toLong(), stableTotal - request.offset).toInt()
+                addAll(
+                    listObjectPage(
+                        connection,
+                        TdengineMetadataSql.listStablesPage(database, search, request.offset, stableLimit),
+                        nameColumn = "stable_name",
+                        type = "stable",
+                        tableKind = TableKind.SUPER_TABLE
+                    )
+                )
+            }
+            val remaining = request.limit - size
+            if (remaining > 0 && (type == null || type == "table")) {
+                val tableOffset = if (type == "table") {
+                    request.offset
+                } else {
+                    (request.offset.toLong() - stableTotal).coerceAtLeast(0).toInt()
+                }
+                if (tableOffset.toLong() < tableTotal) {
+                    addAll(
+                        listObjectPage(
+                            connection,
+                            TdengineMetadataSql.listBasicTablesPage(database, search, tableOffset, remaining),
+                            nameColumn = "table_name",
+                            type = "table",
+                            tableKind = TableKind.BASIC_TABLE
+                        )
+                    )
+                }
+            }
+        }
+        return MetadataPage(
+            items = items,
+            total = total,
+            offset = request.offset,
+            limit = request.limit,
+            hasMore = request.offset.toLong() + items.size < total
+        )
+    }
+
+    private fun normalizePagedObjectType(type: String?): String? = when (type?.trim()?.lowercase()) {
+        null, "" -> null
+        "stable", "super_table" -> "stable"
+        "table", "basic_table" -> "table"
+        else -> null
+    }
+
+    private fun count(connection: Connection, sql: String): Long =
+        connection.createStatement().use { statement ->
+            statement.executeQuery(sql).use { result ->
+                if (result.next()) result.getLong("total") else 0L
+            }
+        }
+
+    private fun listObjectPage(
+        connection: Connection,
+        sql: String,
+        nameColumn: String,
+        type: String,
+        tableKind: TableKind
+    ): List<TableInfo> = connection.createStatement().use { statement ->
+        statement.executeQuery(sql).use { result ->
+            buildList {
+                while (result.next()) {
+                    add(
+                        TableInfo(
+                            name = result.getString(nameColumn),
+                            schema = result.getString("db_name"),
+                            type = type,
+                            comment = result.getString("table_comment")?.takeIf { it.isNotBlank() },
+                            updateTime = result.getString("create_time"),
+                            engine = "TDengine",
+                            tableKind = tableKind
+                        )
+                    )
+                }
+            }
+        }
     }
 
     override fun getTableDefinition(
@@ -274,11 +477,32 @@ class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
         offset: Int,
         limit: Int,
         search: String?
+    ): TimeSeriesChildTablePage = queryChildTables(
+        session,
+        database,
+        stable,
+        TimeSeriesChildTableQuery(offset = offset, limit = limit, search = search)
+    )
+
+    override fun queryChildTables(
+        session: DatabaseSession,
+        database: String,
+        stable: String,
+        query: TimeSeriesChildTableQuery
     ): TimeSeriesChildTablePage {
-        val safeOffset = offset.coerceAtLeast(0)
-        val safeLimit = limit.coerceIn(1, TimeSeriesMetadataLimits.MAX_CHILD_TABLE_PAGE_SIZE)
-        val normalizedSearch = search?.trim()?.takeIf { it.isNotEmpty() }
+        val safeOffset = query.offset
+        val safeLimit = query.limit
+        val normalizedSearch = query.search?.trim()?.takeIf { it.isNotEmpty() }
         val connection = session.getJdbcConnection()
+        if (query.filters.isNotEmpty()) {
+            return queryFilteredChildTables(
+                connection,
+                session,
+                database,
+                stable,
+                query.copy(search = normalizedSearch)
+            )
+        }
         val rows = connection.createStatement().use { statement ->
             statement.executeQuery(
                 TdengineMetadataSql.listChildTables(
@@ -291,15 +515,7 @@ class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
             ).use { result ->
                 buildList {
                     while (result.next()) {
-                        add(
-                            TimeSeriesChildTable(
-                                name = result.getString("table_name"),
-                                database = database,
-                                stableName = result.getString("stable_name"),
-                                createdAt = result.getString("create_time"),
-                                comment = result.getString("table_comment")?.takeIf { it.isNotBlank() }
-                            )
-                        )
+                        add(result.readChildTable(database))
                     }
                 }
             }
@@ -370,6 +586,30 @@ class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
                 result.readTagValues()
             }
         }
+
+    override fun inspectChildTable(
+        session: DatabaseSession,
+        database: String,
+        table: String
+    ): TimeSeriesChildTable {
+        val connection = session.getJdbcConnection()
+        val child = connection.createStatement().use { statement ->
+            statement.executeQuery(TdengineMetadataSql.findChildTable(database, table)).use { result ->
+                if (result.next()) result.readChildTable(database, preserveBlankComment = true) else null
+            }
+        } ?: throw IllegalArgumentException("TDengine 子表不存在：$database.$table")
+        val definitions = listTagDefinitions(session, database, child.stableName).associateBy { it.name }
+        val values = listTagValues(session, database, table).map { value ->
+            value.copy(type = definitions[value.name]?.type ?: value.type)
+        }
+        return child.copy(tagValues = values)
+    }
+
+    override fun countChildTables(
+        session: DatabaseSession,
+        database: String,
+        stable: String
+    ): Long = count(session.getJdbcConnection(), TdengineMetadataSql.countChildTables(database, stable))
 
     override fun createDatabase(
         session: DatabaseSession,
@@ -458,6 +698,103 @@ class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
         }
     }
 
+    private fun queryFilteredChildTables(
+        connection: Connection,
+        session: DatabaseSession,
+        database: String,
+        stable: String,
+        query: TimeSeriesChildTableQuery
+    ): TimeSeriesChildTablePage {
+        val definitions = listTagDefinitions(session, database, stable).associateBy { it.name }
+        val compiled = query.filters.map { filter -> compileFilter(filter, definitions[filter.name]) }
+        require(compiled.map { it.name }.distinct().size == compiled.size) { "同一个 Tag 只能设置一个筛选条件" }
+        val valuesByTable = connection.createStatement().use { statement ->
+            statement.executeQuery(
+                TdengineMetadataSql.listTagFilterCandidates(
+                    database,
+                    stable,
+                    compiled.map { it.name },
+                    query.search
+                )
+            ).use { result ->
+                buildMap<String, MutableMap<String, String?>> {
+                    while (result.next()) {
+                        getOrPut(result.getString("table_name")) { mutableMapOf() }[
+                            result.getString("tag_name")
+                        ] = result.getString("tag_value")
+                    }
+                }
+            }
+        }
+        val matchingNames = valuesByTable.entries
+            .asSequence()
+            .filter { (_, values) -> compiled.all { it.matches(values[it.name]) } }
+            .map { it.key }
+            .sorted()
+            .toList()
+        val pageNames = matchingNames.drop(query.offset).take(query.limit + 1)
+        val hasMore = pageNames.size > query.limit
+        val visibleNames = pageNames.take(query.limit)
+        if (visibleNames.isEmpty()) {
+            return TimeSeriesChildTablePage(emptyList(), query.offset, query.limit, hasMore = false)
+        }
+        val childrenByName = connection.createStatement().use { statement ->
+            statement.executeQuery(TdengineMetadataSql.listChildTablesByName(database, stable, visibleNames)).use { result ->
+                buildMap {
+                    while (result.next()) {
+                        val child = result.readChildTable(database)
+                        put(child.name, child)
+                    }
+                }
+            }
+        }
+        val tagsByTable = loadTagsForTables(connection, database, stable, visibleNames)
+        return TimeSeriesChildTablePage(
+            items = visibleNames.mapNotNull { name ->
+                childrenByName[name]?.copy(tagValues = tagsByTable[name].orEmpty())
+            },
+            offset = query.offset,
+            limit = query.limit,
+            hasMore = hasMore
+        )
+    }
+
+    private fun compileFilter(
+        filter: TimeSeriesTagFilter,
+        definition: TimeSeriesTagDefinition?
+    ): CompiledTagFilter {
+        require(filter.name.isNotBlank()) { "Tag 名不能为空" }
+        val tag = definition ?: throw IllegalArgumentException("Tag 不存在：${filter.name}")
+        val family = TagTypeFamily.from(tag.type)
+        val allowed = family.allowedOperators
+        require(filter.operator in allowed) { "Tag ${filter.name} 的类型 ${tag.type} 不支持 ${filter.operator}" }
+        val nullOperator = filter.operator == TimeSeriesTagFilterOperator.IS_NULL ||
+            filter.operator == TimeSeriesTagFilterOperator.IS_NOT_NULL
+        if (nullOperator) {
+            require(filter.value == null) { "${filter.operator} 不能提供 value" }
+            return CompiledTagFilter(filter.name, filter.operator, family, null)
+        }
+        val value = filter.value ?: throw IllegalArgumentException("${filter.operator} 必须提供 value")
+        require(value.length <= MAX_TAG_FILTER_VALUE_CHARS) { "Tag ${filter.name} 的筛选值过长" }
+        family.validate(value, "Tag ${filter.name}")
+        return CompiledTagFilter(filter.name, filter.operator, family, value)
+    }
+
+    private fun ResultSet.readChildTable(
+        database: String,
+        preserveBlankComment: Boolean = false
+    ): TimeSeriesChildTable {
+        val rawComment = getString("table_comment")
+        return TimeSeriesChildTable(
+            name = getString("table_name"),
+            database = database,
+            stableName = getString("stable_name"),
+            createdAt = getString("create_time"),
+            comment = if (preserveBlankComment) rawComment else rawComment?.takeIf { it.isNotBlank() },
+            ttl = getNullableInt("ttl_value") ?: 0
+        )
+    }
+
     private fun formatType(result: ResultSet): String {
         val base = result.getString("col_type")
         val length = result.getNullableInt("col_length")
@@ -494,6 +831,140 @@ class TdengineMetadataAdapter : MetadataAdapter, TimeSeriesMetadataAdapter {
 
     private fun unsupportedMutation(): Nothing =
         throw UnsupportedOperationException("TDengine 当前阶段仅支持时序元数据浏览和只读预览")
+
+    private companion object {
+        const val MAX_TAG_FILTER_VALUE_CHARS = 65_536
+    }
+}
+
+private data class CompiledTagFilter(
+    val name: String,
+    val operator: TimeSeriesTagFilterOperator,
+    val family: TagTypeFamily,
+    val expected: String?
+) {
+    fun matches(actual: String?): Boolean {
+        return when (operator) {
+            TimeSeriesTagFilterOperator.IS_NULL -> actual == null
+            TimeSeriesTagFilterOperator.IS_NOT_NULL -> actual != null
+            else -> {
+                if (actual == null) return false
+                if (operator == TimeSeriesTagFilterOperator.CONTAINS) {
+                    return actual.contains(requireNotNull(expected))
+                }
+                val comparison = family.compare(actual, requireNotNull(expected)) ?: return false
+                when (operator) {
+                    TimeSeriesTagFilterOperator.EQ -> comparison == 0
+                    TimeSeriesTagFilterOperator.NE -> comparison != 0
+                    TimeSeriesTagFilterOperator.GT -> comparison > 0
+                    TimeSeriesTagFilterOperator.GTE -> comparison >= 0
+                    TimeSeriesTagFilterOperator.LT -> comparison < 0
+                    TimeSeriesTagFilterOperator.LTE -> comparison <= 0
+                    TimeSeriesTagFilterOperator.CONTAINS,
+                    TimeSeriesTagFilterOperator.IS_NULL,
+                    TimeSeriesTagFilterOperator.IS_NOT_NULL -> false
+                }
+            }
+        }
+    }
+}
+
+private enum class TagTypeFamily(
+    val allowedOperators: Set<TimeSeriesTagFilterOperator>
+) {
+    TEXT(
+        setOf(
+            TimeSeriesTagFilterOperator.EQ,
+            TimeSeriesTagFilterOperator.NE,
+            TimeSeriesTagFilterOperator.CONTAINS,
+            TimeSeriesTagFilterOperator.IS_NULL,
+            TimeSeriesTagFilterOperator.IS_NOT_NULL
+        )
+    ),
+    NUMBER(comparableTagOperators()),
+    TIMESTAMP(comparableTagOperators()),
+    BOOL(
+        setOf(
+            TimeSeriesTagFilterOperator.EQ,
+            TimeSeriesTagFilterOperator.NE,
+            TimeSeriesTagFilterOperator.IS_NULL,
+            TimeSeriesTagFilterOperator.IS_NOT_NULL
+        )
+    );
+
+    fun validate(value: String, label: String) {
+        when (this) {
+            TEXT -> Unit
+            NUMBER -> require(value.trim().toBigDecimalOrNull() != null) { "$label 的筛选值必须是数值" }
+            BOOL -> require(value.trim().lowercase() in setOf("true", "false")) {
+                "$label 的筛选值必须是 true 或 false"
+            }
+            TIMESTAMP -> require(parseTimestamp(value) != null) {
+                "$label 的筛选值必须是时间文本（YYYY-MM-DD HH:mm:ss[.fraction]）或 epoch 整数"
+            }
+        }
+    }
+
+    fun compare(actual: String, expected: String): Int? = when (this) {
+        TEXT -> actual.compareTo(expected)
+        NUMBER -> compareValues(actual.trim().toBigDecimalOrNull(), expected.trim().toBigDecimalOrNull())
+        BOOL -> compareValues(parseBoolean(actual), parseBoolean(expected))
+        TIMESTAMP -> compareValues(parseTimestamp(actual), parseTimestamp(expected))
+    }
+
+    companion object {
+        fun from(rawType: String): TagTypeFamily {
+            val type = rawType.trim().uppercase().substringBefore('(').replace(Regex("\\s+"), " ")
+            return when (type) {
+                "BINARY", "VARCHAR", "NCHAR" -> TEXT
+                "TINYINT", "TINYINT UNSIGNED", "SMALLINT", "SMALLINT UNSIGNED",
+                "INT", "INT UNSIGNED", "BIGINT", "BIGINT UNSIGNED", "FLOAT", "DOUBLE" -> NUMBER
+                "TIMESTAMP" -> TIMESTAMP
+                "BOOL", "BOOLEAN" -> BOOL
+                else -> throw IllegalArgumentException("暂不支持按 Tag 类型 $rawType 筛选")
+            }
+        }
+
+        private fun parseBoolean(value: String): Boolean? = when (value.trim().lowercase()) {
+            "true" -> true
+            "false" -> false
+            else -> null
+        }
+
+        private fun parseTimestamp(value: String): ComparableTimestamp? {
+            val normalized = value.trim()
+            normalized.toBigDecimalOrNull()?.let { return ComparableTimestamp.Epoch(it) }
+            return runCatching {
+                ComparableTimestamp.DateTime(Timestamp.valueOf(normalized.replace('T', ' ')).toLocalDateTime())
+            }.getOrNull()
+        }
+
+        private fun <T : Comparable<T>> compareValues(left: T?, right: T?): Int? =
+            if (left == null || right == null) null else left.compareTo(right)
+
+    }
+}
+
+private fun comparableTagOperators(): Set<TimeSeriesTagFilterOperator> = setOf(
+    TimeSeriesTagFilterOperator.EQ,
+    TimeSeriesTagFilterOperator.NE,
+    TimeSeriesTagFilterOperator.GT,
+    TimeSeriesTagFilterOperator.GTE,
+    TimeSeriesTagFilterOperator.LT,
+    TimeSeriesTagFilterOperator.LTE,
+    TimeSeriesTagFilterOperator.IS_NULL,
+    TimeSeriesTagFilterOperator.IS_NOT_NULL
+)
+
+private sealed interface ComparableTimestamp : Comparable<ComparableTimestamp> {
+    data class Epoch(val value: BigDecimal) : ComparableTimestamp
+    data class DateTime(val value: java.time.LocalDateTime) : ComparableTimestamp
+
+    override fun compareTo(other: ComparableTimestamp): Int = when {
+        this is Epoch && other is Epoch -> value.compareTo(other.value)
+        this is DateTime && other is DateTime -> value.compareTo(other.value)
+        else -> throw IllegalArgumentException("时间筛选值与目录值的表示方式不一致")
+    }
 }
 
 internal fun validateTdengineReadOnlyClause(value: String?, label: String): String? {

@@ -36,7 +36,7 @@ const initialColumns = (): FieldRow[] => [
   { id: newId(), name: 'value', type: 'DOUBLE' },
 ]
 const initialTags = (): FieldRow[] => [
-  { id: newId(), name: 'location', type: 'VARCHAR', length: 64 },
+  { id: newId(), name: '', type: 'VARCHAR', length: 64 },
 ]
 const IDENTIFIER_INPUT_PROPS = {
   autoCapitalize: 'none',

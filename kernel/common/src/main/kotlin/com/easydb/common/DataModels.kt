@@ -31,6 +31,35 @@ data class TableInfo(
     val tableKind: TableKind? = null
 )
 
+object MetadataPageLimits {
+    const val DEFAULT_PAGE_SIZE = 100
+    const val MAX_PAGE_SIZE = 500
+}
+
+@Serializable
+data class MetadataPageRequest(
+    val search: String? = null,
+    val type: String? = null,
+    val offset: Int = 0,
+    val limit: Int = MetadataPageLimits.DEFAULT_PAGE_SIZE
+) {
+    init {
+        require(offset >= 0) { "offset must be greater than or equal to 0" }
+        require(limit in 1..MetadataPageLimits.MAX_PAGE_SIZE) {
+            "limit must be between 1 and ${MetadataPageLimits.MAX_PAGE_SIZE}"
+        }
+    }
+}
+
+@Serializable
+data class MetadataPage<T>(
+    val items: List<T>,
+    val total: Long,
+    val offset: Int,
+    val limit: Int,
+    val hasMore: Boolean
+)
+
 @Serializable
 enum class TableKind {
     SUPER_TABLE,
@@ -124,6 +153,79 @@ data class TimeSeriesCreateResult(
     val stableName: String? = null
 )
 
+/** 超级表结构每次只允许执行一个原子变更。 */
+@Serializable
+enum class TimeSeriesLifecycleOperation {
+    ADD_COLUMN,
+    DROP_COLUMN,
+    MODIFY_COLUMN,
+    ADD_TAG,
+    DROP_TAG,
+    MODIFY_TAG,
+    RENAME_TAG
+}
+
+/**
+ * 超级表结构变更命令。
+ *
+ * ADD/MODIFY 使用 [type] 和可选 [length]；DROP 只使用 [name]；
+ * RENAME_TAG 使用 [name] 和 [newName]。服务端会拒绝任何多余字段。
+ */
+@Serializable
+data class TimeSeriesLifecycleCommand(
+    val operation: TimeSeriesLifecycleOperation,
+    val name: String,
+    val type: TimeSeriesDataType? = null,
+    val length: Int? = null,
+    val newName: String? = null
+)
+
+@Serializable
+data class TimeSeriesLifecycleField(
+    val name: String,
+    val type: String,
+    val length: Int? = null,
+    val primaryTimestamp: Boolean = false
+)
+
+/** 服务端读取的超级表结构快照；fingerprint 用于 apply 前的乐观并发校验。 */
+@Serializable
+data class TimeSeriesLifecycleSnapshot(
+    val database: String,
+    val stable: String,
+    val columns: List<TimeSeriesLifecycleField>,
+    val tags: List<TimeSeriesLifecycleField>,
+    val fingerprint: String,
+    val affectedChildTables: Long = 0
+)
+
+@Serializable
+data class TimeSeriesLifecyclePreview(
+    val command: TimeSeriesLifecycleCommand,
+    val snapshot: TimeSeriesLifecycleSnapshot,
+    val ddl: String,
+    val previewToken: String,
+    val destructive: Boolean,
+    val warnings: List<String> = emptyList()
+)
+
+/** apply 只接受结构化命令和 preview 产生的校验信息，不接受客户端 DDL。 */
+@Serializable
+data class TimeSeriesLifecycleApplyRequest(
+    val command: TimeSeriesLifecycleCommand,
+    val expectedFingerprint: String,
+    val previewToken: String,
+    val confirmationName: String? = null
+)
+
+@Serializable
+data class TimeSeriesLifecycleResult(
+    val success: Boolean,
+    val command: TimeSeriesLifecycleCommand,
+    val ddl: String,
+    val previousFingerprint: String
+)
+
 @Serializable
 data class TimeSeriesChildTable(
     val name: String,
@@ -131,7 +233,8 @@ data class TimeSeriesChildTable(
     val stableName: String,
     val tagValues: List<TimeSeriesTagValue> = emptyList(),
     val createdAt: String? = null,
-    val comment: String? = null
+    val comment: String? = null,
+    val ttl: Int = 0
 )
 
 @Serializable
@@ -145,6 +248,343 @@ data class TimeSeriesChildTablePage(
 object TimeSeriesMetadataLimits {
     const val DEFAULT_CHILD_TABLE_PAGE_SIZE = 100
     const val MAX_CHILD_TABLE_PAGE_SIZE = 200
+    const val MAX_TAG_FILTERS = 8
+}
+
+@Serializable
+enum class TimeSeriesTagFilterOperator {
+    EQ,
+    NE,
+    GT,
+    GTE,
+    LT,
+    LTE,
+    CONTAINS,
+    IS_NULL,
+    IS_NOT_NULL
+}
+
+@Serializable
+data class TimeSeriesTagFilter(
+    val name: String,
+    val operator: TimeSeriesTagFilterOperator,
+    val value: String? = null
+)
+
+@Serializable
+data class TimeSeriesChildTableQuery(
+    val offset: Int = 0,
+    val limit: Int = TimeSeriesMetadataLimits.DEFAULT_CHILD_TABLE_PAGE_SIZE,
+    val search: String? = null,
+    val filters: List<TimeSeriesTagFilter> = emptyList()
+) {
+    init {
+        require(offset >= 0) { "offset must be greater than or equal to 0" }
+        require(limit in 1..TimeSeriesMetadataLimits.MAX_CHILD_TABLE_PAGE_SIZE) {
+            "limit must be between 1 and ${TimeSeriesMetadataLimits.MAX_CHILD_TABLE_PAGE_SIZE}"
+        }
+        require(filters.size <= TimeSeriesMetadataLimits.MAX_TAG_FILTERS) {
+            "filters must not contain more than ${TimeSeriesMetadataLimits.MAX_TAG_FILTERS} conditions"
+        }
+    }
+}
+
+@Serializable
+enum class TimeSeriesChildPropertyOperation {
+    SET_TAG,
+    SET_TTL,
+    SET_COMMENT
+}
+
+@Serializable
+data class TimeSeriesChildPropertyCommand(
+    val operation: TimeSeriesChildPropertyOperation,
+    val tagName: String? = null,
+    val value: String? = null,
+    val isNull: Boolean = false,
+    val ttl: Int? = null,
+    val comment: String? = null
+)
+
+@Serializable
+data class TimeSeriesChildPropertySnapshot(
+    val database: String,
+    val table: String,
+    val stableName: String,
+    val tagValues: List<TimeSeriesTagValue>,
+    val ttl: Int,
+    val comment: String? = null,
+    val fingerprint: String
+)
+
+@Serializable
+data class TimeSeriesChildPropertyPreview(
+    val command: TimeSeriesChildPropertyCommand,
+    val snapshot: TimeSeriesChildPropertySnapshot,
+    val ddl: String,
+    val previewToken: String
+)
+
+@Serializable
+data class TimeSeriesChildPropertyApplyRequest(
+    val command: TimeSeriesChildPropertyCommand,
+    val expectedFingerprint: String,
+    val previewToken: String
+)
+
+@Serializable
+data class TimeSeriesChildPropertyResult(
+    val success: Boolean,
+    val command: TimeSeriesChildPropertyCommand,
+    val ddl: String,
+    val previousFingerprint: String
+)
+
+@Serializable
+enum class TimeSeriesDeleteObjectKind {
+    BASIC_TABLE,
+    CHILD_TABLE,
+    SUPER_TABLE
+}
+
+/** 删除预览时由服务端实时读取的对象身份；fingerprint 用于阻止陈旧确认。 */
+@Serializable
+data class TimeSeriesDeleteSnapshot(
+    val database: String,
+    val name: String,
+    val kind: TimeSeriesDeleteObjectKind,
+    val stableName: String? = null,
+    val createdAt: String? = null,
+    val affectedChildTables: Long = 0,
+    val fingerprint: String
+)
+
+@Serializable
+data class TimeSeriesDeletePreview(
+    val snapshot: TimeSeriesDeleteSnapshot,
+    val ddl: String,
+    val previewToken: String,
+    val warnings: List<String> = emptyList()
+)
+
+/** apply 只接受预览凭证和精确对象名，不接受客户端 DDL。 */
+@Serializable
+data class TimeSeriesDeleteApplyRequest(
+    val expectedFingerprint: String,
+    val previewToken: String,
+    val confirmationName: String
+)
+
+@Serializable
+data class TimeSeriesDeleteResult(
+    val success: Boolean,
+    val snapshot: TimeSeriesDeleteSnapshot,
+    val ddl: String
+)
+
+@Serializable
+enum class TimeSeriesBasicTableOperation {
+    ADD_COLUMN,
+    DROP_COLUMN,
+    MODIFY_COLUMN,
+    RENAME_COLUMN
+}
+
+@Serializable
+data class TimeSeriesBasicTableCommand(
+    val operation: TimeSeriesBasicTableOperation,
+    val name: String,
+    val type: TimeSeriesDataType? = null,
+    val length: Int? = null,
+    val newName: String? = null
+)
+
+@Serializable
+data class TimeSeriesBasicTableSnapshot(
+    val database: String,
+    val table: String,
+    val columns: List<TimeSeriesLifecycleField>,
+    val fingerprint: String
+)
+
+@Serializable
+data class TimeSeriesBasicTablePreview(
+    val command: TimeSeriesBasicTableCommand,
+    val snapshot: TimeSeriesBasicTableSnapshot,
+    val ddl: String,
+    val previewToken: String,
+    val destructive: Boolean,
+    val warnings: List<String> = emptyList()
+)
+
+@Serializable
+data class TimeSeriesBasicTableApplyRequest(
+    val command: TimeSeriesBasicTableCommand,
+    val expectedFingerprint: String,
+    val previewToken: String,
+    val confirmationName: String? = null
+)
+
+@Serializable
+data class TimeSeriesBasicTableResult(
+    val success: Boolean,
+    val command: TimeSeriesBasicTableCommand,
+    val ddl: String,
+    val previousFingerprint: String
+)
+
+@Serializable
+enum class TimeSeriesWriteTargetKind {
+    BASIC_TABLE,
+    EXISTING_CHILD_TABLE,
+    NEW_CHILD_TABLE
+}
+
+/** null intent is separate so empty strings survive the complete API round trip. */
+@Serializable
+data class TimeSeriesWriteCell(
+    val name: String,
+    val value: String? = null,
+    val isNull: Boolean = false
+)
+
+@Serializable
+data class TimeSeriesWriteRow(
+    val cells: List<TimeSeriesWriteCell>
+)
+
+@Serializable
+data class TimeSeriesWriteRequest(
+    val targetKind: TimeSeriesWriteTargetKind,
+    val table: String,
+    val stableName: String? = null,
+    val columns: List<String>,
+    val rows: List<TimeSeriesWriteRow>,
+    val tagValues: List<TimeSeriesTagValueDraft> = emptyList()
+)
+
+@Serializable
+data class TimeSeriesWriteSnapshot(
+    val database: String,
+    val targetKind: TimeSeriesWriteTargetKind,
+    val table: String,
+    val stableName: String? = null,
+    val columns: List<TimeSeriesLifecycleField>,
+    val tags: List<TimeSeriesLifecycleField> = emptyList(),
+    val fingerprint: String
+)
+
+@Serializable
+data class TimeSeriesWritePreview(
+    val request: TimeSeriesWriteRequest,
+    val snapshot: TimeSeriesWriteSnapshot,
+    val sql: String,
+    val previewToken: String,
+    val rowCount: Int,
+    val createsChildTable: Boolean
+)
+
+@Serializable
+data class TimeSeriesWriteApplyRequest(
+    val request: TimeSeriesWriteRequest,
+    val expectedFingerprint: String,
+    val previewToken: String
+)
+
+@Serializable
+data class TimeSeriesWriteResult(
+    val success: Boolean,
+    val targetTable: String,
+    val stableName: String? = null,
+    val insertedRows: Int,
+    val createdChildTable: Boolean
+)
+
+object TimeSeriesWriteLimits {
+    const val MAX_ROWS = 100
+    const val MAX_COLUMNS = 4096
+    const val MAX_CELL_CHARS = 65_536
+}
+
+@Serializable
+enum class CsvEncoding { AUTO, UTF8, GB18030 }
+
+@Serializable
+enum class CsvDelimiter { AUTO, COMMA, TAB, SEMICOLON }
+
+@Serializable
+data class CsvFileIdentity(
+    val canonicalPath: String,
+    val name: String,
+    val size: Long,
+    val lastModified: Long
+)
+
+@Serializable
+data class TimeSeriesCsvColumnMapping(
+    val sourceHeader: String,
+    val targetColumn: String? = null
+)
+
+@Serializable
+data class TimeSeriesCsvImportConfig(
+    val filePath: String,
+    val targetKind: TimeSeriesWriteTargetKind,
+    val table: String,
+    val stableName: String? = null,
+    val tagValues: List<TimeSeriesTagValueDraft> = emptyList(),
+    val encoding: CsvEncoding = CsvEncoding.AUTO,
+    val delimiter: CsvDelimiter = CsvDelimiter.AUTO,
+    val nullMarker: String = "NULL",
+    val emptyAsNull: Boolean = false,
+    val mappings: List<TimeSeriesCsvColumnMapping> = emptyList()
+)
+
+@Serializable
+data class TimeSeriesCsvPreviewCell(
+    val header: String,
+    val rawValue: String,
+    val value: String? = null,
+    val isNull: Boolean = false,
+    val error: String? = null
+)
+
+@Serializable
+data class TimeSeriesCsvPreviewRow(
+    val recordNumber: Long,
+    val cells: List<TimeSeriesCsvPreviewCell>,
+    val error: String? = null
+)
+
+@Serializable
+data class TimeSeriesCsvPreview(
+    val config: TimeSeriesCsvImportConfig,
+    val file: CsvFileIdentity,
+    val encoding: CsvEncoding,
+    val delimiter: CsvDelimiter,
+    val headers: List<String>,
+    val suggestedMappings: List<TimeSeriesCsvColumnMapping>,
+    val rows: List<TimeSeriesCsvPreviewRow>,
+    val target: TimeSeriesWriteSnapshot,
+    val blockingErrors: List<String> = emptyList()
+)
+
+@Serializable
+data class TimeSeriesCsvImportStartRequest(
+    val config: TimeSeriesCsvImportConfig,
+    val expectedFile: CsvFileIdentity,
+    val expectedTargetFingerprint: String
+)
+
+@Serializable
+data class TimeSeriesCsvImportStartResult(val taskId: String)
+
+object TimeSeriesCsvImportLimits {
+    const val MAX_FILE_BYTES = 1_073_741_824L
+    const val MAX_RECORDS = 10_000_000L
+    const val PREVIEW_RECORDS = 100
+    const val MIN_BATCH_ROWS = 500
+    const val MAX_BATCH_ROWS = 5_000
 }
 
 @Serializable

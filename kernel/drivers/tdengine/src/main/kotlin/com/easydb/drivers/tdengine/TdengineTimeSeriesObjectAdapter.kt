@@ -223,6 +223,18 @@ class TdengineTimeSeriesObjectAdapter(
         }
     }
 
+    /** 生命周期编辑与对象创建共用同一套 Tag 类型和值校验。 */
+    internal fun renderTagLiteral(
+        definition: TimeSeriesTagDefinition,
+        value: TimeSeriesTagValueDraft
+    ): String = renderTagValue(
+        ResolvedTag(
+            definition = definition,
+            type = resolveCatalogType(definition),
+            value = value
+        )
+    )
+
     private fun integerLiteral(raw: String, label: String, min: String, max: String): String {
         val normalized = raw.trim()
         require(INTEGER_PATTERN.matches(normalized)) { "$label 必须是整数" }

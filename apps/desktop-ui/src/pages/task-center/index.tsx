@@ -16,7 +16,7 @@
  */
 import React, { useEffect, useState, useCallback } from 'react'
 import {
-  Layout, Table, Typography, Space, Select, Button, Progress, Input,
+  Layout, Table, Typography, Space, Select, Button, Progress, Input, Alert,
   theme, Descriptions, Card, Tag, Collapse, Tooltip,
 } from 'antd'
 import {
@@ -45,6 +45,7 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   sync: '同步',
   export: '导出',
   import: '导入',
+  timeseries_csv_import: '时序 CSV',
 }
 
 const DB_TYPE_LABELS: Record<string, string> = {
@@ -234,6 +235,14 @@ export const TaskCenterPage: React.FC = () => {
     }
   }
 
+  const handleDownloadArtifact = async () => {
+    if (!selectedTaskId) return
+    try {
+      await taskApi.downloadArtifact(selectedTaskId, `${selectedTask?.name ?? 'csv-import'}-errors.csv`)
+      toast.success('错误行回执下载已启动；修正回执后再重试，不要盲目重导原文件')
+    } catch (err) { handleApiError(err, '错误回执下载失败') }
+  }
+
   const selectedTask = tasks.find((t) => t.id === selectedTaskId)
   const selectedLogs = selectedTaskId ? (taskLogs[selectedTaskId] ?? []) : []
 
@@ -315,6 +324,7 @@ export const TaskCenterPage: React.FC = () => {
               { value: 'sync', label: '同步' },
               { value: 'export', label: '导出' },
               { value: 'import', label: '导入' },
+              { value: 'timeseries_csv_import', label: '时序 CSV' },
             ]}
           />
           <Select
@@ -414,7 +424,7 @@ export const TaskCenterPage: React.FC = () => {
                 <Descriptions.Item label="进度"><Progress percent={selectedTask.progress} size="small" status={progressStatus(selectedTask.status)} style={{ marginBottom: 0 }} /></Descriptions.Item>
                 {(selectedTask.successCount != null || selectedTask.failureCount != null) && (
                   <Descriptions.Item label="表统计">
-                    共 {(selectedTask.successCount ?? 0) + (selectedTask.failureCount ?? 0)} 张
+                    共 {(selectedTask.successCount ?? 0) + (selectedTask.failureCount ?? 0)} {selectedTask.type === 'timeseries_csv_import' ? '行' : '张'}
                     <Text type="secondary" style={{ marginLeft: 4, fontSize: 12 }}>
                       （成功 {selectedTask.successCount ?? 0} · 失败 {selectedTask.failureCount ?? 0}）
                     </Text>
@@ -447,6 +457,15 @@ export const TaskCenterPage: React.FC = () => {
                 <Card size="small" title="当前步骤">
                   <Text type="secondary" style={{ fontSize: 12 }}>{selectedTask.progressMessage}</Text>
                 </Card>
+              )}
+
+              {selectedTask.type === 'timeseries_csv_import' && selectedTask.payload?.filePath && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  title="存在失败行回执"
+                  description={<Space orientation="vertical"><Text>回执只包含失败的逻辑记录。修正后可作为新 CSV 重试，请勿直接重导原文件。</Text><Button icon={<DownloadOutlined />} onClick={() => void handleDownloadArtifact()}>下载错误行 CSV</Button></Space>}
+                />
               )}
 
               {/* 数据验证报告 */}

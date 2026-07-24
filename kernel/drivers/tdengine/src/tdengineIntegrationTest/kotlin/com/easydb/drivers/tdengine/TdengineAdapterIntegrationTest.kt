@@ -10,6 +10,12 @@ import com.easydb.common.TimeSeriesCreateKind
 import com.easydb.common.TimeSeriesDataType
 import com.easydb.common.TimeSeriesFieldDraft
 import com.easydb.common.TimeSeriesTagValueDraft
+import com.easydb.common.TimeSeriesBasicTableCommand
+import com.easydb.common.TimeSeriesBasicTableOperation
+import com.easydb.common.TimeSeriesWriteCell
+import com.easydb.common.TimeSeriesWriteRequest
+import com.easydb.common.TimeSeriesWriteRow
+import com.easydb.common.TimeSeriesWriteTargetKind
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import java.sql.SQLFeatureNotSupportedException
@@ -379,6 +385,98 @@ class TdengineAdapterIntegrationTest {
                 val cleanupFailure = AssertionError(
                     "Failed to clean TDengine query integration object(s)"
                 )
+                cleanupFailures.forEach(cleanupFailure::addSuppressed)
+                if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure) else throw cleanupFailure
+            }
+        }
+    }
+
+    @Test
+    fun `phase seven ordinary lifecycle and structured writes work through the driver path`() {
+        assumeTrue(config.allowDdl, "Set EASYDB_TDENGINE_ALLOW_DDL=true for Phase 7 mutation coverage")
+        val token = UUID.randomUUID().toString().replace("-", "").take(10)
+        val stable = "easydb_it_${token}_write_stable"
+        val child = "easydb_it_${token}_write_child"
+        val basic = "easydb_it_${token}_write_basic"
+        val cleanup = mutableListOf<String>()
+        var primaryFailure: Throwable? = null
+        val session = adapter.connectionAdapter().open(config.toConnectionConfig())
+        val lifecycle = requireNotNull(adapter.timeSeriesBasicTableLifecycleAdapter())
+        val writer = requireNotNull(adapter.timeSeriesDataWriteAdapter())
+        try {
+            execute(session, "CREATE STABLE ${qualified(stable)} (ts TIMESTAMP, reading DOUBLE) TAGS (site VARCHAR(16))")
+            cleanup += "DROP STABLE IF EXISTS ${qualified(stable)}"
+            execute(session, "CREATE TABLE ${qualified(basic)} (ts TIMESTAMP, reading DOUBLE, payload BINARY(8))")
+            cleanup += "DROP TABLE IF EXISTS ${qualified(basic)}"
+
+            fun mutate(command: TimeSeriesBasicTableCommand) {
+                val snapshot = lifecycle.inspectBasicTable(session, config.database, basic)
+                execute(session, lifecycle.buildBasicTableMutationSql(config.database, basic, snapshot, command))
+            }
+            mutate(TimeSeriesBasicTableCommand(TimeSeriesBasicTableOperation.ADD_COLUMN, "note", TimeSeriesDataType.VARCHAR, 8))
+            mutate(TimeSeriesBasicTableCommand(TimeSeriesBasicTableOperation.RENAME_COLUMN, "note", newName = "remark"))
+            mutate(TimeSeriesBasicTableCommand(TimeSeriesBasicTableOperation.MODIFY_COLUMN, "payload", TimeSeriesDataType.BINARY, 16))
+            mutate(TimeSeriesBasicTableCommand(TimeSeriesBasicTableOperation.DROP_COLUMN, "remark"))
+            assertEquals(listOf("ts", "reading", "payload"), lifecycle.inspectBasicTable(session, config.database, basic).columns.map { it.name })
+
+            val basicRequest = TimeSeriesWriteRequest(
+                targetKind = TimeSeriesWriteTargetKind.BASIC_TABLE,
+                table = basic,
+                columns = listOf("ts", "reading", "payload"),
+                rows = listOf(
+                    TimeSeriesWriteRow(listOf(
+                        TimeSeriesWriteCell("ts", "2026-07-22 10:00:00.001"),
+                        TimeSeriesWriteCell("reading", "12.5"),
+                        TimeSeriesWriteCell("payload", "")
+                    )),
+                    TimeSeriesWriteRow(listOf(
+                        TimeSeriesWriteCell("ts", "2026-07-22 10:00:00.002"),
+                        TimeSeriesWriteCell("reading", value = null, isNull = true),
+                        TimeSeriesWriteCell("payload", "ok")
+                    ))
+                )
+            )
+            val basicSnapshot = writer.inspectWriteTarget(session, config.database, basicRequest)
+            writer.executeWritePlan(session, writer.buildWritePlan(config.database, basicSnapshot, basicRequest))
+            assertEquals(2, adapter.metadataAdapter().previewRows(session, config.database, basic, limit = 10).size)
+
+            val childRequest = TimeSeriesWriteRequest(
+                targetKind = TimeSeriesWriteTargetKind.NEW_CHILD_TABLE,
+                table = child,
+                stableName = stable,
+                columns = listOf("ts", "reading"),
+                rows = listOf(TimeSeriesWriteRow(listOf(
+                    TimeSeriesWriteCell("ts", "2026-07-22 10:00:01.001"),
+                    TimeSeriesWriteCell("reading", "42")
+                ))),
+                tagValues = listOf(TimeSeriesTagValueDraft("site", "north"))
+            )
+            val childSnapshot = writer.inspectWriteTarget(session, config.database, childRequest)
+            writer.executeWritePlan(session, writer.buildWritePlan(config.database, childSnapshot, childRequest))
+            cleanup += "DROP TABLE IF EXISTS ${qualified(child)}"
+            val existingChildRequest = TimeSeriesWriteRequest(
+                targetKind = TimeSeriesWriteTargetKind.EXISTING_CHILD_TABLE,
+                table = child,
+                columns = listOf("ts", "reading"),
+                rows = listOf(TimeSeriesWriteRow(listOf(
+                    TimeSeriesWriteCell("ts", "2026-07-22 10:00:01.002"),
+                    TimeSeriesWriteCell("reading", "43")
+                )))
+            )
+            val existingChildSnapshot = writer.inspectWriteTarget(session, config.database, existingChildRequest)
+            writer.executeWritePlan(
+                session,
+                writer.buildWritePlan(config.database, existingChildSnapshot, existingChildRequest)
+            )
+            assertEquals(2, adapter.metadataAdapter().previewRows(session, config.database, child, limit = 10).size)
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
+        } finally {
+            val cleanupFailures = cleanup.asReversed().mapNotNull { sql -> runCatching { execute(session, sql) }.exceptionOrNull() }
+            adapter.connectionAdapter().close(session)
+            if (cleanupFailures.isNotEmpty()) {
+                val cleanupFailure = AssertionError("Failed to clean Phase 7 TDengine integration objects")
                 cleanupFailures.forEach(cleanupFailure::addSuppressed)
                 if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure) else throw cleanupFailure
             }

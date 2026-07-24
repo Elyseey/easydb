@@ -239,6 +239,10 @@ fun Route.metadataRoutes() {
     val connMgr = ServiceRegistry.connectionManager
     val timeSeriesCreateService = TimeSeriesObjectCreateService(ServiceRegistry.adapterRegistry)
     val timeSeriesQueryService = TimeSeriesQueryService(ServiceRegistry.adapterRegistry)
+    val timeSeriesLifecycleService = TimeSeriesLifecycleService(ServiceRegistry.adapterRegistry)
+    val timeSeriesBasicTableLifecycleService = TimeSeriesBasicTableLifecycleService(ServiceRegistry.adapterRegistry)
+    val timeSeriesDataWriteService = TimeSeriesDataWriteService(ServiceRegistry.adapterRegistry)
+    val timeSeriesCsvImportService = TimeSeriesCsvImportService(ServiceRegistry.adapterRegistry, ServiceRegistry.taskManager)
 
     fun adapterFor(session: DatabaseSession): DatabaseAdapter =
         ServiceRegistry.adapterRegistry.get(session.config.dbType)
@@ -290,6 +294,25 @@ fun Route.metadataRoutes() {
                     search = call.request.queryParameters["search"]
                 )
             )
+        } catch (error: Exception) {
+            call.fail("METADATA_FAILED", error.message ?: "加载 TDengine 子表失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/stables/{stable}/children/query") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val adapter = timeSeriesAdapterFor(call, session) ?: return@post
+        val database = call.parameters["database"]!!
+        val stable = call.parameters["stable"]!!
+        val query = try {
+            call.receive<TimeSeriesChildTableQuery>()
+        } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(adapter.queryChildTables(session, database, stable, query))
+        } catch (error: IllegalArgumentException) {
+            call.fail("INVALID_TAG_FILTER", error.message ?: "Tag 筛选条件无效")
         } catch (error: Exception) {
             call.fail("METADATA_FAILED", error.message ?: "加载 TDengine 子表失败")
         }
@@ -368,6 +391,242 @@ fun Route.metadataRoutes() {
             call.fail(error.code, error.message)
         } catch (error: Exception) {
             call.fail("CREATE_TIME_SERIES_OBJECT_FAILED", error.message ?: "创建时序对象失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/objects/{object}/delete/preview") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val name = call.parameters["object"]!!
+        try {
+            call.ok(timeSeriesLifecycleService.previewDelete(session, database, name))
+        } catch (error: TimeSeriesLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "生成时序对象删除预览失败")
+        }
+    }
+
+    get("/{connectionId}/{database}/timeseries/basic-tables/{table}/lifecycle") {
+        val session = getSessionOrFail(call, connMgr) ?: return@get
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        try {
+            call.ok(timeSeriesBasicTableLifecycleService.inspect(session, database, table))
+        } catch (error: TimeSeriesBasicTableLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "读取普通表结构失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/basic-tables/{table}/lifecycle/preview") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        val command = try { call.receive<TimeSeriesBasicTableCommand>() } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesBasicTableLifecycleService.preview(session, database, table, command))
+        } catch (error: TimeSeriesBasicTableLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "生成普通表结构变更预览失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/basic-tables/{table}/lifecycle/apply") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        val request = try { call.receive<TimeSeriesBasicTableApplyRequest>() } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesBasicTableLifecycleService.apply(session, database, table, request))
+        } catch (error: TimeSeriesBasicTableLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "修改普通表结构失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/write/preview") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val request = try { call.receive<TimeSeriesWriteRequest>() } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesDataWriteService.preview(session, database, request))
+        } catch (error: TimeSeriesDataWriteException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_WRITE_FAILED", error.message ?: "生成时序写入预览失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/write/apply") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val request = try { call.receive<TimeSeriesWriteApplyRequest>() } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesDataWriteService.apply(session, database, request))
+        } catch (error: TimeSeriesDataWriteException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_WRITE_FAILED", error.message ?: "写入时序数据失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/csv-import/preview") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val request = try { call.receive<TimeSeriesCsvImportConfig>() } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesCsvImportService.preview(session, database, request))
+        } catch (error: TimeSeriesCsvImportException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_CSV_IMPORT_FAILED", error.message ?: "CSV 预览失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/csv-import/start") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val request = try { call.receive<TimeSeriesCsvImportStartRequest>() } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            val task = timeSeriesCsvImportService.createTask(session, database, request)
+            taskScope.launch { timeSeriesCsvImportService.execute(task.id, session, database, request) }
+            call.ok(TimeSeriesCsvImportStartResult(task.id))
+        } catch (error: TimeSeriesCsvImportException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_CSV_IMPORT_FAILED", error.message ?: "启动 CSV 导入失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/objects/{object}/delete/apply") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val name = call.parameters["object"]!!
+        val request = try {
+            call.receive<TimeSeriesDeleteApplyRequest>()
+        } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesLifecycleService.applyDelete(session, database, name, request))
+        } catch (error: TimeSeriesLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "删除时序对象失败")
+        }
+    }
+
+    get("/{connectionId}/{database}/timeseries/stables/{stable}/lifecycle") {
+        val session = getSessionOrFail(call, connMgr) ?: return@get
+        val database = call.parameters["database"]!!
+        val stable = call.parameters["stable"]!!
+        try {
+            call.ok(timeSeriesLifecycleService.inspect(session, database, stable))
+        } catch (error: TimeSeriesLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "读取超级表结构失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/stables/{stable}/lifecycle/preview") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val stable = call.parameters["stable"]!!
+        val command = try {
+            call.receive<TimeSeriesLifecycleCommand>()
+        } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesLifecycleService.preview(session, database, stable, command))
+        } catch (error: TimeSeriesLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "生成超级表结构变更预览失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/stables/{stable}/lifecycle/apply") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val stable = call.parameters["stable"]!!
+        val request = try {
+            call.receive<TimeSeriesLifecycleApplyRequest>()
+        } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesLifecycleService.apply(session, database, stable, request))
+        } catch (error: TimeSeriesLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "修改超级表结构失败")
+        }
+    }
+
+    get("/{connectionId}/{database}/timeseries/tables/{table}/properties") {
+        val session = getSessionOrFail(call, connMgr) ?: return@get
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        try {
+            call.ok(timeSeriesLifecycleService.inspectChild(session, database, table))
+        } catch (error: TimeSeriesLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "读取子表属性失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/tables/{table}/properties/preview") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        val command = try {
+            call.receive<TimeSeriesChildPropertyCommand>()
+        } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesLifecycleService.previewChild(session, database, table, command))
+        } catch (error: TimeSeriesLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "生成子表属性变更预览失败")
+        }
+    }
+
+    post("/{connectionId}/{database}/timeseries/tables/{table}/properties/apply") {
+        val session = getSessionOrFail(call, connMgr) ?: return@post
+        val database = call.parameters["database"]!!
+        val table = call.parameters["table"]!!
+        val request = try {
+            call.receive<TimeSeriesChildPropertyApplyRequest>()
+        } catch (error: Exception) {
+            return@post call.fail("INVALID_REQUEST", error.message ?: "请求体解析失败")
+        }
+        try {
+            call.ok(timeSeriesLifecycleService.applyChild(session, database, table, request))
+        } catch (error: TimeSeriesLifecycleException) {
+            call.fail(error.code, error.message)
+        } catch (error: Exception) {
+            call.fail("TIME_SERIES_MUTATION_FAILED", error.message ?: "修改子表属性失败")
         }
     }
 
@@ -474,6 +733,42 @@ fun Route.metadataRoutes() {
             )
         }
         call.ok(tables + triggers + routines)
+    }
+
+    get("/{connectionId}/{database}/objects/page") {
+        val session = getSessionOrFail(call, connMgr) ?: return@get
+        val database = call.parameters["database"]!!
+        val databaseAdapter = adapterFor(session)
+        if (!databaseAdapter.capabilities().supportsPagedMetadata) {
+            return@get call.fail(
+                "UNSUPPORTED_DB_FEATURE",
+                "当前数据库类型（${session.config.dbType}）不支持服务端对象分页"
+            )
+        }
+
+        val rawOffset = call.request.queryParameters["offset"]
+        val rawLimit = call.request.queryParameters["limit"]
+        val offset = rawOffset?.toIntOrNull()
+        val limit = rawLimit?.toIntOrNull()
+        if ((rawOffset != null && offset == null) || (rawLimit != null && limit == null)) {
+            return@get call.fail("INVALID_REQUEST", "offset 和 limit 必须是整数")
+        }
+        val request = try {
+            MetadataPageRequest(
+                search = call.request.queryParameters["search"],
+                type = call.request.queryParameters["type"],
+                offset = offset ?: 0,
+                limit = limit ?: MetadataPageLimits.DEFAULT_PAGE_SIZE
+            )
+        } catch (error: IllegalArgumentException) {
+            return@get call.fail("INVALID_REQUEST", error.message ?: "分页参数无效")
+        }
+
+        try {
+            call.ok(databaseAdapter.metadataAdapter().listTablesPage(session, database, request))
+        } catch (error: Exception) {
+            call.fail("METADATA_FAILED", error.message ?: "加载对象分页失败")
+        }
     }
 
     get("/{connectionId}/{database}/tables/{table}/definition") {
@@ -1152,6 +1447,13 @@ fun Route.taskRoutes() {
             val content = inMemoryLogs.joinToString("\n") { "[${it.timestamp}] [${it.level}] ${it.message}" }
             call.respondText(content, io.ktor.http.ContentType.Text.Plain)
         }
+    }
+    get("/{taskId}/artifact") {
+        val taskId = call.parameters["taskId"]!!
+        val file = taskMgr.managedTaskArtifact(taskId)
+            ?: return@get call.fail("NOT_FOUND", "任务没有可下载的错误回执")
+        call.response.header("Content-Disposition", "attachment; filename=\"${file.name}\"")
+        call.respondFile(file)
     }
     get("/{taskId}/steps") {
         call.ok(emptyList<String>())

@@ -10,7 +10,7 @@ export type ConnectionStatus = 'connected' | 'disconnected' | 'connecting' | 'er
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 // 任务类型
-export type TaskType = 'migration' | 'sync' | 'export' | 'import'
+export type TaskType = 'migration' | 'sync' | 'export' | 'import' | 'timeseries_csv_import'
 
 // 迁移模式
 export type MigrationMode = 'structure_only' | 'data_only' | 'structure_and_data'
@@ -86,6 +86,21 @@ export interface TableInfo {
 
 export type TableKind = 'SUPER_TABLE' | 'BASIC_TABLE' | 'CHILD_TABLE'
 
+export interface MetadataPageRequest {
+  search?: string
+  type?: TableInfo['type']
+  offset?: number
+  limit?: number
+}
+
+export interface MetadataPage<T> {
+  items: T[]
+  total: number
+  offset: number
+  limit: number
+  hasMore: boolean
+}
+
 export interface TimeSeriesTagDefinition {
   name: string
   type: string
@@ -104,6 +119,7 @@ export interface TimeSeriesChildTable {
   tagValues: TimeSeriesTagValue[]
   createdAt?: string
   comment?: string
+  ttl?: number
 }
 
 export interface TimeSeriesChildTablePage {
@@ -112,6 +128,194 @@ export interface TimeSeriesChildTablePage {
   limit: number
   hasMore: boolean
 }
+
+export type TimeSeriesTagFilterOperator =
+  | 'EQ' | 'NE' | 'GT' | 'GTE' | 'LT' | 'LTE' | 'CONTAINS' | 'IS_NULL' | 'IS_NOT_NULL'
+
+export interface TimeSeriesTagFilter {
+  name: string
+  operator: TimeSeriesTagFilterOperator
+  value?: string | null
+}
+
+export interface TimeSeriesChildTableQuery {
+  offset?: number
+  limit?: number
+  search?: string
+  filters: TimeSeriesTagFilter[]
+}
+
+export type TimeSeriesChildPropertyOperation = 'SET_TAG' | 'SET_TTL' | 'SET_COMMENT'
+
+export interface TimeSeriesChildPropertyCommand {
+  operation: TimeSeriesChildPropertyOperation
+  tagName?: string | null
+  value?: string | null
+  isNull?: boolean
+  ttl?: number | null
+  comment?: string | null
+}
+
+export interface TimeSeriesChildPropertySnapshot {
+  database: string
+  table: string
+  stableName: string
+  tagValues: TimeSeriesTagValue[]
+  ttl: number
+  comment?: string | null
+  fingerprint: string
+}
+
+export interface TimeSeriesChildPropertyPreview {
+  command: TimeSeriesChildPropertyCommand
+  snapshot: TimeSeriesChildPropertySnapshot
+  ddl: string
+  previewToken: string
+}
+
+export interface TimeSeriesChildPropertyApplyRequest {
+  command: TimeSeriesChildPropertyCommand
+  expectedFingerprint: string
+  previewToken: string
+}
+
+export interface TimeSeriesChildPropertyResult {
+  success: boolean
+  command: TimeSeriesChildPropertyCommand
+  ddl: string
+  previousFingerprint: string
+}
+
+export type TimeSeriesLifecycleOperation =
+  | 'ADD_COLUMN' | 'DROP_COLUMN' | 'MODIFY_COLUMN'
+  | 'ADD_TAG' | 'DROP_TAG' | 'MODIFY_TAG' | 'RENAME_TAG'
+
+export interface TimeSeriesLifecycleCommand {
+  operation: TimeSeriesLifecycleOperation
+  name: string
+  type?: TimeSeriesDataType | null
+  length?: number | null
+  newName?: string | null
+}
+
+export interface TimeSeriesLifecycleField {
+  name: string
+  type: string
+  length?: number | null
+  primaryTimestamp: boolean
+}
+
+export interface TimeSeriesLifecycleSnapshot {
+  database: string
+  stable: string
+  columns: TimeSeriesLifecycleField[]
+  tags: TimeSeriesLifecycleField[]
+  fingerprint: string
+  affectedChildTables: number
+}
+
+export interface TimeSeriesLifecyclePreview {
+  command: TimeSeriesLifecycleCommand
+  snapshot: TimeSeriesLifecycleSnapshot
+  ddl: string
+  previewToken: string
+  destructive: boolean
+  warnings: string[]
+}
+
+export interface TimeSeriesLifecycleApplyRequest {
+  command: TimeSeriesLifecycleCommand
+  expectedFingerprint: string
+  previewToken: string
+  confirmationName?: string | null
+}
+
+export interface TimeSeriesLifecycleResult {
+  success: boolean
+  command: TimeSeriesLifecycleCommand
+  ddl: string
+  previousFingerprint: string
+}
+
+export type TimeSeriesDeleteObjectKind = 'BASIC_TABLE' | 'CHILD_TABLE' | 'SUPER_TABLE'
+
+export interface TimeSeriesDeleteSnapshot {
+  database: string
+  name: string
+  kind: TimeSeriesDeleteObjectKind
+  stableName?: string | null
+  createdAt?: string | null
+  affectedChildTables: number
+  fingerprint: string
+}
+
+export interface TimeSeriesDeletePreview {
+  snapshot: TimeSeriesDeleteSnapshot
+  ddl: string
+  previewToken: string
+  warnings: string[]
+}
+
+export interface TimeSeriesDeleteApplyRequest {
+  expectedFingerprint: string
+  previewToken: string
+  confirmationName: string
+}
+
+export interface TimeSeriesDeleteResult {
+  success: boolean
+  snapshot: TimeSeriesDeleteSnapshot
+  ddl: string
+}
+
+export type TimeSeriesBasicTableOperation = 'ADD_COLUMN' | 'DROP_COLUMN' | 'MODIFY_COLUMN' | 'RENAME_COLUMN'
+export interface TimeSeriesBasicTableCommand { operation: TimeSeriesBasicTableOperation; name: string; type?: TimeSeriesDataType | null; length?: number | null; newName?: string | null }
+export interface TimeSeriesBasicTableSnapshot { database: string; table: string; columns: TimeSeriesLifecycleField[]; fingerprint: string }
+export interface TimeSeriesBasicTablePreview { command: TimeSeriesBasicTableCommand; snapshot: TimeSeriesBasicTableSnapshot; ddl: string; previewToken: string; destructive: boolean; warnings: string[] }
+export interface TimeSeriesBasicTableApplyRequest { command: TimeSeriesBasicTableCommand; expectedFingerprint: string; previewToken: string; confirmationName?: string | null }
+export interface TimeSeriesBasicTableResult { success: boolean; command: TimeSeriesBasicTableCommand; ddl: string; previousFingerprint: string }
+
+export type TimeSeriesWriteTargetKind = 'BASIC_TABLE' | 'EXISTING_CHILD_TABLE' | 'NEW_CHILD_TABLE'
+export interface TimeSeriesWriteCell { name: string; value?: string | null; isNull: boolean }
+export interface TimeSeriesWriteRow { cells: TimeSeriesWriteCell[] }
+export interface TimeSeriesWriteRequest { targetKind: TimeSeriesWriteTargetKind; table: string; stableName?: string | null; columns: string[]; rows: TimeSeriesWriteRow[]; tagValues: TimeSeriesTagValueDraft[] }
+export interface TimeSeriesWriteSnapshot { database: string; targetKind: TimeSeriesWriteTargetKind; table: string; stableName?: string | null; columns: TimeSeriesLifecycleField[]; tags: TimeSeriesLifecycleField[]; fingerprint: string }
+export interface TimeSeriesWritePreview { request: TimeSeriesWriteRequest; snapshot: TimeSeriesWriteSnapshot; sql: string; previewToken: string; rowCount: number; createsChildTable: boolean }
+export interface TimeSeriesWriteApplyRequest { request: TimeSeriesWriteRequest; expectedFingerprint: string; previewToken: string }
+export interface TimeSeriesWriteResult { success: boolean; targetTable: string; stableName?: string | null; insertedRows: number; createdChildTable: boolean }
+
+export type CsvEncoding = 'AUTO' | 'UTF8' | 'GB18030'
+export type CsvDelimiter = 'AUTO' | 'COMMA' | 'TAB' | 'SEMICOLON'
+export interface CsvFileIdentity { canonicalPath: string; name: string; size: number; lastModified: number }
+export interface SelectedCsvFile { path: string; name: string; size: number; lastModified: number }
+export interface TimeSeriesCsvColumnMapping { sourceHeader: string; targetColumn?: string | null }
+export interface TimeSeriesCsvImportConfig {
+  filePath: string
+  targetKind: TimeSeriesWriteTargetKind
+  table: string
+  stableName?: string | null
+  tagValues: TimeSeriesTagValueDraft[]
+  encoding: CsvEncoding
+  delimiter: CsvDelimiter
+  nullMarker: string
+  emptyAsNull: boolean
+  mappings: TimeSeriesCsvColumnMapping[]
+}
+export interface TimeSeriesCsvPreviewCell { header: string; rawValue: string; value?: string | null; isNull: boolean; error?: string | null }
+export interface TimeSeriesCsvPreviewRow { recordNumber: number; cells: TimeSeriesCsvPreviewCell[]; error?: string | null }
+export interface TimeSeriesCsvPreview {
+  config: TimeSeriesCsvImportConfig
+  file: CsvFileIdentity
+  encoding: CsvEncoding
+  delimiter: CsvDelimiter
+  headers: string[]
+  suggestedMappings: TimeSeriesCsvColumnMapping[]
+  rows: TimeSeriesCsvPreviewRow[]
+  target: TimeSeriesWriteSnapshot
+  blockingErrors: string[]
+}
+export interface TimeSeriesCsvImportStartRequest { config: TimeSeriesCsvImportConfig; expectedFile: CsvFileIdentity; expectedTargetFingerprint: string }
+export interface TimeSeriesCsvImportStartResult { taskId: string }
 
 export type TimeSeriesCreateKind = 'SUPER_TABLE' | 'BASIC_TABLE' | 'CHILD_TABLE'
 

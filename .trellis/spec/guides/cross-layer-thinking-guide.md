@@ -367,6 +367,38 @@ const querySummary = sqlQueryRowsSummary(currentBatch)
 
 ---
 
+### Mistake 13: SQL 预览字面量正确，但 JDBC 参数类型错误
+
+**Scenario**: 预览阶段把时间戳渲染为合法的 SQL 字面量，但执行阶段统一使用
+`PreparedStatement.setObject(..., String)`。某些驱动会把该字符串编码为字节数组，数据库最终收到
+`[B`，而不是 TIMESTAMP。
+
+**Result**: 用户看到的预览 SQL 可以在原生客户端执行，但 EasyDB 参数化执行返回类似
+`unsupported timestamp data type: [B`。只测试 SQL builder 无法发现这个问题。
+
+```kotlin
+// ❌ Bad — 业务类型在执行边界丢失，驱动自行猜测 String 的数据库类型
+statement.setObject(position, rawTimestamp)
+
+// ✅ Good — JDBC 绑定方法必须与目标列类型一致
+statement.setTimestamp(position, Timestamp.valueOf(normalizedTimestamp))
+
+// epoch 整数保留数据库精度语义，不先错误转换为毫秒 Timestamp
+statement.setLong(position, epochValue)
+```
+
+**Rules**:
+
+- SQL 预览渲染和 PreparedStatement 绑定是两个独立契约，两者都必须测试。
+- driver adapter 必须根据目录列类型选择 `setTimestamp`、`setLong`、`setBoolean` 等明确绑定方法；
+  不要把所有结构化输入退化为 `String + setObject`。
+- 时间戳文本与 epoch 整数需要分支绑定：文本使用 `java.sql.Timestamp`，epoch 使用整数绑定，
+  避免破坏 TDengine `ms/us/ns` 精度语义。
+- 回归测试至少同时断言预览 SQL和实际 JDBC setter 调用；仅断言占位符数量不够。
+- 真实数据库矩阵必须覆盖目标 JDBC 协议，因为不同驱动对 `setObject(String)` 的推断可能不同。
+
+---
+
 ## Checklist for Cross-Layer Features（更新版）
 
 Before implementation:
@@ -383,6 +415,7 @@ Before implementation:
 - [ ] **SQL 更新结果文案是否统一走 nullable-aware helper，而不是直接拼接 affectedRows**
 - [ ] **SQL 查询结果区摘要是否显示行数/结果集数，而不是把 batch length 显示成“条语句”**
 - [ ] **数据库对象跨组件跳转是否携带 connectionId，而不是从 active tab 等另一份状态推断**
+- [ ] **参数化 SQL 是否按目录类型调用明确 JDBC setter，而不只是验证预览字面量**
 
 After implementation:
 - [ ] Tested with edge cases (null, empty, invalid)

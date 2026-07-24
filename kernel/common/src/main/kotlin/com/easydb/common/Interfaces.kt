@@ -41,6 +41,18 @@ interface DatabaseAdapter {
     /** 时序查询能力使用结构化时间边界，不污染通用关系型预览契约。 */
     fun timeSeriesQueryAdapter(): TimeSeriesQueryAdapter? = null
 
+    /** 时序结构生命周期能力使用结构化单步命令，不复用关系型表设计 DDL。 */
+    fun timeSeriesLifecycleAdapter(): TimeSeriesLifecycleAdapter? = null
+
+    /** 普通表结构生命周期与超级表模板结构分离，避免误用于子表。 */
+    fun timeSeriesBasicTableLifecycleAdapter(): TimeSeriesBasicTableLifecycleAdapter? = null
+
+    /** 小批量时序写入由驱动校验类型并构建/执行参数化 INSERT。 */
+    fun timeSeriesDataWriteAdapter(): TimeSeriesDataWriteAdapter? = null
+
+    /** 时序 CSV 导入拥有独立批次边界，但复用同一套类型校验和 JDBC 绑定。 */
+    fun timeSeriesCsvImportAdapter(): TimeSeriesCsvImportAdapter? = null
+
     /** 逻辑备份读取一致性由具体数据库驱动实现；不支持时返回 null。 */
     fun logicalBackupAdapter(): LogicalBackupAdapter? = null
 
@@ -97,6 +109,28 @@ interface DatabaseSession {
 interface MetadataAdapter {
     fun listDatabases(session: DatabaseSession): List<DatabaseInfo>
     fun listTables(session: DatabaseSession, database: String): List<TableInfo>
+    fun listTablesPage(
+        session: DatabaseSession,
+        database: String,
+        request: MetadataPageRequest
+    ): MetadataPage<TableInfo> {
+        val normalizedSearch = request.search?.trim()?.takeIf { it.isNotEmpty() }
+        val normalizedType = request.type?.trim()?.takeIf { it.isNotEmpty() }
+        val matching = listTables(session, database)
+            .asSequence()
+            .filter { normalizedSearch == null || it.name.contains(normalizedSearch, ignoreCase = true) }
+            .filter { normalizedType == null || it.type.equals(normalizedType, ignoreCase = true) }
+            .sortedWith(compareBy<TableInfo>({ it.name.lowercase() }, { it.name }, { it.type }))
+            .toList()
+        val items = matching.drop(request.offset).take(request.limit)
+        return MetadataPage(
+            items = items,
+            total = matching.size.toLong(),
+            offset = request.offset,
+            limit = request.limit,
+            hasMore = request.offset.toLong() + items.size < matching.size.toLong()
+        )
+    }
     fun listTriggers(session: DatabaseSession, database: String): List<TriggerInfo> = emptyList()
     fun listRoutines(session: DatabaseSession, database: String): List<RoutineInfo> = emptyList()
     fun getTableDefinition(session: DatabaseSession, database: String, table: String): TableDefinition
@@ -147,6 +181,31 @@ interface TimeSeriesMetadataAdapter {
         database: String,
         table: String
     ): List<TimeSeriesTagValue>
+
+    /** 结构化 Tag 条件查询；默认实现只兼容无筛选的旧分页能力。 */
+    fun queryChildTables(
+        session: DatabaseSession,
+        database: String,
+        stable: String,
+        query: TimeSeriesChildTableQuery
+    ): TimeSeriesChildTablePage {
+        require(query.filters.isEmpty()) { "当前数据库不支持 Tag 条件筛选" }
+        return listChildTables(session, database, stable, query.offset, query.limit, query.search)
+    }
+
+    /** 返回单个子表的可编辑属性；不支持的驱动保持显式失败。 */
+    fun inspectChildTable(
+        session: DatabaseSession,
+        database: String,
+        table: String
+    ): TimeSeriesChildTable = throw UnsupportedOperationException("当前数据库不支持读取时序子表属性")
+
+    /** 实时统计超级表下的子表数，供破坏性操作的一致性校验使用。 */
+    fun countChildTables(
+        session: DatabaseSession,
+        database: String,
+        stable: String
+    ): Long = throw UnsupportedOperationException("当前数据库不支持统计时序子表")
 }
 
 /**
@@ -168,6 +227,125 @@ interface TimeSeriesQueryAdapter {
         table: String,
         request: TimeSeriesQueryRequest
     ): TimeSeriesQueryPage
+}
+
+/**
+ * 时序结构生命周期适配器。
+ *
+ * inspect 和 DDL 构建均由具体驱动实现；通用服务只负责能力路由、预览一致性和单条执行。
+ */
+interface TimeSeriesLifecycleAdapter {
+    fun inspect(
+        session: DatabaseSession,
+        database: String,
+        stable: String
+    ): TimeSeriesLifecycleSnapshot
+
+    fun buildMutationSql(
+        database: String,
+        stable: String,
+        snapshot: TimeSeriesLifecycleSnapshot,
+        command: TimeSeriesLifecycleCommand
+    ): String
+
+    fun inspectChildProperties(
+        session: DatabaseSession,
+        database: String,
+        table: String
+    ): TimeSeriesChildPropertySnapshot =
+        throw UnsupportedOperationException("当前数据库不支持时序子表属性管理")
+
+    fun buildChildPropertyMutationSql(
+        database: String,
+        table: String,
+        snapshot: TimeSeriesChildPropertySnapshot,
+        command: TimeSeriesChildPropertyCommand
+    ): String = throw UnsupportedOperationException("当前数据库不支持时序子表属性管理")
+
+    fun inspectDelete(
+        session: DatabaseSession,
+        database: String,
+        name: String
+    ): TimeSeriesDeleteSnapshot = throw UnsupportedOperationException("当前数据库不支持删除时序对象")
+
+    fun buildDeleteSql(
+        database: String,
+        name: String,
+        snapshot: TimeSeriesDeleteSnapshot
+    ): String = throw UnsupportedOperationException("当前数据库不支持删除时序对象")
+}
+
+interface TimeSeriesBasicTableLifecycleAdapter {
+    fun inspectBasicTable(
+        session: DatabaseSession,
+        database: String,
+        table: String
+    ): TimeSeriesBasicTableSnapshot
+
+    fun buildBasicTableMutationSql(
+        database: String,
+        table: String,
+        snapshot: TimeSeriesBasicTableSnapshot,
+        command: TimeSeriesBasicTableCommand
+    ): String
+}
+
+/**
+ * 时序写入的 driver-owned 执行计划。它不是 API DTO，SQL 和绑定值都不会由客户端提交。
+ */
+data class TimeSeriesWritePlan(
+    val sql: String,
+    val previewSql: String,
+    val parameters: List<TimeSeriesWriteParameter>,
+    val rowCount: Int,
+    val createsChildTable: Boolean
+)
+
+data class TimeSeriesWriteParameter(
+    val type: String,
+    val value: String? = null
+)
+
+interface TimeSeriesDataWriteAdapter {
+    fun inspectWriteTarget(
+        session: DatabaseSession,
+        database: String,
+        request: TimeSeriesWriteRequest
+    ): TimeSeriesWriteSnapshot
+
+    fun buildWritePlan(
+        database: String,
+        snapshot: TimeSeriesWriteSnapshot,
+        request: TimeSeriesWriteRequest
+    ): TimeSeriesWritePlan
+
+    fun executeWritePlan(session: DatabaseSession, plan: TimeSeriesWritePlan)
+}
+
+interface TimeSeriesCsvImportAdapter {
+    fun inspectImportTarget(
+        session: DatabaseSession,
+        database: String,
+        config: TimeSeriesCsvImportConfig
+    ): TimeSeriesWriteSnapshot
+
+    /** 新子表只在任务开始时创建一次；随后所有数据批次走普通参数化 INSERT。 */
+    fun prepareImportTarget(
+        session: DatabaseSession,
+        database: String,
+        snapshot: TimeSeriesWriteSnapshot,
+        config: TimeSeriesCsvImportConfig
+    )
+
+    fun buildImportPlan(
+        database: String,
+        snapshot: TimeSeriesWriteSnapshot,
+        config: TimeSeriesCsvImportConfig,
+        columns: List<String>,
+        rows: List<TimeSeriesWriteRow>
+    ): TimeSeriesWritePlan
+
+    fun executeImportPlan(session: DatabaseSession, plan: TimeSeriesWritePlan)
 }
 
 /** 父超级表在当前数据库中不存在，或当前账号无法读取其 Tag 定义。 */
